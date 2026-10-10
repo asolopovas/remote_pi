@@ -1,5 +1,7 @@
 # app
 
+For the personal Android font build, see [Remote Pi Readable](READABLE.md).
+
 A new Flutter project.
 
 ## Getting Started

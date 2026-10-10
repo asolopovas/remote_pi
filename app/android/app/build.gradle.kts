@@ -36,7 +36,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "work.jacobmoura.remotepi"
+        applicationId = "io.github.asolopovas.remotepi.readable"
         // plan/23 § "Versão mínima Android" — the remote_pi_identity
         // plugin requires API 34 (Block Store + modern biometry), so
         // the app inherits the same floor. Bump intentional, recorded

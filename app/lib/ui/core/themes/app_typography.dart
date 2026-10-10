@@ -3,13 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:app/ui/core/themes/app_colors.dart';
 
-/// Monospace font family — used for code, terminal-style chrome, and most of
-/// the app's UI text (the product's "coding agent" identity).
-///
-/// **To swap the app font, change this one line.** Bundle a real font in
-/// `pubspec.yaml` under this family name (e.g. JetBrains Mono) and it flows
-/// everywhere automatically. `'Courier'` is the platform fallback.
-const String kMonoFamily = 'Courier';
+const String kMonoFamily = 'JetBrains Mono';
 
 /// Sans family for body/system text. `null` → the platform default sans.
 /// Set to a bundled family name to override globally.
