@@ -140,6 +140,11 @@ class ConnectionManager extends Service {
   // List currently subscribed for presence (so reconnect can replay it).
   List<String> _subscribedEpks = const [];
   int _missedPings = 0;
+  // Prior live authority is valid only within this channel/selection epoch.
+  ({IChannel channel, String peerKey, String roomId})? _heartbeatDegradedRoom;
+  // Only the latest probe can trigger recovery; replies from a previous
+  // room/channel must not cause discovery requests for the new selection.
+  String? _pendingPingId;
   int _retryAttempt = 0;
   // Tracks the last-running connect token so the watchdog can tell
   // whether a connect is in flight (without poking at the live token).
@@ -239,6 +244,8 @@ class ConnectionManager extends Service {
     if (roomId == _activeRoomId) {
       return;
     }
+    _clearHeartbeatRecovery();
+    _missedPings = 0;
     _activeRoomId = roomId;
     final active = _activePeer;
     if (active != null) {
@@ -297,6 +304,9 @@ class ConnectionManager extends Service {
   /// See `epk_encoding.dart` for the recurring-bug history.
   void subscribeToPeers(List<String> epks) {
     final standard = epks.map(toStandardB64).toList();
+    if (!_setEquals(standard.toSet(), _subscribedEpks.toSet())) {
+      _clearHeartbeatRecovery();
+    }
     _subscribedEpks = standard;
     final link = _controlLink;
     if (link == null) {
@@ -317,6 +327,15 @@ class ConnectionManager extends Service {
     final list = (epks ?? _subscribedEpks).map(toStandardB64).toList();
     if (list.isEmpty) return;
     link.sendControl(presenceCheckFrame(list));
+  }
+
+  /// Reconcile discovery from the paired relay without subscribing new peers
+  /// or inferring live rooms from cached metadata / inner messages.
+  void refreshDiscovery() {
+    final link = _controlLink;
+    if (link == null || _subscribedEpks.isEmpty) return;
+    link.sendControl(presenceCheckFrame(_subscribedEpks));
+    link.sendControl(roomsCheckFrame(_subscribedEpks));
   }
 
   /// Current online channel cast to its control side, when supported.
@@ -542,7 +561,9 @@ class ConnectionManager extends Service {
       _controlSub = null;
       return;
     }
-    _controlSub = (ch as IControlLink).controlFrames.listen(_onControl);
+    _controlSub = (ch as IControlLink).controlFrames.listen((frame) {
+      if (identical(channel, ch)) _onControl(frame);
+    });
   }
 
   void _onControl(ControlInbound c) {
@@ -602,6 +623,7 @@ class ConnectionManager extends Service {
         :final working,
       ):
         final key = toStandardB64(peer);
+        _clearHeartbeatRecoveryForRoom(key, roomId);
         final list = _roomsByPeer[key] ?? <RoomInfo>[];
         // Preserve any localName the user already set for this room
         // (long-press rename) — only the live metadata comes from the
@@ -655,6 +677,7 @@ class ConnectionManager extends Service {
         _maybeAdoptLegacyRoom(key, roomId);
       case RoomEnded(:final peer, :final roomId):
         final key = toStandardB64(peer);
+        _clearHeartbeatRecoveryForRoom(key, roomId);
         // Mark the room offline but KEEP it in the cached set so the
         // tile stays in Home (now grey). Removing from _liveRoomIds
         // is enough.
@@ -706,6 +729,7 @@ class ConnectionManager extends Service {
         _persistRoomsForPeer(key);
       case RoomsSnapshot(:final peer, :final rooms):
         final key = toStandardB64(peer);
+        _clearHeartbeatRecoveryForRoom(key);
         // Merge snapshot into cache: add unknown rooms, refresh
         // metadata (preserving local rename + previous model when
         // the snapshot omits it), update live set.
@@ -1042,13 +1066,16 @@ class ConnectionManager extends Service {
     _channelSub?.cancel();
     _channelSub = ch.serverMessages.listen(
       (msg) {
-        // Real inbound — the Pi is alive and reachable. Safe to reset
-        // both the ping miss counter and the retry backoff.
-        final wasMissed = _missedPings;
-        if (wasMissed > 0) {}
-        if (_retryAttempt != 0) {}
+        if (!identical(channel, ch)) return;
+        // Only a current probe reply can undo OUR heartbeat removal of a
+        // previously live room. Arbitrary traffic retains backoff semantics
+        // but cannot grant live authority to cached/ended rooms.
         _missedPings = 0;
         _retryAttempt = 0;
+        if (msg is Pong && msg.inReplyTo == _pendingPingId) {
+          _pendingPingId = null;
+          if (_recoverHeartbeatRoom()) refreshDiscovery();
+        }
       },
       onError: (_) => _onChannelLost(peer, ch),
       onDone: () => _onChannelLost(peer, ch),
@@ -1107,14 +1134,12 @@ class ConnectionManager extends Service {
       _missedPings++;
       if (_missedPings == 3) {
         _markActiveRoomOffline();
-        // No `return` — keep firing pings. When Pi comes back, the
-        // inbound Pong (or any other frame) resets _missedPings via
-        // _watchChannel, and `room_announced` repopulates
-        // _liveRoomIds → tile + AppBar flip back to green
-        // automatically.
+        // Keep probing on this WS. A matching Pong requests authoritative
+        // discovery even if the Pi never re-announces its existing room.
       }
       try {
         final id = _newId();
+        _pendingPingId = id;
         await ch.send(Ping(id: id));
       } catch (e) {
         _cancelPing();
@@ -1132,11 +1157,53 @@ class ConnectionManager extends Service {
     final key = toStandardB64(activeEpk);
     final live = _liveRoomIds[key];
     if (live == null || !live.contains(_activeRoomId)) return;
+    final currentChannel = channel;
+    if (currentChannel == null) return;
+    _heartbeatDegradedRoom = (
+      channel: currentChannel,
+      peerKey: key,
+      roomId: _activeRoomId,
+    );
     live.remove(_activeRoomId);
     if (live.isEmpty) _liveRoomIds.remove(key);
     if (!_roomsController.isClosed) {
       _roomsController.add(_roomsSnapshot());
     }
+  }
+
+  /// The relay suppresses unchanged snapshots on the same socket. A current
+  /// Pong can restore the exact prior live fact locally, but only while the
+  /// original channel, selection, subscription and cached room still exist.
+  bool _recoverHeartbeatRoom() {
+    final degraded = _heartbeatDegradedRoom;
+    _heartbeatDegradedRoom = null;
+    final active = _activePeer;
+    if (degraded == null || active == null) return false;
+    if (!identical(channel, degraded.channel) ||
+        toStandardB64(active.remoteEpk) != degraded.peerKey ||
+        _activeRoomId != degraded.roomId ||
+        !_subscribedEpks.contains(degraded.peerKey) ||
+        !(_roomsByPeer[degraded.peerKey]?.any(
+              (room) => room.roomId == degraded.roomId,
+            ) ??
+            false)) {
+      return false;
+    }
+    (_liveRoomIds[degraded.peerKey] ??= <String>{}).add(degraded.roomId);
+    _scheduleRoomsEmit();
+    return true;
+  }
+
+  void _clearHeartbeatRecovery() {
+    _heartbeatDegradedRoom = null;
+    _pendingPingId = null;
+  }
+
+  void _clearHeartbeatRecoveryForRoom(String peerKey, [String? roomId]) {
+    final active = _activePeer;
+    if (active == null || toStandardB64(active.remoteEpk) != peerKey) return;
+    if (roomId != null && roomId != _activeRoomId) return;
+    _clearHeartbeatRecovery();
   }
 
   void _cancelRetry() {
@@ -1148,6 +1215,7 @@ class ConnectionManager extends Service {
     _pingTimer?.cancel();
     _pingTimer = null;
     _missedPings = 0;
+    _clearHeartbeatRecovery();
   }
 
   void _emit(ConnectionStatus s) {

@@ -63,6 +63,7 @@ class _RemotePiAppState extends State<RemotePiApp> with WidgetsBindingObserver {
     final meshSync = injector.get<MeshSyncService>();
     switch (state) {
       case AppLifecycleState.resumed:
+        injector.get<ConnectionManager>().refreshDiscovery();
         meshSync.startPolling();
         // ignore: unawaited_futures
         meshSync.pullOnDemand();

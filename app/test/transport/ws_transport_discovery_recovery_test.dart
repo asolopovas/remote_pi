@@ -1,0 +1,205 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:app/data/transport/peer_channel.dart';
+import 'package:app/data/transport/ws_transport.dart';
+import 'package:app/protocol/protocol.dart';
+import 'package:cryptography/cryptography.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+const _peer = 'Bz02uLiwrmQZ0S8qiwtFJAt0KzUvrgepYO/oMQ6yyQE=';
+const _urlPeer = 'Bz02uLiwrmQZ0S8qiwtFJAt0KzUvrgepYO_oMQ6yyQE';
+const _other = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+
+Map<String, dynamic> _pong(
+  Object? peer,
+  String id, {
+  String? room = 'project',
+}) => {
+  'peer': peer,
+  'room': ?room,
+  'ct': base64.encode(
+    utf8.encode(jsonEncode({'type': 'pong', 'in_reply_to': id})),
+  ),
+};
+
+class _LocalRelay {
+  final HttpServer server;
+  final authenticated = Completer<WebSocket>();
+  WebSocket? socket;
+  final outbound = StreamController<Map<String, dynamic>>.broadcast();
+
+  _LocalRelay._(this.server) {
+    server.listen((request) async {
+      final ws = await WebSocketTransformer.upgrade(request);
+      socket = ws;
+      ws.listen((raw) {
+        final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+        switch (frame['type']) {
+          case 'hello':
+            ws.add(
+              jsonEncode({
+                'type': 'challenge',
+                'nonce': base64.encode(List.filled(32, 1)),
+              }),
+            );
+          case 'auth':
+            authenticated.complete(ws);
+          default:
+            outbound.add(frame);
+        }
+      });
+    });
+  }
+
+  static Future<_LocalRelay> start() async =>
+      _LocalRelay._(await HttpServer.bind(InternetAddress.loopbackIPv4, 0));
+
+  Future<WsTransport> connect() async {
+    final transport = await WsTransport.connect(
+      relayUrl: 'ws://127.0.0.1:${server.port}',
+      peerPubkey: _urlPeer,
+      ed25519Key: await Ed25519().newKeyPair(),
+    );
+    await authenticated.future;
+    transport.setActiveRoom('project');
+    return transport;
+  }
+
+  void send(Map<String, dynamic> frame) => socket!.add(jsonEncode(frame));
+
+  // Ordered control marker proves all preceding WS frames entered transport.
+  Future<void> drain() async {
+    send({'type': 'peer_online', 'peer': _other});
+  }
+
+  Future<void> close() async {
+    await socket?.close();
+    await server.close(force: true);
+    await outbound.close();
+  }
+}
+
+void main() {
+  test(
+    'WsTransport accepts expected standard/url-safe sender and scopes outgoing probe',
+    () async {
+      final relay = await _LocalRelay.start();
+      final transport = await relay.connect();
+      final ch = PlainPeerChannel(transport: transport);
+      final messages = <ServerMessage>[];
+      final sub = ch.serverMessages.listen(messages.add);
+      try {
+        final sent = relay.outbound.stream.first;
+        await ch.send(Ping(id: 'current-probe'));
+        final envelope = await sent;
+        expect(envelope['peer'], _peer);
+        expect(envelope['room'], 'project');
+        expect(
+          jsonDecode(utf8.decode(base64.decode(envelope['ct'] as String))),
+          {'type': 'ping', 'id': 'current-probe'},
+        );
+
+        final last = ch.serverMessages.firstWhere(
+          (m) => m is Pong && m.inReplyTo == 'url',
+        );
+        relay.send(_pong(_peer, 'standard'));
+        relay.send(
+          _pong(_peer.substring(0, _peer.length - 1), 'standard-unpadded'),
+        );
+        relay.send(_pong('$_urlPeer=', 'url-padded'));
+        relay.send(_pong(_urlPeer, 'url'));
+        await last;
+        expect(messages.whereType<Pong>().map((m) => m.inReplyTo), [
+          'standard',
+          'standard-unpadded',
+          'url-padded',
+          'url',
+        ]);
+      } finally {
+        await sub.cancel();
+        await ch.close();
+        await relay.close();
+      }
+    },
+  );
+
+  test(
+    'WsTransport rejects different same-room sender, malformed identity and wrong room',
+    () async {
+      final relay = await _LocalRelay.start();
+      final ch = PlainPeerChannel(transport: await relay.connect());
+      final messages = <ServerMessage>[];
+      final sub = ch.serverMessages.listen(messages.add);
+      try {
+        final last = ch.serverMessages.firstWhere(
+          (m) => m is Pong && m.inReplyTo == 'sentinel',
+        );
+        // A different authenticated sender with the SAME room and matching probe
+        // is not the paired target. Invalid frames precede a valid FIFO sentinel.
+        relay.send(_pong(_other, 'current-probe'));
+        for (final malformed in [null, 42, '', '!not-base64!', 'eA==']) {
+          relay.send(_pong(malformed, 'current-probe'));
+        }
+        relay.send(_pong(_peer, 'current-probe', room: 'old-room'));
+        relay.send(_pong(_peer, 'current-probe'));
+        relay.send(_pong(_peer, 'sentinel'));
+        await last;
+        expect(messages.whereType<Pong>().map((m) => m.inReplyTo), [
+          'current-probe',
+          'sentinel',
+        ]);
+      } finally {
+        await sub.cancel();
+        await ch.close();
+        await relay.close();
+      }
+    },
+  );
+
+  test(
+    'WsTransport retains expected legacy sender without room and other-peer control snapshots',
+    () async {
+      final relay = await _LocalRelay.start();
+      final transport = await relay.connect();
+      final ch = PlainPeerChannel(transport: transport);
+      final message = ch.serverMessages.first;
+      final control = ch.controlFrames.first;
+      try {
+        relay.send(_pong(_urlPeer, 'legacy', room: null));
+        relay.send({'type': 'rooms', 'peer': _other, 'rooms': []});
+        expect((await message as Pong).inReplyTo, 'legacy');
+        expect((await control as RoomsSnapshot).peer, _other);
+      } finally {
+        await ch.close();
+        await relay.close();
+      }
+    },
+  );
+
+  test(
+    'WsTransport cannot misattribute queued old-room payload after selection changes',
+    () async {
+      final relay = await _LocalRelay.start();
+      final transport = await relay.connect();
+      try {
+        final drained = transport.controlFrames.first;
+        relay.send(_pong(_peer, 'old-probe'));
+        // A missing-room legacy payload is scoped to its receipt epoch too.
+        relay.send(_pong(_peer, 'old-legacy', room: null));
+        await relay.drain();
+        await drained;
+        transport.setActiveRoom('new-room');
+        final received = transport.receive();
+        relay.send(_pong(_peer, 'new-probe', room: 'new-room'));
+        final frame =
+            jsonDecode(utf8.decode(await received)) as Map<String, dynamic>;
+        expect(frame['in_reply_to'], 'new-probe');
+      } finally {
+        await transport.close();
+        await relay.close();
+      }
+    },
+  );
+}

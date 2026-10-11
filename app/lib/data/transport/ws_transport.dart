@@ -16,6 +16,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:app/data/transport/channel.dart';
+import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/data/transport/relay_config.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:cryptography/cryptography.dart';
@@ -36,8 +37,7 @@ class WsTransportError implements Exception {
 class WsTransport implements PeerTransport, IControlLink {
   final WebSocketChannel _ws;
   final _queue = _MsgQueue();
-  final _controlController =
-      StreamController<ControlInbound>.broadcast();
+  final _controlController = StreamController<ControlInbound>.broadcast();
 
   WsTransport._(this._ws);
 
@@ -60,7 +60,9 @@ class WsTransport implements PeerTransport, IControlLink {
       Uri.parse(toWsRelayUrl(relayUrl)),
       pingInterval: const Duration(seconds: 20),
     );
-    final transport = WsTransport._(ws);
+    // Scope ingress before auth can release any queued envelope frames.
+    final transport = WsTransport._(ws)
+      .._peerPubkey = toStandardB64(peerPubkey);
 
     final challengeCompleter = Completer<Map<String, dynamic>>();
     bool authDone = false;
@@ -90,6 +92,14 @@ class WsTransport implements PeerTransport, IControlLink {
           final frame = jsonDecode(raw as String) as Map<String, dynamic>;
           // Envelope: {peer, room?, ct} → enqueue payload bytes.
           if (frame.containsKey('peer') && frame.containsKey('ct')) {
+            // Relay rewrites `peer` from the authenticated sender. This inner
+            // channel belongs to ONE paired target, unlike discovery controls.
+            if (!transport._isExpectedSender(frame['peer'])) {
+              debugPrint(
+                '[ws-in] bytes=${rawStr.length} DROPPED (peer-mismatch)',
+              );
+              return;
+            }
             final bytes = _b64Decode(frame['ct'] as String);
             final senderRoom = frame['room'] as String?;
             // Plan-18 follow-up — DEMUX inbound by sender room.
@@ -109,7 +119,10 @@ class WsTransport implements PeerTransport, IControlLink {
               '[ws-in] bytes=${rawStr.length} kind=envelope '
               'ct.bytes=${bytes.length}',
             );
-            transport._queue.add(bytes);
+            transport._queue.add((
+              bytes: bytes,
+              roomEpoch: transport._roomEpoch,
+            ));
             return;
           }
           // Control: top-level `type` only → presence stream.
@@ -131,12 +144,16 @@ class WsTransport implements PeerTransport, IControlLink {
         }
       },
       onError: (e) {
-        if (!challengeCompleter.isCompleted) challengeCompleter.completeError(e);
+        if (!challengeCompleter.isCompleted) {
+          challengeCompleter.completeError(e);
+        }
         transport._queue.error(e);
       },
       onDone: () {
         if (!challengeCompleter.isCompleted) {
-          challengeCompleter.completeError(const WsTransportError('WS closed during auth'));
+          challengeCompleter.completeError(
+            const WsTransportError('WS closed during auth'),
+          );
         }
         transport._queue.close();
         if (!transport._controlController.isClosed) {
@@ -151,11 +168,13 @@ class WsTransport implements PeerTransport, IControlLink {
       // on the canonical 'main' room. Pi-side hellos include their own
       // room_id (one per cwd) AND room_meta; that's not our concern here.
       final pub = await ed25519Key.extractPublicKey();
-      ws.sink.add(jsonEncode({
-        'type': 'hello',
-        'pubkey': base64.encode(pub.bytes),
-        'room_id': 'main',
-      }));
+      ws.sink.add(
+        jsonEncode({
+          'type': 'hello',
+          'pubkey': base64.encode(pub.bytes),
+          'room_id': 'main',
+        }),
+      );
 
       // 2. Challenge
       final ch = await challengeCompleter.future;
@@ -166,13 +185,11 @@ class WsTransport implements PeerTransport, IControlLink {
 
       // 3. Auth
       final sig = await Ed25519().sign(nonce, keyPair: ed25519Key);
-      ws.sink.add(jsonEncode({
-        'type': 'auth',
-        'sig': base64.encode(sig.bytes),
-      }));
+      ws.sink.add(
+        jsonEncode({'type': 'auth', 'sig': base64.encode(sig.bytes)}),
+      );
       authDone = true;
 
-      transport._peerPubkey = _normalizeToStandard(peerPubkey);
       transport._sub = sub;
       return transport;
     } catch (e) {
@@ -190,6 +207,7 @@ class WsTransport implements PeerTransport, IControlLink {
   /// embeds this so the Pi can route the inner message to the right
   /// per-cwd session.
   String _activeRoom = 'main';
+  int _roomEpoch = 0;
 
   /// Override the destination room (Pi side). The app remains on the
   /// 'main' room itself (that's what we sent in `hello.room_id`).
@@ -198,19 +216,39 @@ class WsTransport implements PeerTransport, IControlLink {
       return;
     }
     _activeRoom = room;
+    _roomEpoch++;
+  }
+
+  bool _isExpectedSender(Object? sender) {
+    if (sender is! String) return false;
+    try {
+      final standard = toStandardB64(sender);
+      return base64.decode(standard).length == 32 && standard == _peerPubkey;
+    } on FormatException {
+      return false;
+    }
   }
 
   @override
   Future<void> send(Uint8List data) async {
-    _ws.sink.add(jsonEncode({
-      'peer': _peerPubkey,
-      'room': _activeRoom,
-      'ct': base64.encode(data),
-    }));
+    _ws.sink.add(
+      jsonEncode({
+        'peer': _peerPubkey,
+        'room': _activeRoom,
+        'ct': base64.encode(data),
+      }),
+    );
   }
 
   @override
-  Future<Uint8List> receive() => _queue.next();
+  Future<Uint8List> receive() async {
+    while (true) {
+      final payload = await _queue.next();
+      // Includes legacy payloads without sender room: they belong to the
+      // selection at ingress, not a later room that drains the same queue.
+      if (payload.roomEpoch == _roomEpoch) return payload.bytes;
+    }
+  }
 
   // ---- IControlLink --------------------------------------------------------
 
@@ -235,12 +273,14 @@ class WsTransport implements PeerTransport, IControlLink {
 
 // ---------------------------------------------------------------------------
 
+typedef _QueuedPayload = ({Uint8List bytes, int roomEpoch});
+
 class _MsgQueue {
-  final _buf = <Uint8List>[];
-  final _waiters = <Completer<Uint8List>>[];
+  final _buf = <_QueuedPayload>[];
+  final _waiters = <Completer<_QueuedPayload>>[];
   bool _closed = false;
 
-  void add(Uint8List msg) {
+  void add(_QueuedPayload msg) {
     if (_waiters.isNotEmpty) {
       _waiters.removeAt(0).complete(msg);
     } else if (!_closed) {
@@ -264,10 +304,12 @@ class _MsgQueue {
     _closed = true;
   }
 
-  Future<Uint8List> next() {
-    if (_closed) return Future.error(const WsTransportError('transport closed'));
+  Future<_QueuedPayload> next() {
+    if (_closed) {
+      return Future.error(const WsTransportError('transport closed'));
+    }
     if (_buf.isNotEmpty) return Future.value(_buf.removeAt(0));
-    final c = Completer<Uint8List>();
+    final c = Completer<_QueuedPayload>();
     _waiters.add(c);
     return c.future;
   }
@@ -281,17 +323,5 @@ Uint8List _b64Decode(String s) {
     return base64.decode(padded);
   } on FormatException {
     return base64Url.decode(padded);
-  }
-}
-
-// Relay registry uses standard base64 (from each peer's hello). QR/storage
-// may carry url-safe encoding — re-encode to standard so the relay matches.
-String _normalizeToStandard(String pubkey) {
-  try {
-    final pad = (4 - pubkey.length % 4) % 4;
-    final bytes = base64Url.decode(pubkey + '=' * pad);
-    return base64.encode(bytes);
-  } catch (_) {
-    return pubkey;
   }
 }
