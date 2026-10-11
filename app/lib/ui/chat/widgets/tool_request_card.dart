@@ -1,5 +1,6 @@
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
+import 'package:app/ui/chat/widgets/code_viewport.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
@@ -22,8 +23,6 @@ class ToolRequestCard extends StatelessWidget {
 
   const ToolRequestCard({super.key, required this.tool, this.onDecide});
 
-  /// Plan/32 — one color drives the whole card so the outcome is unmistakable:
-  /// running → blue, done → green, failed → red, denied/expired → grey.
   Color _statusColor(BuildContext context) {
     final colors = context.colors;
     return switch (tool.status) {
@@ -46,35 +45,32 @@ class ToolRequestCard extends StatelessWidget {
     return Opacity(
       opacity: dimmed ? 0.65 : 1.0,
       child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 6),
         decoration: BoxDecoration(
-          color: context.colors.surface,
-          border: Border.all(color: color, width: 1),
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-            BoxShadow(
-              color: color.withValues(alpha: 0.13),
-              blurRadius: 20,
-              spreadRadius: 1,
-            ),
-          ],
+          color: context.colors.codeBg,
+          border: Border.all(color: context.colors.border),
+          borderRadius: BorderRadius.circular(8),
         ),
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            _buildHeader(context, color),
-            const SizedBox(height: 10),
-            _buildCodeBlock(context),
-            const SizedBox(height: 8),
-            _buildOutcome(color),
+            _buildCodeBlock(context, color),
+            if (tool.error?.isNotEmpty ?? false) ...[
+              const SizedBox(height: 8),
+              Text(
+                '✗ ${tool.error}',
+                style: context.typo.mono.copyWith(color: color),
+              ),
+            ],
           ],
         ),
       ),
     );
   }
 
-  Widget _buildHeader(BuildContext context, Color color) {
+  Widget _buildHeader(BuildContext context, Color color, Widget controls) {
     final statusLabel = switch (tool.status) {
       ToolEventStatus.pending || ToolEventStatus.allowed => 'RUNNING',
       ToolEventStatus.completed => 'DONE',
@@ -85,21 +81,19 @@ class ToolRequestCard extends StatelessWidget {
 
     return Row(
       children: [
-        CustomPaint(
-          size: const Size(14, 14),
-          painter: _TerminalIconPainter(color: color),
-        ),
-        const SizedBox(width: 8),
-        Text(
-          tool.tool.toUpperCase(),
-          style: TextStyle(
-            fontFamily: kMonoFamily,
-            fontSize: 11.5,
-            color: color,
-            letterSpacing: 0.6,
+        Expanded(
+          child: Text(
+            tool.tool.toUpperCase(),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: context.typo.monoSmall.copyWith(
+              color: context.colors.muted2,
+              fontSize: 10,
+            ),
           ),
         ),
-        const Spacer(),
+        controls,
+        const SizedBox(width: 8),
         Text(
           statusLabel,
           style: TextStyle(
@@ -113,24 +107,19 @@ class ToolRequestCard extends StatelessWidget {
     );
   }
 
-  Widget _buildCodeBlock(BuildContext context) {
-    final colors = context.colors;
-    final typo = context.typo;
-    final content = _buildToolSummary(context);
-    return Container(
-      decoration: BoxDecoration(
-        color: colors.codeBg,
-        border: Border.all(color: colors.border),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(r'$ ', style: typo.mono.copyWith(color: colors.muted)),
-          Expanded(child: content),
-        ],
-      ),
+  Widget _buildCodeBlock(BuildContext context, Color color) {
+    final display = _formatToolDisplay(tool.tool, tool.args);
+    final text = display == null
+        ? _formatArgs(tool.tool, tool.args)
+        : [
+            display.command,
+            ...display.lines.map((line) => line.text),
+          ].join('\n');
+    return CodeViewport(
+      headerBuilder: (context, controls) =>
+          _buildHeader(context, color, controls),
+      text: text,
+      child: _buildToolSummary(context),
     );
   }
 
@@ -156,20 +145,6 @@ class ToolRequestCard extends StatelessWidget {
           ],
         ],
       ),
-    );
-  }
-
-  Widget _buildOutcome(Color color) {
-    final text = switch (tool.status) {
-      ToolEventStatus.pending || ToolEventStatus.allowed => '⏳ Running…',
-      ToolEventStatus.completed => '✓ Done',
-      ToolEventStatus.failed => '✗ ${tool.error ?? "Failed"}',
-      ToolEventStatus.denied => '✗ ${tool.error ?? "Denied"}',
-      ToolEventStatus.expired => '✗ Expired',
-    };
-    return Text(
-      text,
-      style: TextStyle(fontFamily: kMonoFamily, fontSize: 12, color: color),
     );
   }
 
@@ -265,40 +240,4 @@ class _DiffLine {
 
   factory _DiffLine.context(String text) =>
       _DiffLine._(text, (colors) => colors.text);
-}
-
-// Minimal terminal icon (rectangle + > and —)
-class _TerminalIconPainter extends CustomPainter {
-  final Color color;
-  const _TerminalIconPainter({required this.color});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2
-      ..strokeCap = StrokeCap.round;
-
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(0.5, 1, size.width - 1, size.height - 2),
-        const Radius.circular(1.6),
-      ),
-      paint,
-    );
-    final path = Path()
-      ..moveTo(3, 4.5)
-      ..lineTo(5.5, 7)
-      ..lineTo(3, 9.5);
-    canvas.drawPath(path, paint);
-    canvas.drawLine(
-      Offset(6.5, size.height / 2),
-      Offset(size.width - 2, size.height / 2),
-      paint,
-    );
-  }
-
-  @override
-  bool shouldRepaint(_TerminalIconPainter old) => old.color != color;
 }

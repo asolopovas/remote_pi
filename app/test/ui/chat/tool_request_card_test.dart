@@ -84,7 +84,7 @@ void main() {
       );
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: done)));
       expect(find.text('DONE'), findsOneWidget);
-      expect(find.textContaining('Done'), findsAny);
+      expect(find.text('✓ Done'), findsNothing);
     });
 
     testWidgets('denied state shows DENIED label', (tester) async {
@@ -115,13 +115,12 @@ void main() {
       expect(find.text('Allow'), findsNothing);
     });
 
-    // Plan/32 — the card is colored by status: running blue, done green,
-    // failed red. We assert the outcome line's color (the same _statusColor
-    // drives the border / icon / tool name).
     Color? outcomeColor(WidgetTester tester, String text) =>
         tester.widget<Text>(find.text(text)).style?.color;
 
-    testWidgets('completed → green "✓ Done"', (tester) async {
+    testWidgets('completed → green header without duplicate footer', (
+      tester,
+    ) async {
       const done = ToolEvent(
         id: 'tc1',
         toolCallId: 'tc1',
@@ -130,7 +129,8 @@ void main() {
         status: ToolEventStatus.completed,
       );
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: done)));
-      expect(outcomeColor(tester, '✓ Done'), AppColors.dark.success);
+      expect(outcomeColor(tester, 'DONE'), AppColors.dark.success);
+      expect(find.text('✓ Done'), findsNothing);
     });
 
     testWidgets('failed → red "✗ {error}" + FAILED label', (tester) async {
@@ -150,10 +150,12 @@ void main() {
       );
     });
 
-    testWidgets('running → blue "⏳ Running…"', (tester) async {
-      // pending defaults
+    testWidgets('running → blue header without duplicate footer', (
+      tester,
+    ) async {
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
-      expect(outcomeColor(tester, '⏳ Running…'), AppColors.dark.accent);
+      expect(outcomeColor(tester, 'RUNNING'), AppColors.dark.accent);
+      expect(find.text('⏳ Running…'), findsNothing);
     });
   });
 }

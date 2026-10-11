@@ -13,6 +13,7 @@ import 'package:app/ui/chat/widgets/attach_sheet.dart';
 import 'package:app/ui/chat/widgets/input_bar.dart';
 import 'package:app/ui/chat/widgets/message_bubble.dart';
 import 'package:app/ui/chat/widgets/streaming_bubble.dart';
+import 'package:app/ui/chat/widgets/subagent_panel.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:app/ui/chat/widgets/extension_ui_sheet.dart';
 import 'package:app_settings/app_settings.dart';
@@ -143,7 +144,7 @@ class ChatPage extends StatelessWidget {
     final peerLabel = _peerDisplayName(peer, initialDevice);
 
     return Container(
-      height: 56,
+      height: 48,
       padding: const EdgeInsets.symmetric(horizontal: 4),
       decoration: BoxDecoration(
         color: colors.bg,
@@ -366,7 +367,8 @@ class ChatPage extends StatelessWidget {
       s.length <= max ? s : '${s.substring(0, max - 1)}…';
 
   Widget _buildBody(BuildContext context, ChatState state, ChatViewModel vm) {
-    final hideToolCalls = context.watch<Preferences>().hideToolCalls;
+    final prefs = context.watch<Preferences>();
+    final hideToolCalls = prefs.hideToolCalls;
     return switch (state) {
       // Edge case: opened /chat without a peer (e.g. peer revoked while
       // user was here). The chat is not the place to pair — render
@@ -399,13 +401,65 @@ class ChatPage extends StatelessWidget {
             message: 'Nothing here',
           );
         }
-        return _MessageList(
-          messages: visible,
+        final subagents = <SubagentInvocation>[];
+        final mainMessages = <ChatMessage>[];
+        for (final message in visible) {
+          final invocation = message is ToolEvent
+              ? SubagentInvocation.fromTool(message)
+              : null;
+          if (invocation == null) {
+            mainMessages.add(message);
+          } else {
+            subagents.add(invocation);
+          }
+        }
+        final mainThread = _MessageList(
+          messages: mainMessages,
           streaming: streaming,
           onDecide: (id, decision) => vm.approveTool(id, decision),
         );
+        return Column(
+          children: [
+            if (subagents.isNotEmpty)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: TextButton.icon(
+                    onPressed: () => _openSubagents(context, vm),
+                    icon: const Icon(LucideIcons.chevronDown, size: 12),
+                    label: Text('Subagents · ${subagents.length}'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: context.colors.muted2,
+                      textStyle: context.typo.monoSmall.copyWith(fontSize: 10),
+                      minimumSize: const Size(0, 30),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                    ),
+                  ),
+                ),
+              ),
+            Expanded(child: mainThread),
+          ],
+        );
       }(),
     };
+  }
+
+  static Future<void> _openSubagents(BuildContext context, ChatViewModel vm) {
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: context.colors.surface,
+      builder: (context) => ChangeNotifierProvider<ChatViewModel>.value(
+        value: vm,
+        child: SizedBox(
+          height: MediaQuery.sizeOf(context).height * 0.8,
+          child: const SafeArea(top: false, child: _SubagentSheet()),
+        ),
+      ),
+    );
   }
 
   Widget _buildInput(BuildContext context, ChatState state, ChatViewModel vm) {
@@ -563,7 +617,7 @@ class ChatPage extends StatelessWidget {
 
 // ---------------------------------------------------------------------------
 
-class _MessageList extends StatelessWidget {
+class _MessageList extends StatefulWidget {
   final List<ChatMessage> messages;
   final StreamingMessage? streaming;
   final void Function(String, ApproveDecision) onDecide;
@@ -575,43 +629,119 @@ class _MessageList extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
-    final itemCount = messages.length + (streaming != null ? 1 : 0);
+  State<_MessageList> createState() => _MessageListState();
+}
 
-    // `reverse: true` anchors the viewport to the bottom (offset 0 = newest)
-    // and keeps it there as content arrives — no manual scroll-to-bottom is
-    // needed. The previous animateTo-on-every-rebuild fought this and caused
-    // overlapping animations (flicker / runaway scroll) during streaming.
-    return ListView.separated(
-      reverse: true,
-      padding: const EdgeInsets.fromLTRB(16, 18, 16, 12),
-      itemCount: itemCount,
-      separatorBuilder: (context, idx) => const SizedBox(height: 14),
-      itemBuilder: (_, i) {
-        // Index 0 = bottom = newest. Stable keys are REQUIRED here: when the
-        // streaming bubble appears/disappears at index 0 every other item's
-        // index shifts by 1, and without keys Flutter re-matches elements by
-        // position — briefly painting the wrong message at a slot (the
-        // momentary C/B/A → B/C/A reorder). Keying by message id makes it
-        // match by identity instead.
-        if (streaming != null && i == 0) {
-          return KeyedSubtree(
-            key: const ValueKey('streaming'),
-            child: StreamingBubble(streaming!),
-          );
-        }
-        final msgIdx = messages.length - 1 - (i - (streaming != null ? 1 : 0));
-        final msg = messages[msgIdx];
-        return KeyedSubtree(
-          key: ValueKey(msg.id),
-          child: switch (msg) {
-            UserMsg() => UserBubble(msg),
-            AssistantMsg() => AssistantBubble(msg),
-            ToolEvent() => ToolRequestCard(tool: msg, onDecide: onDecide),
-            CompactionMsg() => CompactionBubble(msg),
+class _MessageListState extends State<_MessageList> {
+  final _scroll = ScrollController();
+  bool _awayFromBottom = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_onScroll);
+  }
+
+  void _onScroll() {
+    final away = _scroll.hasClients && _scroll.offset > 120;
+    if (away != _awayFromBottom) setState(() => _awayFromBottom = away);
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final messages = widget.messages;
+    final streaming = widget.streaming;
+    final offset = streaming == null ? 0 : 1;
+    final indices = {
+      for (var i = 0; i < messages.length; i++)
+        messages[i].id: messages.length - 1 - i + offset,
+    };
+    return Stack(
+      children: [
+        ListView.separated(
+          controller: _scroll,
+          reverse: true,
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+          itemCount: messages.length + offset,
+          separatorBuilder: (context, idx) => const SizedBox(height: 8),
+          findItemIndexCallback: (key) {
+            if (key is! ValueKey<String>) return null;
+            if (key.value == 'streaming' && streaming != null) return 0;
+            return indices[key.value];
           },
-        );
-      },
+          itemBuilder: (_, i) {
+            if (streaming != null && i == 0) {
+              return KeyedSubtree(
+                key: const ValueKey('streaming'),
+                child: StreamingBubble(streaming),
+              );
+            }
+            final msg = messages[messages.length - 1 - (i - offset)];
+            return KeyedSubtree(
+              key: ValueKey(msg.id),
+              child: switch (msg) {
+                UserMsg() => UserBubble(msg),
+                AssistantMsg() => AssistantBubble(msg),
+                ToolEvent() => ToolRequestCard(
+                  tool: msg,
+                  onDecide: widget.onDecide,
+                ),
+                CompactionMsg() => CompactionBubble(msg),
+              },
+            );
+          },
+        ),
+        if (_awayFromBottom)
+          Positioned(
+            bottom: 8,
+            right: 16,
+            child: FilledButton.icon(
+              onPressed: () => _scroll.animateTo(
+                0,
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOut,
+              ),
+              icon: const Icon(LucideIcons.arrowDown, size: 14),
+              label: const Text('Latest'),
+              style: FilledButton.styleFrom(
+                textStyle: context.typo.monoSmall.copyWith(fontSize: 10),
+                minimumSize: const Size(0, 30),
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _SubagentSheet extends StatelessWidget {
+  const _SubagentSheet();
+
+  @override
+  Widget build(BuildContext context) {
+    final prefs = context.watch<Preferences>();
+    final state = context.watch<ChatViewModel>().state;
+    final invocations = <SubagentInvocation>[];
+    if (state is ChatReady && !prefs.hideToolCalls) {
+      for (final message in state.messages) {
+        if (message is! ToolEvent) continue;
+        final invocation = SubagentInvocation.fromTool(message);
+        if (invocation != null) invocations.add(invocation);
+      }
+    }
+    return SubagentPanel(
+      invocations: invocations,
+      collapsed: prefs.collapseSubagents,
+      onCollapsedChanged: prefs.setCollapseSubagents,
+      onClose: () => Navigator.of(context).pop(),
     );
   }
 }

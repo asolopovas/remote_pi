@@ -341,6 +341,23 @@ class _DisplaySection extends StatelessWidget {
           value: prefs.hideToolCalls,
           onChanged: (v) => prefs.setHideToolCalls(v),
         ),
+        SwitchListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 18),
+          activeThumbColor: colors.accent,
+          title: Text(
+            'Collapse subagents',
+            style: context.typo.sansBody.copyWith(color: colors.text),
+          ),
+          subtitle: Text(
+            'Start with compact task headers in the Subagents view.',
+            style: context.typo.sansBody.copyWith(
+              color: colors.muted,
+              fontSize: 12,
+            ),
+          ),
+          value: prefs.collapseSubagents,
+          onChanged: (v) => prefs.setCollapseSubagents(v),
+        ),
         const SizedBox(height: 8),
       ],
     );
