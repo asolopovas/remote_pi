@@ -14,15 +14,17 @@ import 'package:app/ui/chat/widgets/input_bar.dart';
 import 'package:app/ui/chat/widgets/message_bubble.dart';
 import 'package:app/ui/chat/widgets/streaming_bubble.dart';
 import 'package:app/ui/chat/widgets/subagent_panel.dart';
+import 'package:app/ui/chat/widgets/accordion_viewport.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:app/ui/chat/widgets/extension_ui_sheet.dart';
+import 'package:app/ui/home/widgets/session_tile.dart' show sessionProjectName;
 import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 
-class ChatPage extends StatelessWidget {
+class ChatPage extends StatefulWidget {
   /// Plan/24-fix-title: optional title hint passed via `go_router`
   /// `extra` from the Home tile. Used as the peer-label fallback in
   /// the AppBar so the user sees the right name *immediately* on
@@ -58,9 +60,26 @@ class ChatPage extends StatelessWidget {
   });
 
   @override
+  State<ChatPage> createState() => _ChatPageState();
+}
+
+class _ChatPageState extends State<ChatPage> {
+  bool _subagents = false;
+  Object? _session;
+  String? get initialTitle => widget.initialTitle;
+  String? get initialDevice => widget.initialDevice;
+  bool get initialOnline => widget.initialOnline;
+  bool get showBack => widget.showBack;
+
+  @override
   Widget build(BuildContext context) {
     final vm = context.watch<ChatViewModel>();
     final state = vm.state;
+    final session = (vm.activePeer?.remoteEpk, vm.activePeer?.roomId);
+    if (_session != session) {
+      _session = session;
+      _subagents = false;
+    }
 
     final scaffold = Scaffold(
       backgroundColor: context.colors.bg,
@@ -68,6 +87,51 @@ class ChatPage extends StatelessWidget {
         child: Column(
           children: [
             _buildTopBar(context, state),
+            Row(
+              children: [
+                for (final tab in ['Main', 'Sub-agents'])
+                  Expanded(
+                    child: Builder(
+                      builder: (context) {
+                        final selected = _subagents == (tab == 'Sub-agents');
+                        final colors = context.colors;
+                        return Semantics(
+                          key: ValueKey('session-tab-$tab'),
+                          selected: selected,
+                          child: TextButton(
+                            style: TextButton.styleFrom(
+                              minimumSize: const Size.fromHeight(48),
+                              foregroundColor: selected
+                                  ? colors.accent
+                                  : colors.muted,
+                              backgroundColor: selected
+                                  ? colors.surface
+                                  : colors.bg,
+                              shape: const RoundedRectangleBorder(
+                                borderRadius: BorderRadius.zero,
+                              ),
+                            ),
+                            onPressed: () => setState(
+                              () => _subagents = tab == 'Sub-agents',
+                            ),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(tab),
+                                const SizedBox(height: 3),
+                                Container(
+                                  height: 2,
+                                  color: selected ? colors.accent : colors.bg,
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+              ],
+            ),
             // Pairing revocation is the only banner kept — it's a hard
             // failure (can't proceed without re-pairing), red, with an
             // explicit action. Plain offline / Pi-gone / presence-off
@@ -76,7 +140,7 @@ class ChatPage extends StatelessWidget {
             if (state is ChatReady && state.pairingRevoked)
               _RevokedBanner(onRePair: () => context.go('/pair')),
             Expanded(child: _buildBody(context, state, vm)),
-            _buildInput(context, state, vm),
+            if (!_subagents) _buildInput(context, state, vm),
           ],
         ),
       ),
@@ -144,8 +208,8 @@ class ChatPage extends StatelessWidget {
     final peerLabel = _peerDisplayName(peer, initialDevice);
 
     return Container(
-      height: 48,
-      padding: const EdgeInsets.symmetric(horizontal: 4),
+      constraints: const BoxConstraints(minHeight: 48),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
       decoration: BoxDecoration(
         color: colors.bg,
         border: Border(bottom: BorderSide(color: colors.border)),
@@ -163,6 +227,7 @@ class ChatPage extends StatelessWidget {
             const SizedBox(width: 16),
           Expanded(
             child: Column(
+              mainAxisSize: MainAxisSize.min,
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -330,12 +395,9 @@ class ChatPage extends StatelessWidget {
     String? initialTitle,
   ) {
     if (room != null) {
+      final projectName = sessionProjectName(room.cwd);
+      if (projectName != null) return projectName;
       if (room.name != null && room.name!.isNotEmpty) return room.name!;
-      final cwd = room.cwd;
-      if (cwd != null && cwd.isNotEmpty) {
-        final segs = cwd.split('/').where((s) => s.isNotEmpty).toList();
-        if (segs.isNotEmpty) return segs.last;
-      }
     }
     if (state is ChatReady && state.messages.isNotEmpty) {
       return _inferSessionName(state.messages);
@@ -392,15 +454,6 @@ class ChatPage extends StatelessWidget {
         final visible = hideToolCalls
             ? messages.where((m) => m is! ToolEvent).toList()
             : messages;
-        // Empty body → the default placeholder (Pi brand icon + "Nothing
-        // here"), shown whenever there's nothing to render — including while
-        // reconnecting (the reconnect handshake never swaps the body).
-        if (visible.isEmpty && streaming == null) {
-          return const _EmptyState(
-            icon: LucideIcons.terminal,
-            message: 'Nothing here',
-          );
-        }
         final subagents = <SubagentInvocation>[];
         final mainMessages = <ChatMessage>[];
         for (final message in visible) {
@@ -414,52 +467,30 @@ class ChatPage extends StatelessWidget {
           }
         }
         final mainThread = _MessageList(
+          key: ValueKey((vm.activePeer?.remoteEpk, vm.activePeer?.roomId)),
           messages: mainMessages,
           streaming: streaming,
           onDecide: (id, decision) => vm.approveTool(id, decision),
         );
-        return Column(
+        return IndexedStack(
+          key: ValueKey((vm.activePeer?.remoteEpk, vm.activePeer?.roomId)),
+          index: _subagents ? 1 : 0,
           children: [
-            if (subagents.isNotEmpty)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: TextButton.icon(
-                    onPressed: () => _openSubagents(context, vm),
-                    icon: const Icon(LucideIcons.chevronDown, size: 12),
-                    label: Text('Subagents · ${subagents.length}'),
-                    style: TextButton.styleFrom(
-                      foregroundColor: context.colors.muted2,
-                      textStyle: context.typo.monoSmall.copyWith(fontSize: 10),
-                      minimumSize: const Size(0, 30),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                    ),
-                  ),
-                ),
-              ),
-            Expanded(child: mainThread),
+            mainMessages.isEmpty && streaming == null
+                ? const _EmptyState(
+                    icon: LucideIcons.terminal,
+                    message: 'No messages available',
+                  )
+                : mainThread,
+            SubagentPanel(
+              invocations: subagents,
+              collapsed: prefs.collapseSubagents,
+              onCollapsedChanged: prefs.setCollapseSubagents,
+            ),
           ],
         );
       }(),
     };
-  }
-
-  static Future<void> _openSubagents(BuildContext context, ChatViewModel vm) {
-    return showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      backgroundColor: context.colors.surface,
-      builder: (context) => ChangeNotifierProvider<ChatViewModel>.value(
-        value: vm,
-        child: SizedBox(
-          height: MediaQuery.sizeOf(context).height * 0.8,
-          child: const SafeArea(top: false, child: _SubagentSheet()),
-        ),
-      ),
-    );
   }
 
   Widget _buildInput(BuildContext context, ChatState state, ChatViewModel vm) {
@@ -623,6 +654,7 @@ class _MessageList extends StatefulWidget {
   final void Function(String, ApproveDecision) onDecide;
 
   const _MessageList({
+    super.key,
     required this.messages,
     required this.streaming,
     required this.onDecide,
@@ -657,91 +689,85 @@ class _MessageListState extends State<_MessageList> {
   Widget build(BuildContext context) {
     final messages = widget.messages;
     final streaming = widget.streaming;
-    final offset = streaming == null ? 0 : 1;
-    final indices = {
-      for (var i = 0; i < messages.length; i++)
-        messages[i].id: messages.length - 1 - i + offset,
+    final offset = streaming == null ? 1 : 2;
+    // IDs are scoped to a message role: user and assistant share a request
+    // ID, and history can contain multiple assistant segments for that ID.
+    // Keep every row distinct so sliver remapping never aliases two children.
+    final occurrences = <(Type, String), int>{};
+    final keys = <Key>[];
+    for (final message in messages) {
+      final identity = (message.runtimeType, message.id);
+      final occurrence = occurrences[identity] ?? 0;
+      occurrences[identity] = occurrence + 1;
+      keys.add(ValueKey((message.runtimeType, message.id, occurrence)));
+    }
+    final streamingKey = streaming == null
+        ? null
+        : ValueKey((StreamingMessage, streaming.inReplyTo, 0));
+    final indices = <Key, int>{
+      for (var i = 0; i < keys.length; i++)
+        keys[i]: messages.length - 1 - i + offset,
     };
-    return Stack(
-      children: [
-        ListView.separated(
-          controller: _scroll,
-          reverse: true,
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-          itemCount: messages.length + offset,
-          separatorBuilder: (context, idx) => const SizedBox(height: 8),
-          findItemIndexCallback: (key) {
-            if (key is! ValueKey<String>) return null;
-            if (key.value == 'streaming' && streaming != null) return 0;
-            return indices[key.value];
-          },
-          itemBuilder: (_, i) {
-            if (streaming != null && i == 0) {
+    if (streamingKey != null) indices[streamingKey] = 1;
+    return AccordionViewport(
+      controller: _scroll,
+      reverse: true,
+      child: Stack(
+        children: [
+          ListView.separated(
+            controller: _scroll,
+            reverse: true,
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+            itemCount: messages.length + offset,
+            separatorBuilder: (context, idx) => const SizedBox(height: 8),
+            // This callback takes item indices; ListView handles separators.
+            findItemIndexCallback: (key) => indices[key],
+            itemBuilder: (_, i) {
+              if (i == 0) return const AccordionEdgeSpace();
+              if (streaming != null && i == 1) {
+                return KeyedSubtree(
+                  key: streamingKey,
+                  child: StreamingBubble(streaming),
+                );
+              }
+              final messageIndex = messages.length - 1 - (i - offset);
+              final msg = messages[messageIndex];
               return KeyedSubtree(
-                key: const ValueKey('streaming'),
-                child: StreamingBubble(streaming),
+                key: keys[messageIndex],
+                child: switch (msg) {
+                  UserMsg() => UserBubble(msg),
+                  AssistantMsg() => AssistantBubble(msg),
+                  ToolEvent() => ToolRequestCard(
+                    tool: msg,
+                    onDecide: widget.onDecide,
+                  ),
+                  CompactionMsg() => CompactionBubble(msg),
+                },
               );
-            }
-            final msg = messages[messages.length - 1 - (i - offset)];
-            return KeyedSubtree(
-              key: ValueKey(msg.id),
-              child: switch (msg) {
-                UserMsg() => UserBubble(msg),
-                AssistantMsg() => AssistantBubble(msg),
-                ToolEvent() => ToolRequestCard(
-                  tool: msg,
-                  onDecide: widget.onDecide,
+            },
+          ),
+          if (_awayFromBottom)
+            Positioned(
+              bottom: 8,
+              right: 16,
+              child: FilledButton.icon(
+                onPressed: () => _scroll.animateTo(
+                  0,
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOut,
                 ),
-                CompactionMsg() => CompactionBubble(msg),
-              },
-            );
-          },
-        ),
-        if (_awayFromBottom)
-          Positioned(
-            bottom: 8,
-            right: 16,
-            child: FilledButton.icon(
-              onPressed: () => _scroll.animateTo(
-                0,
-                duration: const Duration(milliseconds: 200),
-                curve: Curves.easeOut,
-              ),
-              icon: const Icon(LucideIcons.arrowDown, size: 14),
-              label: const Text('Latest'),
-              style: FilledButton.styleFrom(
-                textStyle: context.typo.monoSmall.copyWith(fontSize: 10),
-                minimumSize: const Size(0, 30),
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.symmetric(horizontal: 10),
+                icon: const Icon(LucideIcons.arrowDown, size: 14),
+                label: const Text('Latest'),
+                style: FilledButton.styleFrom(
+                  textStyle: context.typo.monoSmall.copyWith(fontSize: 10),
+                  minimumSize: const Size(0, 30),
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                ),
               ),
             ),
-          ),
-      ],
-    );
-  }
-}
-
-class _SubagentSheet extends StatelessWidget {
-  const _SubagentSheet();
-
-  @override
-  Widget build(BuildContext context) {
-    final prefs = context.watch<Preferences>();
-    final state = context.watch<ChatViewModel>().state;
-    final invocations = <SubagentInvocation>[];
-    if (state is ChatReady && !prefs.hideToolCalls) {
-      for (final message in state.messages) {
-        if (message is! ToolEvent) continue;
-        final invocation = SubagentInvocation.fromTool(message);
-        if (invocation != null) invocations.add(invocation);
-      }
-    }
-    return SubagentPanel(
-      invocations: invocations,
-      collapsed: prefs.collapseSubagents,
-      onCollapsedChanged: prefs.setCollapseSubagents,
-      onClose: () => Navigator.of(context).pop(),
+        ],
+      ),
     );
   }
 }

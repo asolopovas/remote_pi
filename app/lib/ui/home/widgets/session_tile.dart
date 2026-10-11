@@ -10,22 +10,27 @@ import 'package:flutter/material.dart';
 /// no dot = relay hasn't reported yet.
 class SessionTile extends StatelessWidget {
   final PeerRecord peer;
+
   /// `true` when the room is announced live on the relay AND the
   /// relay itself is reachable. Drives the green dot.
   final bool isLive;
+
   /// `true` when the WS to the relay is currently retrying / down.
   /// Overrides `isLive` and renders an amber "reconnecting" dot —
   /// the app has no fresh signal on any room right now.
   final bool isReconnecting;
+
   /// Plan-18 follow-up — `true` when the agent in this room is
   /// currently producing a response. Highest-priority colour (blue).
   final bool isWorking;
   final RoomInfo? room;
   final VoidCallback onOpen;
+
   /// Plan/tablet — `true` when this is the session shown in the tablet's
   /// detail pane. Paints the accent left-bar + faint fill from the mock.
   /// Always `false` on phone (no persistent selection there).
   final bool isSelected;
+
   /// Plan-17 follow-up — long-press context menu. Caller wires the
   /// dialog (rename + delete-offline). Optional; when null the tile
   /// only responds to tap.
@@ -53,7 +58,9 @@ class SessionTile extends StatelessWidget {
         onLongPress: onLongPress,
         child: DecoratedBox(
           decoration: BoxDecoration(
-            color: isSelected ? colors.accent.withValues(alpha: 0.06) : colors.bg,
+            color: isSelected
+                ? colors.accent.withValues(alpha: 0.06)
+                : colors.bg,
             border: Border(
               left: BorderSide(
                 color: isSelected ? colors.accent : Colors.transparent,
@@ -71,7 +78,13 @@ class SessionTile extends StatelessWidget {
                 _Avatar(name: _avatarName()),
                 const SizedBox(width: 14),
                 Expanded(
-                  child: _TitleBlock(peer: peer, room: room),
+                  child: _TitleBlock(
+                    peer: peer,
+                    room: room,
+                    isLive: isLive,
+                    isReconnecting: isReconnecting,
+                    isWorking: isWorking,
+                  ),
                 ),
                 _PresenceDot(
                   isLive: isLive,
@@ -92,8 +105,7 @@ class SessionTile extends StatelessWidget {
       if (r.name != null && r.name!.isNotEmpty) return r.name!;
       final cwd = r.cwd;
       if (cwd != null && cwd.isNotEmpty) {
-        final segs = cwd.split('/').where((s) => s.isNotEmpty).toList();
-        if (segs.isNotEmpty) return segs.last;
+        return sessionProjectName(cwd) ?? cwd;
       }
     }
     if (peer.nickname?.isNotEmpty == true) return peer.nickname!;
@@ -122,10 +134,10 @@ class _PresenceDot extends StatelessWidget {
     final Color color = isWorking
         ? colors.working
         : isReconnecting
-            ? colors.warning
-            : isLive
-                ? colors.success
-                : colors.muted;
+        ? colors.warning
+        : isLive
+        ? colors.success
+        : colors.muted;
     return Container(
       width: 10,
       height: 10,
@@ -137,31 +149,34 @@ class _PresenceDot extends StatelessWidget {
 class _TitleBlock extends StatelessWidget {
   final PeerRecord peer;
   final RoomInfo? room;
-  const _TitleBlock({required this.peer, required this.room});
+  final bool isLive;
+  final bool isReconnecting;
+  final bool isWorking;
+  const _TitleBlock({
+    required this.peer,
+    required this.room,
+    required this.isLive,
+    required this.isReconnecting,
+    required this.isWorking,
+  });
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
     final r = room;
-    // Title preference: explicit room.name → cwd basename → peer
-    // nickname → session name. The cwd path line was dropped on purpose
-    // — the tile now shows just title + subtitle (model / paired date).
-    final String title;
-    if (r != null) {
-      if (r.name != null && r.name!.isNotEmpty) {
-        title = r.name!;
-      } else if (r.cwd != null && r.cwd!.isNotEmpty) {
-        final segs = r.cwd!.split('/').where((s) => s.isNotEmpty).toList();
-        title = segs.isNotEmpty ? segs.last : r.cwd!;
-      } else if (peer.nickname?.isNotEmpty == true) {
-        title = peer.nickname!;
-      } else {
-        title = peer.sessionName;
-      }
-    } else {
-      title =
-          peer.nickname?.isNotEmpty == true ? peer.nickname! : peer.sessionName;
-    }
+    final path = r?.cwd;
+    final project = sessionProjectName(path);
+    final title = project ?? sessionFallbackName(r, peer);
+    final status = isWorking
+        ? 'Working'
+        : isReconnecting
+        ? 'Reconnecting'
+        : isLive
+        ? 'Online · idle'
+        : 'Offline';
+    final sessionContext = r?.name?.isNotEmpty == true
+        ? '${r!.name} · ${r.roomId.length > 8 ? r.roomId.substring(0, 8) : r.roomId}'
+        : r?.roomId ?? peer.sessionName;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -178,28 +193,46 @@ class _TitleBlock extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 3),
-        // Subtitle = the Pi-extension's model (when surfaced via
-        // `room_announced` / `room_meta_updated`), else the legacy
-        // "Last paired" timestamp so the row keeps a stable height.
-        Builder(builder: (_) {
-          final model = room?.model;
-          final hasModel = model != null && model.isNotEmpty;
-          return Text(
-            hasModel
-                ? _truncateModel(model)
-                : 'Last paired: ${_relativeTime(peer.pairedAt)}',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: hasModel ? colors.accent : colors.muted,
-              fontSize: 12,
-              fontFamily: kMonoFamily,
-            ),
-          );
-        }),
+        Text(
+          path ?? 'Working directory unavailable',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: colors.muted,
+            fontSize: 11,
+            fontFamily: kMonoFamily,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          '$sessionContext · $status${room?.model?.isNotEmpty == true ? ' · ${_truncateModel(room!.model!)}' : ''}',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: isWorking ? colors.working : colors.muted,
+            fontSize: 11,
+            fontFamily: kMonoFamily,
+          ),
+        ),
       ],
     );
   }
+}
+
+String? sessionProjectName(String? path) {
+  if (path == null || path.trim().isEmpty) return null;
+  final normalized = path
+      .replaceAll('\\', '/')
+      .replaceFirst(RegExp(r'/+$'), '');
+  if (normalized.isEmpty) return path;
+  return normalized.split('/').last;
+}
+
+String sessionFallbackName(RoomInfo? room, PeerRecord peer) {
+  if (room?.name?.isNotEmpty == true) return room!.name!;
+  if (peer.nickname?.isNotEmpty == true) return peer.nickname!;
+  if (peer.sessionName.isNotEmpty) return peer.sessionName;
+  return room?.roomId ?? 'Session';
 }
 
 String _truncateModel(String name) =>
@@ -239,16 +272,4 @@ String _initial(String name) {
   final trimmed = name.trim();
   if (trimmed.isEmpty) return '?';
   return trimmed.characters.first.toUpperCase();
-}
-
-String _relativeTime(String isoUtc) {
-  final parsed = DateTime.tryParse(isoUtc);
-  if (parsed == null) return isoUtc;
-  final now = DateTime.now().toUtc();
-  final diff = now.difference(parsed);
-  if (diff.inSeconds < 60) return 'just now';
-  if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-  if (diff.inHours < 24) return '${diff.inHours}h ago';
-  if (diff.inDays < 30) return '${diff.inDays}d ago';
-  return isoUtc.substring(0, 10);
 }

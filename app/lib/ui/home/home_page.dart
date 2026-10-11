@@ -562,21 +562,8 @@ class HomePage extends StatelessWidget {
   /// Chat AppBar doesn't show '—' / 'Remote Pi' until the ChatViewModel
   /// loads the PeerRecord + the first room_meta_updated arrives. Prefers
   /// room.name (per-cwd title) → cwd tail → nickname → sessionName.
-  static String _titleFor(PeerRecord peer, RoomInfo room) {
-    final roomCwdTail = room.cwd
-        ?.split('/')
-        .where((s) => s.isNotEmpty)
-        .lastOrNull;
-    return (room.name?.isNotEmpty ?? false)
-        ? room.name!
-        : (roomCwdTail != null && roomCwdTail.isNotEmpty)
-        ? roomCwdTail
-        : (peer.nickname?.isNotEmpty ?? false)
-        ? peer.nickname!
-        : peer.sessionName.isNotEmpty
-        ? peer.sessionName
-        : peer.remoteEpk.substring(0, 8);
-  }
+  static String _titleFor(PeerRecord peer, RoomInfo room) =>
+      sessionProjectName(room.cwd) ?? sessionFallbackName(room, peer);
 }
 
 /// Plan-17 follow-up — soft empty state for paired-but-no-rooms.

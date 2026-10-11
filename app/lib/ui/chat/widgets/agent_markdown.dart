@@ -1,4 +1,5 @@
 import 'package:app/ui/chat/widgets/code_viewport.dart';
+import 'source_code.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
@@ -28,10 +29,9 @@ class AgentMarkdown extends StatelessWidget {
       codeBuilder: (context, name, code, closed) => CodeViewport(
         label: name,
         text: code,
-        child: Text(
-          code,
-          style: typo.mono.copyWith(color: colors.text, height: 1.45),
-        ),
+        child: selectable
+            ? SourceCode(code, language: name)
+            : SelectionArea(child: SourceCode(code, language: name)),
       ),
     );
     return selectable ? SelectionArea(child: markdown) : markdown;

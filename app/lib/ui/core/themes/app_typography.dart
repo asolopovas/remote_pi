@@ -3,7 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:app/ui/core/themes/app_colors.dart';
 
-const String kMonoFamily = 'JetBrains Mono';
+const String kMonoFamily = 'FiraMono Nerd Font';
 
 /// Sans family for body/system text. `null` → the platform default sans.
 /// Set to a bundled family name to override globally.
@@ -53,7 +53,7 @@ class AppTypography extends ThemeExtension<AppTypography> {
     required this.sansBody,
   });
 
-  /// Primary monospace style (chat code, terminal chrome). Was `kMonoStyle`.
+  /// Primary bundled Fira Mono style (chat code, terminal chrome).
   final TextStyle mono;
 
   /// Small monospace style (captions, metadata). Was `kMonoSmall`.
@@ -91,12 +91,16 @@ class AppTypography extends ThemeExtension<AppTypography> {
   }
 
   /// Dark typography — mono text matches the original `0xFFE6E6E6`.
-  static final AppTypography dark =
-      AppTypography.fromColors(AppColors.dark, monoColor: const Color(0xFFE6E6E6));
+  static final AppTypography dark = AppTypography.fromColors(
+    AppColors.dark,
+    monoColor: const Color(0xFFE6E6E6),
+  );
 
   /// Light typography — mono text is a near-black for contrast on white.
-  static final AppTypography light =
-      AppTypography.fromColors(AppColors.light, monoColor: const Color(0xFF1A1A1A));
+  static final AppTypography light = AppTypography.fromColors(
+    AppColors.light,
+    monoColor: const Color(0xFF1A1A1A),
+  );
 
   @override
   AppTypography copyWith({

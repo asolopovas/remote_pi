@@ -1,5 +1,8 @@
 import 'dart:async';
 
+import 'compact_output_header.dart';
+import 'accordion_viewport.dart';
+
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -12,12 +15,20 @@ class CodeViewport extends StatefulWidget {
     required this.text,
     this.label = 'code',
     this.headerBuilder,
+    this.collapsible = true,
+    this.showContent = true,
+    this.headerExpanded = false,
+    this.copyTooltip = 'Copy code',
   });
 
   final Widget child;
   final String text;
   final String label;
+  final String copyTooltip;
   final Widget Function(BuildContext context, Widget controls)? headerBuilder;
+  final bool collapsible;
+  final bool showContent;
+  final bool headerExpanded;
 
   @override
   State<CodeViewport> createState() => _CodeViewportState();
@@ -26,21 +37,21 @@ class CodeViewport extends StatefulWidget {
 class _CodeViewportState extends State<CodeViewport>
     with AutomaticKeepAliveClientMixin {
   final _scroll = ScrollController();
-  bool _wrap = false;
+  bool _expanded = false;
+  bool _wrap = true;
   bool _copied = false;
+  // Retain explicit choices, not every default collapsed row in the lazy list.
+  bool _touched = false;
   Timer? _reset;
 
   @override
-  bool get wantKeepAlive => _wrap || (_scroll.hasClients && _scroll.offset > 0);
-
-  @override
-  void initState() {
-    super.initState();
-    _scroll.addListener(updateKeepAlive);
-  }
+  bool get wantKeepAlive => _touched;
 
   void _toggleWrap() {
-    setState(() => _wrap = !_wrap);
+    setState(() {
+      _wrap = !_wrap;
+      _touched = true;
+    });
     updateKeepAlive();
   }
 
@@ -71,31 +82,33 @@ class _CodeViewportState extends State<CodeViewport>
       borderRadius: BorderRadius.circular(8),
       border: Border.all(color: colors.border),
     );
-    final controls = Row(
-      mainAxisSize: MainAxisSize.min,
+    final controls = Wrap(
+      alignment: WrapAlignment.end,
+      crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        TextButton.icon(
-          key: const Key('code-wrap'),
-          onPressed: _toggleWrap,
-          icon: Icon(
-            _wrap ? LucideIcons.moveHorizontal : LucideIcons.wrapText,
-            size: 14,
+        if (_expanded || !widget.collapsible)
+          TextButton.icon(
+            key: const Key('code-wrap'),
+            onPressed: _toggleWrap,
+            icon: Icon(
+              _wrap ? LucideIcons.moveHorizontal : LucideIcons.wrapText,
+              size: 14,
+            ),
+            label: Text(_wrap ? 'Scroll' : 'Wrap'),
+            style: TextButton.styleFrom(
+              foregroundColor: colors.muted2,
+              textStyle: context.typo.monoSmall.copyWith(fontSize: 10),
+              minimumSize: const Size(0, 48),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            ),
           ),
-          label: Text(_wrap ? 'Scroll' : 'Wrap'),
-          style: TextButton.styleFrom(
-            foregroundColor: colors.muted2,
-            textStyle: context.typo.monoSmall.copyWith(fontSize: 10),
-            minimumSize: const Size(0, 30),
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-          ),
-        ),
         IconButton(
           key: const Key('code-copy'),
-          tooltip: 'Copy code',
+          tooltip: widget.copyTooltip,
           iconSize: 14,
-          constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+          constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
           padding: const EdgeInsets.all(4),
           visualDensity: VisualDensity.compact,
           onPressed: _copy,
@@ -108,24 +121,19 @@ class _CodeViewportState extends State<CodeViewport>
     );
     final header =
         widget.headerBuilder?.call(context, controls) ??
-        Padding(
-          padding: const EdgeInsets.only(left: 8, right: 2),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  widget.label.isEmpty ? 'code' : widget.label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: context.typo.monoSmall.copyWith(
-                    color: colors.muted2,
-                    fontSize: 10,
-                  ),
-                ),
-              ),
-              controls,
-            ],
-          ),
+        CompactOutputHeader(
+          title:
+              '${widget.label.isEmpty ? 'code' : widget.label} · ${widget.text.split('\n').length} ${widget.text.split('\n').length == 1 ? 'line' : 'lines'}',
+          expanded: _expanded,
+          disclosureKey: const Key('code-disclosure'),
+          onToggle: () {
+            setState(() {
+              _expanded = !_expanded;
+              _touched = true;
+            });
+            updateKeepAlive();
+          },
+          controls: controls,
         );
     final padding = standalone
         ? const EdgeInsets.fromLTRB(8, 2, 8, 8)
@@ -147,9 +155,12 @@ class _CodeViewportState extends State<CodeViewport>
       width: double.infinity,
       margin: standalone ? const EdgeInsets.symmetric(vertical: 10) : null,
       decoration: standalone ? frame : null,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [header, content],
+      child: AccordionAnchor(
+        expanded: standalone ? _expanded : widget.headerExpanded,
+        header: header,
+        body: widget.showContent && (_expanded || !widget.collapsible)
+            ? content
+            : const SizedBox.shrink(),
       ),
     );
   }

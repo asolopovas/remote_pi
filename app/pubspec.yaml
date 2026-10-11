@@ -9,13 +9,17 @@ publish_to: "none" # Remove this line if you wish to publish to pub.dev
 # followed by an optional build number separated by a +.
 # Both the version and the builder number may be overridden in flutter
 # build by specifying --build-name and --build-number, respectively.
-# In Android, build-name is used as versionName while build-number used as versionCode.
-# Read more about Android versioning at https://developer.android.com/studio/publish/versioning
-# In iOS, build-name is used as CFBundleShortVersionString while build-number is used as CFBundleVersion.
+# In Android, build-name is used as versionName while build-number is used
+# as versionCode.
+# Read more about Android versioning at
+# https://developer.android.com/studio/publish/versioning
+# In iOS, build-name is used as CFBundleShortVersionString while build-number
+# is used as CFBundleVersion.
 # Read more about iOS versioning at
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
-# of the product and file versions while build-number is used as the build suffix.
+# of the product and file versions while build-number is used as the build
+# suffix.
 version: 1.2.0+8
 
 environment:
@@ -73,6 +77,8 @@ dependencies:
   # Plan 32b — render the agent's Markdown replies (GFM + code blocks),
   # optimized for LLM output. `url_launcher` opens links tapped in the
   # rendered markdown in the system browser.
+  # Plan 73 — pure-Dart source highlighting (MIT).
+  highlight: 0.7.0
   gpt_markdown: ^1.1.7
   url_launcher: ^6.3.0
 
@@ -113,24 +119,16 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/fonts/jetbrains_mono/OFL.txt
+    - assets/fonts/fira_mono/LICENSE
 
   fonts:
-    - family: JetBrains Mono
+    - family: FiraMono Nerd Font
       fonts:
-        - asset: assets/fonts/jetbrains_mono/JetBrainsMono-Regular.ttf
+        - asset: assets/fonts/fira_mono/FiraMonoNerdFont-Regular.otf
           weight: 400
-        - asset: assets/fonts/jetbrains_mono/JetBrainsMono-Medium.ttf
+        - asset: assets/fonts/fira_mono/FiraMonoNerdFont-Medium.otf
           weight: 500
-        - asset: assets/fonts/jetbrains_mono/JetBrainsMono-SemiBold.ttf
-          weight: 600
-        - asset: assets/fonts/jetbrains_mono/JetBrainsMono-Bold.ttf
-          weight: 700
-        - asset: assets/fonts/jetbrains_mono/JetBrainsMono-Italic.ttf
-          style: italic
-          weight: 400
-        - asset: assets/fonts/jetbrains_mono/JetBrainsMono-BoldItalic.ttf
-          style: italic
+        - asset: assets/fonts/fira_mono/FiraMonoNerdFont-Bold.otf
           weight: 700
 
   # To add assets to your application, add an assets section, like this:

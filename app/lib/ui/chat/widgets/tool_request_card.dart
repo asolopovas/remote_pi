@@ -1,3 +1,8 @@
+import 'dart:convert';
+
+import 'compact_output_header.dart';
+import 'source_code.dart';
+
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/widgets/code_viewport.dart';
@@ -17,11 +22,36 @@ import 'package:flutter/material.dart';
 // `onDecide` is kept on the API for forward compat — when the Pi adds a
 // real approval pause we can re-enable the controls. Today it is unused.
 
-class ToolRequestCard extends StatelessWidget {
+class ToolRequestCard extends StatefulWidget {
   final ToolEvent tool;
   final void Function(String toolCallId, ApproveDecision decision)? onDecide;
 
   const ToolRequestCard({super.key, required this.tool, this.onDecide});
+
+  @override
+  State<ToolRequestCard> createState() => _ToolRequestCardState();
+}
+
+class _ToolRequestCardState extends State<ToolRequestCard>
+    with AutomaticKeepAliveClientMixin {
+  bool _expanded = false;
+  // Retain explicit choices, not every default collapsed row in the lazy list.
+  bool _touched = false;
+  @override
+  bool get wantKeepAlive => _touched;
+
+  @override
+  void didUpdateWidget(ToolRequestCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.tool.id != tool.id ||
+        oldWidget.tool.toolCallId != tool.toolCallId) {
+      _expanded = false;
+      _touched = false;
+      updateKeepAlive();
+    }
+  }
+
+  ToolEvent get tool => widget.tool;
 
   Color _statusColor(BuildContext context) {
     final colors = context.colors;
@@ -35,6 +65,7 @@ class ToolRequestCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final color = _statusColor(context);
     // Dim only the inert states (denied/expired); keep done/failed at full
     // opacity so their green/red read clearly.
@@ -52,20 +83,7 @@ class ToolRequestCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(8),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _buildCodeBlock(context, color),
-            if (tool.error?.isNotEmpty ?? false) ...[
-              const SizedBox(height: 8),
-              Text(
-                '✗ ${tool.error}',
-                style: context.typo.mono.copyWith(color: color),
-              ),
-            ],
-          ],
-        ),
+        child: _buildCodeBlock(context, color),
       ),
     );
   }
@@ -79,47 +97,101 @@ class ToolRequestCard extends StatelessWidget {
       ToolEventStatus.expired => 'EXPIRED',
     };
 
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            tool.tool.toUpperCase(),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: context.typo.monoSmall.copyWith(
-              color: context.colors.muted2,
-              fontSize: 10,
-            ),
-          ),
-        ),
-        controls,
-        const SizedBox(width: 8),
-        Text(
-          statusLabel,
-          style: TextStyle(
-            fontFamily: kMonoFamily,
-            fontSize: 10,
-            color: color,
-            letterSpacing: 0.4,
-          ),
-        ),
-      ],
+    return CompactOutputHeader(
+      title: _compactTitle(),
+      expanded: _expanded,
+      disclosureKey: const Key('tool-disclosure'),
+      onToggle: () {
+        setState(() {
+          _expanded = !_expanded;
+          _touched = true;
+        });
+        updateKeepAlive();
+      },
+      status: statusLabel,
+      color: color,
+      icon: switch (tool.status) {
+        ToolEventStatus.pending || ToolEventStatus.allowed => Icons.sync,
+        ToolEventStatus.completed => Icons.check_circle,
+        ToolEventStatus.failed => Icons.error,
+        _ => Icons.info,
+      },
+      controls: _expanded ? controls : null,
     );
   }
 
   Widget _buildCodeBlock(BuildContext context, Color color) {
-    final display = _formatToolDisplay(tool.tool, tool.args);
-    final text = display == null
-        ? _formatArgs(tool.tool, tool.args)
-        : [
-            display.command,
-            ...display.lines.map((line) => line.text),
-          ].join('\n');
-    return CodeViewport(
-      headerBuilder: (context, controls) =>
-          _buildHeader(context, color, controls),
-      text: text,
-      child: _buildToolSummary(context),
+    final source = _source(tool.tool, tool.args);
+    final fullDetails = _expanded
+        ? [
+            _fullText(tool.args),
+            if (tool.result != null) _fullText(tool.result),
+            if (tool.error?.isNotEmpty ?? false) tool.error!,
+          ].join('\n\n')
+        : '';
+    final text = _expanded ? source?.text ?? fullDetails : '';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        CodeViewport(
+          key: ValueKey('tool-code-${tool.id}'),
+          headerBuilder: (context, controls) =>
+              _buildHeader(context, color, controls),
+          text: text,
+          copyTooltip: source == null
+              ? 'Copy full details'
+              : source.label == 'Command'
+              ? 'Copy command'
+              : 'Copy source',
+          collapsible: false,
+          headerExpanded: _expanded,
+          showContent: _expanded,
+          child: !_expanded
+              ? const SizedBox.shrink()
+              : SelectionArea(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (source != null) ...[
+                        Text(
+                          '${source.label} · ${source.language}',
+                          style: context.typo.monoSmall,
+                        ),
+                        const SizedBox(height: 8),
+                        SourceCode(source.text, language: source.language),
+                      ] else
+                        _buildToolSummary(context),
+                      if (tool.result != null) ...[
+                        const SizedBox(height: 8),
+                        Text('Output', style: context.typo.monoSmall),
+                        Text(_fullText(tool.result), style: context.typo.mono),
+                      ],
+                      if (tool.error?.isNotEmpty ?? false) ...[
+                        const SizedBox(height: 8),
+                        Text('Error', style: context.typo.monoSmall),
+                        Text(
+                          '✗ ${tool.error}',
+                          style: context.typo.mono.copyWith(color: color),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+        ),
+        // Original source/metadata and complete output remain optional, not primary.
+        if (_expanded &&
+            (source != null ||
+                _formatToolDisplay(tool.tool, tool.args) != null))
+          CodeViewport(
+            key: ValueKey('tool-args-${tool.id}'),
+            label: 'Details',
+            copyTooltip: 'Copy full details',
+            text: fullDetails,
+            child: SelectionArea(
+              child: Text(fullDetails, style: context.typo.mono),
+            ),
+          ),
+      ],
     );
   }
 
@@ -131,40 +203,95 @@ class ToolRequestCard extends StatelessWidget {
       return Text(_formatArgs(tool.tool, tool.args), style: typo.mono);
     }
 
-    return Text.rich(
-      TextSpan(
-        style: typo.mono,
-        children: [
-          TextSpan(text: display.command),
-          for (final line in display.lines) ...[
-            const TextSpan(text: '\n'),
-            TextSpan(
-              text: line.text,
-              style: TextStyle(color: line.color(colors)),
-            ),
-          ],
-        ],
-      ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text.rich(
+          TextSpan(
+            style: typo.mono,
+            children: [
+              TextSpan(text: display.command),
+              for (final line in display.lines) ...[
+                const TextSpan(text: '\n'),
+                TextSpan(
+                  text: line.text,
+                  style: TextStyle(color: line.color(colors)),
+                ),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+      ],
     );
   }
 
+  String _compactTitle() {
+    final args = tool.args;
+    final normalized = _toolName(tool.tool);
+    String action = '';
+    if (args is Map) {
+      if (normalized == 'bash' || normalized == 'powershell') {
+        action = _stringArg(args, const ['command']);
+      } else if (normalized == 'read' ||
+          normalized == 'write' ||
+          normalized == 'edit') {
+        action = _stringArg(args, const ['file_path', 'path']);
+      } else {
+        action = _stringArg(args, const ['path', 'query', 'pattern', 'task']);
+      }
+    }
+    action = action.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (action.isEmpty) return tool.tool;
+    final brief = action.split('\n').first;
+    return '${tool.tool.toUpperCase()} · $brief';
+  }
+
+  static String _fullText(Object? value) => value is String
+      ? value
+      : const JsonEncoder.withIndent('  ').convert(value);
+
   static String _formatArgs(String tool, dynamic args) {
     if (args == null) return '';
-    final normalizedTool = tool.toLowerCase();
-    if (args is Map) {
-      return switch (normalizedTool) {
-        'bash' => (args['command'] as String?) ?? '',
-        'edit' || 'write' =>
-          '$normalizedTool ${_stringArg(args, const ['file_path', 'path'])}',
-        _ => args.entries.map((e) => '${e.key}=${e.value}').join(' '),
-      };
+    return _fullText(args);
+  }
+
+  static String _toolName(String name) {
+    final match = RegExp(
+      r'(^|[.:/]|__)(bash|powershell|codemode|write|edit|read)$',
+      caseSensitive: false,
+    ).firstMatch(name);
+    return match?.group(2)?.toLowerCase() ?? name.toLowerCase();
+  }
+
+  static _Source? _source(String name, dynamic args) {
+    if (args is! Map) return null;
+    final tool = _toolName(name);
+    if ((tool == 'bash' || tool == 'powershell') && args['command'] is String) {
+      return _Source(args['command'] as String, 'Command', tool);
     }
-    return args.toString();
+    if (tool == 'codemode' && args['code'] is String) {
+      final language = args['language'];
+      return _Source(
+        args['code'] as String,
+        'Script',
+        language is String ? language : 'javascript',
+      );
+    }
+    if (tool == 'write' && args['content'] is String) {
+      final path = _stringArg(args, const ['file_path', 'path']);
+      final extension = path.split(RegExp(r'[/\\]')).last.split('.');
+      final language = extension.length > 1
+          ? SourceCode.normalizeLanguage(extension.last)
+          : null;
+      return _Source(args['content'] as String, 'Source', language ?? 'text');
+    }
+    return null;
   }
 
   static _ToolDisplay? _formatToolDisplay(String tool, dynamic args) {
     if (args is! Map) return null;
-    return switch (tool.toLowerCase()) {
+    return switch (_toolName(tool)) {
       'edit' => _formatEditDisplay(args),
       _ => null,
     };
@@ -240,4 +367,11 @@ class _DiffLine {
 
   factory _DiffLine.context(String text) =>
       _DiffLine._(text, (colors) => colors.text);
+}
+
+class _Source {
+  const _Source(this.text, this.label, this.language);
+  final String text;
+  final String label;
+  final String language;
 }

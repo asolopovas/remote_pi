@@ -54,6 +54,23 @@ class _FakeSecureStorage implements FlutterSecureStorage {
 
 void main() {
   group('Preferences', () {
+    test(
+      'subagents collapse by default and explicit expanded preference persists',
+      () async {
+        final storage = _FakeSecureStorage();
+        final first = Preferences(storage);
+        expect(first.collapseSubagents, isTrue);
+        await first.load();
+        expect(first.collapseSubagents, isTrue);
+        await first.setCollapseSubagents(false);
+        final restored = Preferences(storage);
+        await restored.load();
+        expect(restored.collapseSubagents, isFalse);
+        await restored.setCollapseSubagents(true);
+        await first.load();
+        expect(first.collapseSubagents, isTrue);
+      },
+    );
     test('defaults to hideToolCalls=false before load()', () {
       final p = Preferences(_FakeSecureStorage());
       expect(p.hideToolCalls, isFalse);
@@ -87,16 +104,17 @@ void main() {
       expect(notifs, 2);
     });
 
-    test('relayUrl defaults to null and round-trips via setRelayUrl',
-        () async {
+    test('relayUrl defaults to null and round-trips via setRelayUrl', () async {
       final store = _FakeSecureStorage();
       final p = Preferences(store);
       expect(p.relayUrl, isNull);
 
       await p.setRelayUrl('wss://custom.example.com');
       expect(p.relayUrl, 'wss://custom.example.com');
-      expect(await store.read(key: 'prefs.relay_url'),
-          'wss://custom.example.com');
+      expect(
+        await store.read(key: 'prefs.relay_url'),
+        'wss://custom.example.com',
+      );
 
       // Reload from cold start → value survives.
       final p2 = Preferences(store);
@@ -114,29 +132,22 @@ void main() {
       expect(p.relayUrl, isNull);
     });
 
-    test(
-      'onboardingCompleted defaults to false and round-trips via '
-      'setOnboardingCompleted',
-      () async {
-        final store = _FakeSecureStorage();
-        final p = Preferences(store);
-        expect(p.onboardingCompleted, isFalse);
+    test('onboardingCompleted defaults to false and round-trips via '
+        'setOnboardingCompleted', () async {
+      final store = _FakeSecureStorage();
+      final p = Preferences(store);
+      expect(p.onboardingCompleted, isFalse);
 
-        await p.setOnboardingCompleted(true);
-        expect(p.onboardingCompleted, isTrue);
-        expect(
-          await store.read(key: 'prefs.onboarding_completed'),
-          'true',
-        );
+      await p.setOnboardingCompleted(true);
+      expect(p.onboardingCompleted, isTrue);
+      expect(await store.read(key: 'prefs.onboarding_completed'), 'true');
 
-        final p2 = Preferences(store);
-        await p2.load();
-        expect(p2.onboardingCompleted, isTrue);
-      },
-    );
+      final p2 = Preferences(store);
+      await p2.load();
+      expect(p2.onboardingCompleted, isTrue);
+    });
 
-    test('selectedRoom round-trips epk + roomId composite (plan 17)',
-        () async {
+    test('selectedRoom round-trips epk + roomId composite (plan 17)', () async {
       final store = _FakeSecureStorage();
       final p = Preferences(store);
       await p.setSelectedRoom(epk: 'abc123', roomId: 'room-xyz');
@@ -151,37 +162,34 @@ void main() {
       expect(p2.selectedRoomId, 'room-xyz');
     });
 
-    test(
-      'backward-compat: legacy value (no `:room` suffix) returns epk '
-      'and null roomId so caller defaults to "main"',
-      () async {
-        final store = _FakeSecureStorage();
-        // Pre-populate with legacy format (just the epk, no suffix).
-        await store.write(
-          key: 'prefs.selected_peer_epk',
-          value: 'legacy_epk',
-        );
-        final p = Preferences(store);
-        await p.load();
-        expect(p.selectedPeerEpk, 'legacy_epk');
-        expect(p.selectedRoomId, isNull);
-      },
-    );
-
-    // Issue #114 — in-app text size.
-    test('fontScale defaults to standard and round-trips through storage', () async {
+    test('backward-compat: legacy value (no `:room` suffix) returns epk '
+        'and null roomId so caller defaults to "main"', () async {
       final store = _FakeSecureStorage();
+      // Pre-populate with legacy format (just the epk, no suffix).
+      await store.write(key: 'prefs.selected_peer_epk', value: 'legacy_epk');
       final p = Preferences(store);
       await p.load();
-      expect(p.fontScale, AppFontScale.standard);
-
-      await p.setFontScale(AppFontScale.large);
-      expect(p.fontScale, AppFontScale.large);
-
-      final reloaded = Preferences(store);
-      await reloaded.load();
-      expect(reloaded.fontScale, AppFontScale.large);
+      expect(p.selectedPeerEpk, 'legacy_epk');
+      expect(p.selectedRoomId, isNull);
     });
+
+    // Issue #114 — in-app text size.
+    test(
+      'fontScale defaults to standard and round-trips through storage',
+      () async {
+        final store = _FakeSecureStorage();
+        final p = Preferences(store);
+        await p.load();
+        expect(p.fontScale, AppFontScale.standard);
+
+        await p.setFontScale(AppFontScale.large);
+        expect(p.fontScale, AppFontScale.large);
+
+        final reloaded = Preferences(store);
+        await reloaded.load();
+        expect(reloaded.fontScale, AppFontScale.large);
+      },
+    );
 
     test('an unknown persisted font scale falls back to standard', () async {
       final store = _FakeSecureStorage();
