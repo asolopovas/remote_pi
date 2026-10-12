@@ -86,6 +86,30 @@ class _FakeSecureStorage implements FlutterSecureStorage {
 }
 
 void main() {
+  test(
+    'PersistedRoom local_name provenance roundtrips and clears without routing-name migration',
+    () async {
+      final storage = PairingStorage(_FakeSecureStorage());
+      final legacy = PersistedRoom.fromJson({
+        'room_id': 'r',
+        'started_at': 1,
+        'name': 'project',
+        'display': {'name': 'cached desktop cannot be live'},
+      });
+      expect(legacy.localName, isNull);
+      final override = legacy.copyWith(localName: 'mobile');
+      await storage.saveRooms('peer', [override]);
+      var restored = (await storage.loadRooms('peer')).single;
+      expect(restored.name, 'project');
+      expect(restored.localName, 'mobile');
+      expect(restored.toJson().containsKey('display'), isFalse);
+      await storage.saveRooms('peer', [restored.copyWith(localName: null)]);
+      restored = (await storage.loadRooms('peer')).single;
+      expect(restored.localName, isNull);
+      expect(restored.name, 'project');
+      storage.dispose();
+    },
+  );
   group('PeerRecord — minimal post-rollback shape', () {
     test('serializes and deserializes the 4 retained fields', () {
       const record = PeerRecord(

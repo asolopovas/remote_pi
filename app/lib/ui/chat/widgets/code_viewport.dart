@@ -19,12 +19,19 @@ class CodeViewport extends StatefulWidget {
     this.showContent = true,
     this.headerExpanded = false,
     this.copyTooltip = 'Copy code',
-  });
+    this.bodyWrapWidth,
+  }) : assert(
+         bodyWrapWidth == null ||
+             (bodyWrapWidth > 0 && bodyWrapWidth < double.infinity),
+       );
 
   final Widget child;
   final String text;
   final String label;
   final String copyTooltip;
+  // Composite bodies need stable ancestry while their nested frames keep state.
+  // Null preserves the original viewport behavior for all existing callers.
+  final double? bodyWrapWidth;
   final Widget Function(BuildContext context, Widget controls)? headerBuilder;
   final bool collapsible;
   final bool showContent;
@@ -48,6 +55,9 @@ class _CodeViewportState extends State<CodeViewport>
   bool get wantKeepAlive => _touched;
 
   void _toggleWrap() {
+    if (!_wrap && widget.bodyWrapWidth != null && _scroll.hasClients) {
+      _scroll.jumpTo(0);
+    }
     setState(() {
       _wrap = !_wrap;
       _touched = true;
@@ -138,7 +148,25 @@ class _CodeViewportState extends State<CodeViewport>
     final padding = standalone
         ? const EdgeInsets.fromLTRB(8, 2, 8, 8)
         : const EdgeInsets.only(top: 4, bottom: 8);
-    final content = _wrap
+    final content = widget.bodyWrapWidth != null
+        ? Scrollbar(
+            controller: _scroll,
+            thumbVisibility: !_wrap,
+            scrollbarOrientation: ScrollbarOrientation.bottom,
+            child: SingleChildScrollView(
+              controller: _scroll,
+              scrollDirection: Axis.horizontal,
+              physics: _wrap ? const NeverScrollableScrollPhysics() : null,
+              padding: padding,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: _wrap ? widget.bodyWrapWidth! : double.infinity,
+                ),
+                child: widget.child,
+              ),
+            ),
+          )
+        : _wrap
         ? Padding(padding: padding, child: widget.child)
         : Scrollbar(
             controller: _scroll,

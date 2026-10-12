@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'package:app/ui/core/themes/themes.dart';
-
-/// One session/tab viewport owns disclosure alignment and its single heading.
+/// Aligns the original disclosure heading once per expansion in this viewport.
 class AccordionViewport extends StatefulWidget {
   const AccordionViewport({
     super.key,
@@ -21,13 +19,9 @@ class AccordionViewport extends StatefulWidget {
 class _AccordionViewportState extends State<AccordionViewport> {
   final _bounds = GlobalKey();
   final _entries = <_AccordionAnchorState>{};
-  _AccordionAnchorState? _pinned;
   _AccordionAnchorState? _align;
   bool _scheduled = false;
   double _extent = 0;
-  double _headingHeight = 0;
-  Widget? _pinnedHeader;
-  EdgeInsets _headingInset = EdgeInsets.zero;
   _AccordionAnchorState? _edgeOwner;
 
   @override
@@ -115,42 +109,6 @@ class _AccordionViewportState extends State<AccordionViewport> {
     } else {
       _align = null;
     }
-    _AccordionAnchorState? candidate;
-    double height = 0;
-    double candidateTop = -double.infinity;
-    EdgeInsets inset = EdgeInsets.zero;
-    for (final entry in expanded) {
-      final card = _rect(entry._card);
-      final header = _rect(entry._header);
-      if (card == null || header == null) continue;
-      if (header.top <= viewport.top + 0.5 &&
-          card.bottom > viewport.top + header.height) {
-        // Nested cards start later than their ancestors; ties use registration order.
-        if (header.top >= candidateTop) {
-          candidate = entry;
-          candidateTop = header.top;
-          height = header.height;
-          inset = EdgeInsets.only(
-            left: (header.left - viewport.left).clamp(0.0, viewport.width),
-            right: (viewport.right - header.right).clamp(0.0, viewport.width),
-          );
-        }
-      }
-    }
-    if (_pinned != candidate ||
-        (_headingHeight - height).abs() > 0.5 ||
-        !identical(_pinnedHeader, candidate?.widget.header) ||
-        _headingInset != inset) {
-      final previous = _pinned;
-      setState(() {
-        _pinned = candidate;
-        _headingHeight = height;
-        _pinnedHeader = candidate?.widget.header;
-        _headingInset = inset;
-      });
-      previous?._refresh();
-      candidate?._refresh();
-    }
   }
 
   @override
@@ -164,41 +122,10 @@ class _AccordionViewportState extends State<AccordionViewport> {
           _schedule();
           return false;
         },
-        child: Stack(
-          key: _bounds,
-          children: [
-            ClipRect(
-              clipper: _HeadingClip(_headingHeight),
-              child: widget.child,
-            ),
-            if (_pinned case final entry?)
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: Material(
-                  key: const Key('accordion-pinned-heading'),
-                  color: context.colors.codeBg,
-                  child: Padding(
-                    padding: _headingInset,
-                    child: entry.widget.header,
-                  ),
-                ),
-              ),
-          ],
-        ),
+        child: SizedBox(key: _bounds, child: widget.child),
       ),
     );
   }
-}
-
-class _HeadingClip extends CustomClipper<Rect> {
-  const _HeadingClip(this.height);
-  final double height;
-  @override
-  Rect getClip(Size size) => Rect.fromLTRB(0, height, size.width, size.height);
-  @override
-  bool shouldReclip(_HeadingClip oldClipper) => height != oldClipper.height;
 }
 
 class _AccordionScope extends InheritedWidget {
@@ -265,10 +192,6 @@ class _AccordionAnchorState extends State<AccordionAnchor> {
     _owner?._schedule();
   }
 
-  void _refresh() {
-    if (mounted) setState(() {});
-  }
-
   @override
   void dispose() {
     _owner?._entries.remove(this);
@@ -283,14 +206,7 @@ class _AccordionAnchorState extends State<AccordionAnchor> {
       key: _card,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Visibility(
-          key: _header,
-          visible: _owner?._pinned != this,
-          maintainState: true,
-          maintainAnimation: true,
-          maintainSize: true,
-          child: widget.header,
-        ),
+        SizedBox(key: _header, child: widget.header),
         if (widget.expanded) widget.body,
       ],
     );

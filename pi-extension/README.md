@@ -208,6 +208,15 @@ Behavior depends on whether there's a local config for this directory:
 | Returning user, auto-start enabled | Joins agent session + starts relay automatically, then prints status |
 | Returning user, auto-start disabled | Prints status only; join/relay must be run manually |
 
+Managed workers launched with `PI_SUBAGENT_CHILD=1` still join the local mesh
+and reserve their normal agent lock, but inherited `auto_start_relay: true`
+does not automatically expose them to the mobile app (including session
+replacement). `/remote-pi relay start` remains an explicit opt-in. Interactive
+roots, same-directory roots, and supervised headless daemons without that
+marker retain their configured auto-start behavior; names and UI mode do not
+identify managed children. The existing print-mode and config-off boot guards
+are unchanged.
+
 The wizard asks three questions:
 
 1. **Agent name** — the presentation leaf name for this agent. Senders still

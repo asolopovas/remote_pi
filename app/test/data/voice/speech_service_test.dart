@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'package:fake_async/fake_async.dart';
+
 // Plan 29 — SpeechToTextService locale resolution + transcript / cancel /
 // level behavior, exercised through the SttPlugin seam (no device).
 
@@ -9,6 +12,10 @@ class _FakeSttPlugin implements SttPlugin {
   bool permission = true;
   List<String> localeList = ['en_US', 'pt_BR'];
 
+  void Function()? afterStop;
+  Completer<void>? listenGate;
+  final resultCallbacks = <SttResultCallback>[];
+  final calls = <String>[];
   int stopCalls = 0;
   int cancelCalls = 0;
   String? listenedLocale;
@@ -18,7 +25,17 @@ class _FakeSttPlugin implements SttPlugin {
   SttLevelCallback? _onLevel;
 
   @override
-  Future<bool> initialize() async => initializeResult;
+  Future<bool> initialize({
+    void Function(String status)? onStatus,
+    void Function()? onError,
+  }) async {
+    status = onStatus;
+    error = onError;
+    return initializeResult;
+  }
+
+  void Function(String)? status;
+  void Function()? error;
 
   @override
   Future<bool> hasPermission() async => permission;
@@ -33,17 +50,27 @@ class _FakeSttPlugin implements SttPlugin {
     required SttResultCallback onResult,
     required SttLevelCallback onLevel,
   }) async {
+    calls.add('listen');
+    resultCallbacks.add(onResult);
     listenedLocale = localeId;
     listenedFor = listenFor;
     _onResult = onResult;
     _onLevel = onLevel;
+    if (listenGate != null) await listenGate!.future;
   }
 
   @override
-  Future<void> stop() async => stopCalls++;
+  Future<void> stop() async {
+    calls.add('stop');
+    stopCalls++;
+    afterStop?.call();
+  }
 
   @override
-  Future<void> cancel() async => cancelCalls++;
+  Future<void> cancel() async {
+    calls.add('cancel');
+    cancelCalls++;
+  }
 
   // Test drivers.
   void emitResult(String words, {bool isFinal = false}) =>
@@ -120,6 +147,189 @@ void main() {
   });
 
   group('capture lifecycle', () {
+    test(
+      'live hypotheses are cumulative replacements, empty corrections ignored',
+      () async {
+        final plugin = _FakeSttPlugin();
+        final service = SpeechToTextService(plugin);
+        await service.init();
+        final live = <String>[];
+        await service.start(
+          localeId: 'en_US',
+          maxDuration: const Duration(seconds: 60),
+          onTranscript: live.add,
+        );
+        plugin.emitResult('one');
+        plugin.emitResult('won two');
+        plugin.emitResult('  ');
+        plugin.emitResult('won two three', isFinal: true);
+        expect(live, ['one', 'won two', 'won two three']);
+        expect(await service.stop(), 'won two three');
+        service.dispose();
+      },
+    );
+
+    test(
+      'done from native stop does not discard first final delivered later',
+      () async {
+        final plugin = _FakeSttPlugin();
+        final service = SpeechToTextService(plugin);
+        await service.init();
+        await service.start(
+          localeId: 'en_US',
+          maxDuration: const Duration(seconds: 60),
+        );
+        plugin.afterStop = () {
+          plugin.status!('notListening');
+          plugin.status!('done'); // plugin normalizes Android doneNoResult
+          Timer(
+            const Duration(milliseconds: 20),
+            () => plugin.emitResult('first complete words', isFinal: true),
+          );
+        };
+        expect(await service.stop(), 'first complete words');
+        service.dispose();
+      },
+    );
+
+    test(
+      'no final uses bounded last valid partial and rejects late callbacks',
+      () {
+        fakeAsync((clock) {
+          final plugin = _FakeSttPlugin();
+          final service = SpeechToTextService(plugin);
+          final live = <String>[];
+          String? result;
+          unawaited(service.init());
+          clock.flushMicrotasks();
+          unawaited(
+            service.start(
+              localeId: 'en_US',
+              maxDuration: const Duration(seconds: 60),
+              onTranscript: live.add,
+            ),
+          );
+          clock.flushMicrotasks();
+          plugin.emitResult('last valid');
+          plugin.emitResult('');
+          service.stop().then((text) => result = text);
+          clock.flushMicrotasks();
+          clock.elapse(const Duration(milliseconds: 1999));
+          expect(result, isNull);
+          clock.elapse(const Duration(milliseconds: 1));
+          expect(result, 'last valid');
+          plugin.emitResult('too late', isFinal: true);
+          expect(live, ['last valid']);
+          service.dispose();
+          clock.flushMicrotasks();
+        });
+      },
+    );
+
+    test(
+      'native early end/error informs caller once and releases via stop',
+      () async {
+        final plugin = _FakeSttPlugin();
+        final service = SpeechToTextService(plugin);
+        await service.init();
+        var ends = 0;
+        var errors = 0;
+        await service.start(
+          localeId: 'en_US',
+          maxDuration: const Duration(seconds: 60),
+          onEnded: () => ends++,
+          onError: () => errors++,
+        );
+        plugin.emitResult('partial');
+        plugin.status!('notListening');
+        plugin.error!();
+        plugin.status!('done');
+        expect(ends, 1);
+        expect(errors, 1);
+        expect(await service.stop(), 'partial');
+        expect(plugin.stopCalls, 1);
+        service.dispose();
+      },
+    );
+
+    test(
+      'cancel during listen serializes microphone release before next session',
+      () async {
+        final plugin = _FakeSttPlugin()..listenGate = Completer<void>();
+        final service = SpeechToTextService(plugin);
+        await service.init();
+        final first = service.start(
+          localeId: 'en_US',
+          maxDuration: const Duration(seconds: 60),
+        );
+        await Future<void>.delayed(Duration.zero);
+        final old = plugin.resultCallbacks.single;
+        final cancelling = service.cancel();
+        final live = <String>[];
+        final second = service.start(
+          localeId: 'en_US',
+          maxDuration: const Duration(seconds: 60),
+          onTranscript: live.add,
+        );
+        plugin.listenGate!.complete();
+        await first;
+        await cancelling;
+        await second;
+        expect(plugin.calls, ['listen', 'cancel', 'listen']);
+        old('old session', true);
+        plugin.emitResult('new session', isFinal: true);
+        expect(live, ['new session']);
+        expect(await service.stop(), 'new session');
+        service.dispose();
+      },
+    );
+
+    test(
+      'cancel or dispose unblocks finalization and discards late final',
+      () async {
+        for (final dispose in [false, true]) {
+          final plugin = _FakeSttPlugin();
+          final service = SpeechToTextService(plugin);
+          await service.init();
+          final live = <String>[];
+          await service.start(
+            localeId: 'en_US',
+            maxDuration: const Duration(seconds: 60),
+            onTranscript: live.add,
+          );
+          final finishing = service.stop();
+          if (dispose) {
+            service.dispose();
+          } else {
+            await service.cancel();
+          }
+          expect(await finishing, isEmpty);
+          plugin.emitResult('late discarded', isFinal: true);
+          expect(live, isEmpty);
+          if (!dispose) service.dispose();
+        }
+      },
+    );
+
+    test(
+      'stop waits for real final delivered after native stop returns',
+      () async {
+        final plugin = _FakeSttPlugin();
+        final service = SpeechToTextService(plugin);
+        await service.init(preferredLocaleId: 'en_US');
+        await service.start(
+          localeId: 'en_US',
+          maxDuration: const Duration(seconds: 60),
+        );
+        plugin.emitResult('incomplete');
+        plugin.afterStop = () => Timer(
+          const Duration(milliseconds: 20),
+          () => plugin.emitResult('complete final words', isFinal: true),
+        );
+        expect(await service.stop(), 'complete final words');
+        service.dispose();
+      },
+    );
     test('stop returns the latest accumulated transcript, trimmed', () async {
       final plugin = _FakeSttPlugin();
       final service = SpeechToTextService(plugin);

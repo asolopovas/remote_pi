@@ -8,6 +8,35 @@ Widget wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 Widget code(String text, {Key? key}) =>
     CodeViewport(key: key, label: 'dart', text: text, child: Text(text));
 void main() {
+  test(
+    'optional composite wrap width rejects nonpositive and nonfinite values',
+    () {
+      for (final width in [
+        0.0,
+        -1.0,
+        double.infinity,
+        double.negativeInfinity,
+        double.nan,
+      ]) {
+        expect(
+          () => CodeViewport(
+            text: '',
+            bodyWrapWidth: width,
+            child: const SizedBox(),
+          ),
+          throwsAssertionError,
+        );
+      }
+      expect(
+        const CodeViewport(
+          text: '',
+          bodyWrapWidth: 320,
+          child: SizedBox(),
+        ).bodyWrapWidth,
+        320,
+      );
+    },
+  );
   testWidgets(
     'exact title/count, default wrapping, streaming updates and full clipboard',
     (tester) async {

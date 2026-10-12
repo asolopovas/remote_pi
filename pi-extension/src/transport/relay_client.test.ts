@@ -91,6 +91,44 @@ describe("RelayClient", () => {
     client.close();
   });
 
+  test("display: hello seeds null identity and whole-object rename/reset keep room routing", async () => {
+    const client = new RelayClient("ws://localhost:9999", keypair);
+    const display = {
+      native_session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      epoch: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      revision: 0,
+      name: null,
+    };
+    const roomMeta = { name: "routing-agent", cwd: "/duplicate", display };
+    const connected = client.connect({ roomId: "stable-room", roomMeta });
+    await vi.waitFor(() => expect(currentWs().sent.length).toBeGreaterThan(0));
+    simulateChallenge(currentWs());
+    await connected;
+    expect(JSON.parse(currentWs().sent[0])).toEqual({
+      type: "hello", pubkey: Buffer.from(keypair.publicKey).toString("base64"),
+      room_id: "stable-room", room_meta: roomMeta,
+    });
+    const renamed = { ...display, revision: 1, name: "Pi · system" };
+    const reset = { ...display, revision: 2, name: null };
+    for (const display of [renamed, reset]) {
+      const frame = { type: "room_meta_update", room_id: "stable-room", meta: { display } };
+      client.sendControl(frame);
+      expect(JSON.parse(currentWs().sent.at(-1)!)).toEqual(frame);
+    }
+    expect(currentWs().sent).toHaveLength(4); // same WS: hello, auth, rename, reset
+    client.close();
+  });
+
+  test("display: legacy hello leaves optional display absent", async () => {
+    const client = new RelayClient("ws://localhost:9999", keypair);
+    const connected = client.connect({ roomId: "stable-room", roomMeta: { name: "routing-agent", cwd: "/duplicate" } });
+    await vi.waitFor(() => expect(currentWs().sent.length).toBeGreaterThan(0));
+    simulateChallenge(currentWs());
+    await connected;
+    expect(JSON.parse(currentWs().sent[0]).room_meta).not.toHaveProperty("display");
+    client.close();
+  });
+
   test("connect: sends auth with 64-byte Ed25519 signature", async () => {
     const client = new RelayClient("ws://localhost:9999", keypair);
     await connectWithAuth(client);

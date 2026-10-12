@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 // ignore_for_file: lines_longer_than_80_chars
 
 // ---------------------------------------------------------------------------
@@ -48,6 +50,7 @@ sealed class ControlInbound {
               ? ThinkingLevel.fromWire(rawThinking)
               : null,
           working: rawWorking,
+          display: RoomDisplay.tryFromJson(j['display']),
         );
       }(),
       'room_ended' => RoomEnded(
@@ -77,6 +80,11 @@ sealed class ControlInbound {
           // cleared state), so a plain nullable bool models the patch:
           // null = absent (preserve current), true/false = set.
           working: meta?['working'] as bool?,
+          display: RoomDisplay.tryFromJson(meta?['display']),
+          hasDisplay:
+              meta?.containsKey('display') == true &&
+              (meta?['display'] == null ||
+                  RoomDisplay.tryFromJson(meta?['display']) != null),
           hasModel: hasModel,
           hasThinking: hasThinking,
         );
@@ -168,10 +176,94 @@ Map<String, dynamic> roomsCheckFrame(List<String> peers) => {
 // "keep current" (omit) from "set to null" (pass `null` explicitly).
 const Object _kRoomInfoUnset = Object();
 
+/// Verified producer display incarnation, never a routing or history identity.
+class RoomDisplay {
+  final String nativeSessionId;
+  final String epoch;
+  final int revision;
+  final String? name;
+
+  const RoomDisplay._(
+    this.nativeSessionId,
+    this.epoch,
+    this.revision,
+    this.name,
+  );
+
+  static final _uuid = RegExp(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+  );
+  // Same Cc/Cf and line/paragraph separator bounds as the producer/Relay.
+  static final _controls = RegExp(
+    r'[\x00-\x1f\x7f-\x9f\u00ad\u0600-\u0605\u061c\u06dd\u070f\u0890-\u0891\u08e2\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb\u{110bd}\u{110cd}\u{13430}-\u{1343f}\u{1bca0}-\u{1bca3}\u{1d173}-\u{1d17a}\u{e0001}\u{e0020}-\u{e007f}]',
+    unicode: true,
+  );
+
+  static RoomDisplay? tryFromJson(Object? value) {
+    if (value is! Map ||
+        value.length != 4 ||
+        !value.keys.toSet().containsAll({
+          'native_session_id',
+          'epoch',
+          'revision',
+          'name',
+        })) {
+      return null;
+    }
+    final native = value['native_session_id'];
+    final epoch = value['epoch'];
+    final revision = value['revision'];
+    final name = value['name'];
+    if (native is! String ||
+        !_uuid.hasMatch(native) ||
+        epoch is! String ||
+        !_uuid.hasMatch(epoch) ||
+        revision is! int ||
+        revision < 0 ||
+        revision > 9007199254740991) {
+      return null;
+    }
+    if (name != null &&
+        (name is! String ||
+            name.runes.length > 128 ||
+            utf8.encode(name).length > 512 ||
+            _controls.hasMatch(name))) {
+      return null;
+    }
+    return RoomDisplay._(native, epoch, revision, name as String?);
+  }
+
+  bool sameIncarnation(RoomDisplay other) =>
+      nativeSessionId == other.nativeSessionId && epoch == other.epoch;
+
+  Map<String, dynamic> toJson() => {
+    'native_session_id': nativeSessionId,
+    'epoch': epoch,
+    'revision': revision,
+    'name': name,
+  };
+  @override
+  bool operator ==(Object other) =>
+      other is RoomDisplay &&
+      sameIncarnation(other) &&
+      revision == other.revision &&
+      name == other.name;
+  @override
+  int get hashCode => Object.hash(nativeSessionId, epoch, revision, name);
+}
+
 /// Snapshot of a single Pi room (one cwd / session).
 class RoomInfo {
   final String roomId;
+
+  /// Remote routing name, not a mobile override or desktop alias.
   final String? name;
+
+  /// Explicit mobile-only override, persisted as local_name.
+  final String? localName;
+
+  /// Current connection/room display authority; never restored from disk.
+  final RoomDisplay? display;
   final String? cwd;
   final int startedAt;
 
@@ -202,6 +294,8 @@ class RoomInfo {
     this.model,
     this.thinking,
     this.working = false,
+    this.localName,
+    this.display,
   });
 
   factory RoomInfo.fromJson(Map<String, dynamic> j) {
@@ -209,6 +303,7 @@ class RoomInfo {
     return RoomInfo(
       roomId: j['room_id'] as String,
       name: j['name'] as String?,
+      display: RoomDisplay.tryFromJson(j['display']),
       cwd: j['cwd'] as String?,
       startedAt: (j['started_at'] as num).toInt(),
       model: j['model'] as String?,
@@ -227,18 +322,27 @@ class RoomInfo {
     'model': model,
     if (thinking != null) 'thinking': thinking!.wire,
     'working': working,
+    if (display != null) 'display': display!.toJson(),
   };
 
   RoomInfo copyWith({
     String? name,
     String? cwd,
     int? startedAt,
+    Object? localName = _kRoomInfoUnset,
+    Object? display = _kRoomInfoUnset,
     Object? model = _kRoomInfoUnset,
     Object? thinking = _kRoomInfoUnset,
     bool? working,
   }) => RoomInfo(
     roomId: roomId,
     name: name ?? this.name,
+    localName: identical(localName, _kRoomInfoUnset)
+        ? this.localName
+        : localName as String?,
+    display: identical(display, _kRoomInfoUnset)
+        ? this.display
+        : display as RoomDisplay?,
     cwd: cwd ?? this.cwd,
     startedAt: startedAt ?? this.startedAt,
     model: identical(model, _kRoomInfoUnset) ? this.model : model as String?,
@@ -253,6 +357,8 @@ class RoomInfo {
       other is RoomInfo &&
       other.roomId == roomId &&
       other.name == name &&
+      other.localName == localName &&
+      other.display == display &&
       other.cwd == cwd &&
       other.startedAt == startedAt &&
       other.model == model &&
@@ -260,13 +366,23 @@ class RoomInfo {
       other.working == working;
 
   @override
-  int get hashCode =>
-      Object.hash(roomId, name, cwd, startedAt, model, thinking, working);
+  int get hashCode => Object.hash(
+    roomId,
+    name,
+    localName,
+    display,
+    cwd,
+    startedAt,
+    model,
+    thinking,
+    working,
+  );
 }
 
 class RoomAnnounced extends ControlInbound {
   final String peer;
   final String roomId;
+  final RoomDisplay? display;
   final String? name;
   final String? cwd;
   final int startedAt;
@@ -288,6 +404,7 @@ class RoomAnnounced extends ControlInbound {
     required this.roomId,
     required this.startedAt,
     this.name,
+    this.display,
     this.cwd,
     this.model,
     this.thinking,
@@ -320,6 +437,10 @@ class RoomMetaUpdated extends ControlInbound {
   final String peer;
   final String roomId;
   final String? model;
+  final RoomDisplay? display;
+
+  /// True only for a valid whole object or explicit authority invalidation.
+  final bool hasDisplay;
 
   /// Plan/28 Wave D — current thinking level, parsed from
   /// `meta.thinking`. Null when the Pi only published a model change.
@@ -351,6 +472,8 @@ class RoomMetaUpdated extends ControlInbound {
     required this.peer,
     required this.roomId,
     this.model,
+    this.display,
+    this.hasDisplay = false,
     this.thinking,
     this.working,
     this.hasModel = true,
@@ -1481,21 +1604,20 @@ class AskQuestionWire {
   });
 
   factory AskQuestionWire.fromJson(Map<String, dynamic> j) => AskQuestionWire(
-        id: j['id'] as String? ?? '',
-        label: (j['label'] as String?) ?? (j['prompt'] as String?) ?? '',
-        prompt: j['prompt'] as String? ?? '',
-        type: AskQuestionWireType.fromWire(j['type'] as String?) ??
-            AskQuestionWireType.single,
-        required: (j['required'] as bool?) ?? false,
-        presentedType:
-            AskQuestionWireType.fromWire(j['presentedType'] as String?),
-        requestedType:
-            AskQuestionWireType.fromWire(j['requestedType'] as String?),
-        options: (j['options'] as List<dynamic>? ?? const <dynamic>[])
-            .whereType<Map>()
-            .map((m) => AskOptionWire.fromJson(m.cast<String, dynamic>()))
-            .toList(growable: false),
-      );
+    id: j['id'] as String? ?? '',
+    label: (j['label'] as String?) ?? (j['prompt'] as String?) ?? '',
+    prompt: j['prompt'] as String? ?? '',
+    type:
+        AskQuestionWireType.fromWire(j['type'] as String?) ??
+        AskQuestionWireType.single,
+    required: (j['required'] as bool?) ?? false,
+    presentedType: AskQuestionWireType.fromWire(j['presentedType'] as String?),
+    requestedType: AskQuestionWireType.fromWire(j['requestedType'] as String?),
+    options: (j['options'] as List<dynamic>? ?? const <dynamic>[])
+        .whereType<Map>()
+        .map((m) => AskOptionWire.fromJson(m.cast<String, dynamic>()))
+        .toList(growable: false),
+  );
 }
 
 /// Optional pi-ask enrichment on an `extension_ui_request`. When present, the
@@ -1516,7 +1638,8 @@ class AskEnrichmentWire {
     this.questions = const <AskQuestionWire>[],
   });
 
-  factory AskEnrichmentWire.fromJson(Map<String, dynamic> j) => AskEnrichmentWire(
+  factory AskEnrichmentWire.fromJson(Map<String, dynamic> j) =>
+      AskEnrichmentWire(
         flowId: j['flow_id'] as String? ?? '',
         toolCallId: j['tool_call_id'] as String?,
         source: (j['source'] as String?) ?? 'tool',
@@ -1556,7 +1679,8 @@ class ExtensionUiRequest extends ServerMessage {
   factory ExtensionUiRequest.fromJson(Map<String, dynamic> j) =>
       ExtensionUiRequest(
         id: j['id'] as String? ?? '',
-        method: ExtensionUiMethod.fromWire(j['method'] as String?) ??
+        method:
+            ExtensionUiMethod.fromWire(j['method'] as String?) ??
             ExtensionUiMethod.select,
         title: j['title'] as String?,
         message: j['message'] as String?,
@@ -1589,7 +1713,9 @@ class AskAnswerWire {
   Map<String, dynamic> toJson() {
     final m = <String, dynamic>{};
     if (values.isNotEmpty) m['values'] = values;
-    if (customText != null && customText!.isNotEmpty) m['customText'] = customText;
+    if (customText != null && customText!.isNotEmpty) {
+      m['customText'] = customText;
+    }
     if (note != null && note!.isNotEmpty) m['note'] = note;
     if (optionNotes.isNotEmpty) m['optionNotes'] = optionNotes;
     return m;
@@ -1601,6 +1727,7 @@ class AskAnswerWire {
 class AskResponseEnrichmentWire {
   final String flowId;
   final bool isCancel;
+
   /// 'submit' | 'elaborate' (null when cancel). Raw string for forward-compat.
   final String? mode;
   final Map<String, AskAnswerWire> answers;

@@ -6,7 +6,6 @@ import 'package:app/ui/chat/attachment/states/attachment_state.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/voice/states/voice_input_state.dart';
 import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
-import 'package:app/ui/chat/voice/widgets/recording_strip.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -18,21 +17,10 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 // - Plan/28 — quick actions (⚙) icon sits to the left of the attach
 //   button and is visible only while the field is empty (so it never
 //   competes with the send affordance).
-// - Plan/29 — when [voice] is provided, the mic becomes hold-to-talk:
-//   long-press starts recording (a WhatsApp-style RecordingStrip replaces
-//   the row), slide left past the threshold cancels, release transcribes
-//   and drops the text into the (empty) field for manual review/send. The
-//   recognizer never auto-sends.
+// - Tap microphone starts live dictation; next tap stops, never sends.
 
-/// One-shot UI hint the composer asks the host page to surface (snackbar /
-/// settings deep-link). Keeps InputBar free of `BuildContext`-bound effects.
-enum VoiceHint {
-  /// User tapped the mic instead of holding it.
-  holdToTalk,
-
-  /// Mic / speech permission was denied — guide to system Settings (#10).
-  permissionDenied,
-}
+/// Permission guidance requested from the host page.
+enum VoiceHint { permissionDenied }
 
 class InputBar extends StatefulWidget {
   final bool disabled; // offline or no peer
@@ -47,11 +35,11 @@ class InputBar extends StatefulWidget {
   final void Function(String text)? onSetQueued;
   final void Function(String id)? onClearQueued;
 
-  /// Plan/29 — voice-input ViewModel. When null the mic falls back to the
+  /// Tap-toggle voice-input ViewModel. When null the mic falls back to the
   /// legacy [onStartAudio] tap (and existing tests pump InputBar without it).
   final VoiceInputViewModel? voice;
 
-  /// Plan/29 — surfaces a [VoiceHint] to the host page for a snackbar /
+  /// Surfaces a [VoiceHint] to the host page for a snackbar /
   /// settings deep-link.
   final void Function(VoiceHint hint)? onVoiceHint;
 
@@ -84,10 +72,7 @@ class InputBar extends StatefulWidget {
   State<InputBar> createState() => _InputBarState();
 }
 
-class _InputBarState extends State<InputBar> {
-  /// How far left the press must slide to arm slide-to-cancel (logical px).
-  static const double _cancelThreshold = 90;
-
+class _InputBarState extends State<InputBar> with WidgetsBindingObserver {
   final _controller = TextEditingController();
   // Owns the field's focus so we can intercept hardware Enter on its OWN
   // node (the primary/leaf focus). An ancestor Focus runs too late: the
@@ -95,16 +80,16 @@ class _InputBarState extends State<InputBar> {
   // handling would consume Enter before an ancestor ever sees it.
   late final FocusNode _focusNode = FocusNode(onKeyEvent: _onComposerKey);
   bool _empty = true;
-  bool _cancelArmed = false;
-  // True while the hold-to-talk gesture is active. Lets `_beginVoice` tell
-  // whether the user is still holding once `startRecording` resolves — if not
-  // (the permission prompt ended the hold), the recording is discarded.
-  bool _holding = false;
+  // Voice owns only the text it last wrote into an initially empty field.
+  // Any manual text/composition edit relinquishes ownership and stops capture.
+  String? _voiceText;
+  bool _writingVoice = false;
   StreamSubscription<String>? _transcriptSub;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _controller.addListener(_onTextChange);
     _subscribeTranscripts();
   }
@@ -113,8 +98,21 @@ class _InputBarState extends State<InputBar> {
   void didUpdateWidget(InputBar old) {
     super.didUpdateWidget(old);
     if (!identical(old.voice, widget.voice)) {
+      unawaited(old.voice?.cancel());
+      _voiceText = null;
       _transcriptSub?.cancel();
       _subscribeTranscripts();
+    }
+    if (!old.disabled && widget.disabled) unawaited(widget.voice?.cancel());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // inactive can be the permission prompt; don't cancel its explicit intent.
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      unawaited(widget.voice?.cancel());
     }
   }
 
@@ -123,14 +121,39 @@ class _InputBarState extends State<InputBar> {
   }
 
   void _onTranscript(String text) {
-    if (!mounted || text.isEmpty) return; // empty → no-op (#12)
-    // The field is empty by construction (mic only shows when empty), so we
-    // replace rather than concatenate (#non-objetivo: no merge).
-    _controller.text = text;
-    _controller.selection = TextSelection.collapsed(offset: text.length);
+    if (!mounted ||
+        text.isEmpty ||
+        _voiceText == null ||
+        _controller.text != _voiceText) {
+      return;
+    }
+    final selection = _controller.selection;
+    final atEnd =
+        !selection.isValid ||
+        (selection.isCollapsed &&
+            selection.extentOffset == _controller.text.length);
+    _writingVoice = true;
+    _voiceText = text;
+    _controller.value = TextEditingValue(
+      text: text,
+      selection: atEnd
+          ? TextSelection.collapsed(offset: text.length)
+          : TextSelection(
+              baseOffset: selection.baseOffset.clamp(0, text.length),
+              extentOffset: selection.extentOffset.clamp(0, text.length),
+            ),
+    );
+    _writingVoice = false;
   }
 
   void _onTextChange() {
+    if (!_writingVoice &&
+        _voiceText != null &&
+        (_controller.text != _voiceText ||
+            !_controller.value.composing.isCollapsed)) {
+      _voiceText = null;
+      unawaited(widget.voice?.cancel());
+    }
     final next = _controller.text.isEmpty;
     if (next == _empty) return;
     setState(() {
@@ -140,7 +163,9 @@ class _InputBarState extends State<InputBar> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _transcriptSub?.cancel();
+    unawaited(widget.voice?.cancel());
     _controller.removeListener(_onTextChange);
     _controller.dispose();
     _focusNode.dispose();
@@ -148,6 +173,7 @@ class _InputBarState extends State<InputBar> {
   }
 
   void _submit() {
+    if (widget.voice?.active ?? false) return;
     final text = _controller.text.trim();
     // Plan/30 — an attached image makes an empty-caption send valid.
     final hasImage = widget.attachment?.hasImage ?? false;
@@ -218,58 +244,25 @@ class _InputBarState extends State<InputBar> {
     );
   }
 
-  // --- voice gesture ---------------------------------------------------------
+  // --- dictation toggle ------------------------------------------------------
 
-  void _onVoiceStart() {
-    _holding = true;
-    if (_cancelArmed) setState(() => _cancelArmed = false);
-    unawaited(_beginVoice());
-  }
-
-  Future<void> _beginVoice() async {
+  Future<void> _onVoiceTap() async {
     final voice = widget.voice;
     if (voice == null) return;
-    await voice.startRecording();
-    if (!mounted) return;
-    // Bug fix: on first use the OS permission prompt steals the hold — the
-    // finger lifts to tap "Allow", so the press ends BEFORE recording actually
-    // begins (state isn't VoiceRecording yet, so the release no-ops). When
-    // `startRecording` then resolves and starts, the composer was left stuck
-    // "recording" with no finger down. If the gesture is already over by the
-    // time we get here, discard that phantom recording.
-    if (!_holding && voice.state is VoiceRecording) {
-      await voice.cancel();
-      if (!mounted) return;
+    if (voice.active) {
+      await voice.stopAndTranscribe();
+      return;
     }
-    final s = voice.state;
-    if (s is VoiceUnavailable &&
-        s.reason == VoiceUnavailableReason.permissionDenied) {
+    if (!_empty) return;
+    _voiceText = '';
+    await voice.startRecording();
+    if (!mounted || !identical(voice, widget.voice)) return;
+    final state = voice.state;
+    if (state is VoiceUnavailable &&
+        state.reason == VoiceUnavailableReason.permissionDenied) {
       widget.onVoiceHint?.call(VoiceHint.permissionDenied);
     }
   }
-
-  void _onVoiceMove(LongPressMoveUpdateDetails details) {
-    if (widget.voice?.state is! VoiceRecording) return;
-    final armed = details.offsetFromOrigin.dx < -_cancelThreshold;
-    if (armed != _cancelArmed) setState(() => _cancelArmed = armed);
-  }
-
-  void _onVoiceEnd() {
-    _holding = false;
-    final voice = widget.voice;
-    final armed = _cancelArmed;
-    if (_cancelArmed) setState(() => _cancelArmed = false);
-    if (voice == null || voice.state is! VoiceRecording) return;
-    if (armed) {
-      unawaited(voice.cancel());
-    } else {
-      // Transcript arrives via voice.transcripts → _onTranscript, the same
-      // path the 60s cap uses — release never populates the field directly.
-      unawaited(voice.stopAndTranscribe());
-    }
-  }
-
-  void _onVoiceTap() => widget.onVoiceHint?.call(VoiceHint.holdToTalk);
 
   @override
   Widget build(BuildContext context) {
@@ -278,8 +271,7 @@ class _InputBarState extends State<InputBar> {
       if (widget.attachment != null) widget.attachment!,
     ];
     if (listenables.isEmpty) return _composer(context);
-    // Rebuild on every voice/attachment emit (tick / level / availability /
-    // pick) so the strip + preview animate even when no ancestor watches them.
+    // Rebuild voice feedback and attachment preview without ancestor listeners.
     return ListenableBuilder(
       listenable: Listenable.merge(listenables),
       builder: (context, _) => _composer(context),
@@ -294,7 +286,8 @@ class _InputBarState extends State<InputBar> {
     final hasQuickActions = widget.onOpenQuickActions != null;
     final recording = voiceState is VoiceRecording;
     final transcribing = voiceState is VoiceTranscribing;
-    final showStrip = recording || transcribing;
+    final starting = voiceState is VoiceStarting;
+    final voiceActive = recording || transcribing || starting;
     final voiceUnsupported =
         voiceState is VoiceUnavailable &&
         voiceState.reason == VoiceUnavailableReason.unsupported;
@@ -307,7 +300,7 @@ class _InputBarState extends State<InputBar> {
         widget.onOpenAttach != null &&
         canInteract &&
         !widget.streaming &&
-        !showStrip &&
+        !voiceActive &&
         !visionBlocked &&
         !hasImage;
 
@@ -316,7 +309,7 @@ class _InputBarState extends State<InputBar> {
         !hasImage &&
         canInteract &&
         !widget.streaming &&
-        !showStrip &&
+        !voiceActive &&
         hasQuickActions;
 
     // During a working turn with typed content, the main action sends steering;
@@ -325,7 +318,7 @@ class _InputBarState extends State<InputBar> {
         widget.streaming &&
         hasContent &&
         canInteract &&
-        !showStrip &&
+        !voiceActive &&
         widget.onCancel != null;
 
     return Container(
@@ -334,149 +327,131 @@ class _InputBarState extends State<InputBar> {
         color: colors.bg,
         border: Border(top: BorderSide(color: colors.border)),
       ),
-      child: Stack(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
+          if (hasImage)
+            _AttachmentPreview(
+              image: attachState.image,
+              onRemove: widget.attachment!.removeImage,
+            ),
+          for (final item in widget.queuedMessages)
+            _QueuedMessagePreview(
+              text: item.text,
+              editable: item.editable,
+              onTap: item.editable ? () => _editQueued(item) : null,
+              onClear: item.editable
+                  ? () => widget.onClearQueued?.call(item.id)
+                  : null,
+            ),
+          Row(
             children: [
-              if (hasImage)
-                _AttachmentPreview(
-                  image: attachState.image,
-                  onRemove: widget.attachment!.removeImage,
-                ),
-              for (final item in widget.queuedMessages)
-                _QueuedMessagePreview(
-                  text: item.text,
-                  editable: item.editable,
-                  onTap: item.editable ? () => _editQueued(item) : null,
-                  onClear: item.editable
-                      ? () => widget.onClearQueued?.call(item.id)
-                      : null,
-                ),
-              Row(
-                children: [
-                  _QuickActionsButton(
-                    show: showQuickActions,
-                    onPressed: widget.onOpenQuickActions,
+              _QuickActionsButton(
+                show: showQuickActions,
+                onPressed: widget.onOpenQuickActions,
+              ),
+              _AttachButton(enabled: attachEnabled, onTap: widget.onOpenAttach),
+              const SizedBox(width: 10),
+              // Text field (doubles as the image caption when one is set).
+              Expanded(
+                child: TextField(
+                  // Intercept hardware Enter on the field's OWN focus
+                  // node (the primary/leaf): plain Enter sends,
+                  // Shift+Enter newlines — see _onComposerKey. Must be
+                  // the leaf, not an ancestor Focus, or the multiline
+                  // newline handling consumes Enter first.
+                  focusNode: _focusNode,
+                  controller: _controller,
+                  enabled: canInteract,
+                  // Grow with the content: starts at one line, expands up
+                  // to 6 then scrolls internally. On a touch soft-keyboard
+                  // Enter inserts a newline; sending is via the composer
+                  // button (hardware Enter sends — see _onComposerKey).
+                  minLines: 1,
+                  maxLines: 6,
+                  keyboardType: TextInputType.multiline,
+                  textInputAction: TextInputAction.newline,
+                  style: TextStyle(
+                    fontFamily: kMonoFamily,
+                    fontSize: 13,
+                    color: colors.text,
                   ),
-                  _AttachButton(
-                    enabled: attachEnabled,
-                    onTap: widget.onOpenAttach,
-                  ),
-                  const SizedBox(width: 10),
-                  // Text field (doubles as the image caption when one is set).
-                  Expanded(
-                    child: TextField(
-                      // Intercept hardware Enter on the field's OWN focus
-                      // node (the primary/leaf): plain Enter sends,
-                      // Shift+Enter newlines — see _onComposerKey. Must be
-                      // the leaf, not an ancestor Focus, or the multiline
-                      // newline handling consumes Enter first.
-                      focusNode: _focusNode,
-                      controller: _controller,
-                      enabled: canInteract,
-                      // Grow with the content: starts at one line, expands up
-                      // to 6 then scrolls internally. On a touch soft-keyboard
-                      // Enter inserts a newline; sending is via the composer
-                      // button (hardware Enter sends — see _onComposerKey).
-                      minLines: 1,
-                      maxLines: 6,
-                      keyboardType: TextInputType.multiline,
-                      textInputAction: TextInputAction.newline,
-                      style: TextStyle(
-                        fontFamily: kMonoFamily,
-                        fontSize: 13,
-                        color: colors.text,
-                      ),
-                      cursorColor: colors.accent,
-                      decoration: InputDecoration(
-                        hintText: widget.disabled
-                            ? 'Offline…'
-                            : widget.streaming
-                            ? 'Steer current response…'
-                            : hasImage
-                            ? 'Add a caption…'
-                            : 'Send a message…',
-                        hintStyle: TextStyle(
-                          color: colors.muted,
-                          fontFamily: kMonoFamily,
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 10,
-                        ),
-                        filled: true,
-                        fillColor: colors.inputFill,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(19),
-                          borderSide: BorderSide(color: colors.border),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(19),
-                          borderSide: BorderSide(color: colors.border),
-                        ),
-                        disabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(19),
-                          borderSide: BorderSide(
-                            color: colors.border.withValues(alpha: 0.5),
-                          ),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(19),
-                          borderSide: BorderSide(
-                            color: colors.accent,
-                            width: 1.2,
-                          ),
-                        ),
+                  cursorColor: colors.accent,
+                  decoration: InputDecoration(
+                    hintText: widget.disabled
+                        ? 'Offline…'
+                        : widget.streaming
+                        ? 'Steer current response…'
+                        : hasImage
+                        ? 'Add a caption…'
+                        : 'Send a message…',
+                    hintStyle: TextStyle(
+                      color: colors.muted,
+                      fontFamily: kMonoFamily,
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
+                    filled: true,
+                    fillColor: colors.inputFill,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(19),
+                      borderSide: BorderSide(color: colors.border),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(19),
+                      borderSide: BorderSide(color: colors.border),
+                    ),
+                    disabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(19),
+                      borderSide: BorderSide(
+                        color: colors.border.withValues(alpha: 0.5),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  _ComposerActionButton(
-                    streaming: widget.streaming,
-                    hasContent: hasContent,
-                    disabled: widget.disabled,
-                    onSendText: _submit,
-                    onCancel: widget.onCancel,
-                    onStartAudio: widget.onStartAudio,
-                    voiceEnabled: widget.voice != null,
-                    voiceUnsupported: voiceUnsupported,
-                    onVoiceLongPressStart: _onVoiceStart,
-                    onVoiceLongPressMoveUpdate: _onVoiceMove,
-                    onVoiceLongPressEnd: _onVoiceEnd,
-                    onVoiceTap: _onVoiceTap,
-                  ),
-                  if (showInlineStop) ...[
-                    const SizedBox(width: 8),
-                    _InlineStopButton(onTap: widget.onCancel!),
-                  ],
-                ],
-              ),
-            ],
-          ),
-          // Recording strip — overlays the row (decision #11) while the mic's
-          // GestureDetector stays mounted underneath so the same long-press
-          // keeps feeding move/end events across the swap. IgnorePointer so
-          // the overlay never steals the in-flight gesture.
-          if (showStrip)
-            Positioned.fill(
-              child: IgnorePointer(
-                child: ColoredBox(
-                  color: colors.bg,
-                  child: Center(
-                    child: recording
-                        ? RecordingStrip(
-                            level: voiceState.level,
-                            elapsed: voiceState.elapsed,
-                            maxDuration:
-                                widget.voice?.maxDuration ??
-                                const Duration(seconds: 60),
-                            cancelArmed: _cancelArmed,
-                          )
-                        : const _TranscribingStrip(),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(19),
+                      borderSide: BorderSide(color: colors.accent, width: 1.2),
+                    ),
                   ),
                 ),
+              ),
+              const SizedBox(width: 10),
+              _ComposerActionButton(
+                streaming: widget.streaming,
+                hasContent: hasContent,
+                disabled: widget.disabled,
+                onSendText: _submit,
+                onCancel: widget.onCancel,
+                onStartAudio: widget.onStartAudio,
+                voiceEnabled: widget.voice != null,
+                voiceUnsupported: voiceUnsupported,
+                voiceActive: voiceActive,
+                voiceFinalizing: transcribing,
+                onVoiceTap: _onVoiceTap,
+              ),
+              if (showInlineStop) ...[
+                const SizedBox(width: 8),
+                _InlineStopButton(onTap: widget.onCancel!),
+              ],
+            ],
+          ),
+          if (voiceActive || voiceState is VoiceFailed || voiceUnsupported)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                starting
+                    ? 'Starting dictation…'
+                    : transcribing
+                    ? 'Finishing dictation…'
+                    : recording
+                    ? 'Listening · ${voiceState.elapsed.inSeconds}s · Tap mic to stop'
+                    : voiceUnsupported
+                    ? 'Local dictation unavailable on this device'
+                    : 'Dictation ended with an error. Review recognized text.',
+                key: const Key('dictation-feedback'),
+                style: TextStyle(color: colors.muted2, fontSize: 12),
               ),
             ),
         ],
@@ -701,38 +676,6 @@ class _AttachmentPreview extends StatelessWidget {
   }
 }
 
-class _TranscribingStrip extends StatelessWidget {
-  const _TranscribingStrip();
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.colors;
-    return Row(
-      key: const Key('transcribing-strip'),
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        SizedBox(
-          width: 13,
-          height: 13,
-          child: CircularProgressIndicator(
-            strokeWidth: 2,
-            color: colors.accent,
-          ),
-        ),
-        const SizedBox(width: 10),
-        Text(
-          'transcribing…',
-          style: TextStyle(
-            fontFamily: kMonoFamily,
-            fontSize: 12,
-            color: colors.muted2,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
 class _QuickActionsButton extends StatefulWidget {
   const _QuickActionsButton({required this.show, required this.onPressed});
 
@@ -837,9 +780,8 @@ class _ComposerActionButton extends StatelessWidget {
     required this.onStartAudio,
     required this.voiceEnabled,
     required this.voiceUnsupported,
-    required this.onVoiceLongPressStart,
-    required this.onVoiceLongPressMoveUpdate,
-    required this.onVoiceLongPressEnd,
+    required this.voiceActive,
+    required this.voiceFinalizing,
     required this.onVoiceTap,
   });
 
@@ -855,9 +797,8 @@ class _ComposerActionButton extends StatelessWidget {
   // Plan/29 voice wiring.
   final bool voiceEnabled;
   final bool voiceUnsupported;
-  final VoidCallback onVoiceLongPressStart;
-  final void Function(LongPressMoveUpdateDetails) onVoiceLongPressMoveUpdate;
-  final VoidCallback onVoiceLongPressEnd;
+  final bool voiceActive;
+  final bool voiceFinalizing;
   final VoidCallback onVoiceTap;
 
   _ComposerMode get _mode {
@@ -892,19 +833,21 @@ class _ComposerActionButton extends StatelessWidget {
   Widget build(BuildContext context) {
     // Decision #9 edge — no on-device recognition anywhere: hide the mic so
     // the empty field shows just the attach placeholder (dictate via keyboard).
-    if (_mode == _ComposerMode.sendAudio && voiceUnsupported) {
+    if (!voiceActive && _mode == _ComposerMode.sendAudio && voiceUnsupported) {
       return const SizedBox.shrink();
     }
 
-    // Hold-to-talk mic (decision #4): long-press records, slide cancels,
-    // release transcribes. A plain tap surfaces the "hold to talk" hint.
-    if (_mode == _ComposerMode.sendAudio && voiceEnabled) {
-      return GestureDetector(
-        onTap: disabled ? null : onVoiceTap,
-        onLongPressStart: disabled ? null : (_) => onVoiceLongPressStart(),
-        onLongPressMoveUpdate: disabled ? null : onVoiceLongPressMoveUpdate,
-        onLongPressEnd: disabled ? null : (_) => onVoiceLongPressEnd(),
-        child: _button(context),
+    if (voiceActive || (_mode == _ComposerMode.sendAudio && voiceEnabled)) {
+      return Semantics(
+        label: voiceActive ? 'Stop dictation' : 'Start dictation',
+        button: true,
+        child: GestureDetector(
+          key: const Key('input-bar-dictation'),
+          onTap: voiceFinalizing || (disabled && !voiceActive)
+              ? null
+              : onVoiceTap,
+          child: _button(context),
+        ),
       );
     }
 
@@ -943,8 +886,8 @@ class _ComposerActionButton extends StatelessWidget {
           child: ScaleTransition(scale: anim, child: child),
         ),
         child: Icon(
-          _icon,
-          key: ValueKey(_mode),
+          voiceActive ? LucideIcons.mic600 : _icon,
+          key: ValueKey(voiceActive ? 'dictating' : _mode),
           color: visualEnabled ? colors.onAccent : colors.muted,
           size: 20,
         ),

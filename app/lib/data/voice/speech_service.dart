@@ -3,32 +3,13 @@ import 'dart:io' show Platform;
 import 'dart:ui' show PlatformDispatcher;
 
 import 'package:app/domain/contracts/contracts.dart';
+import 'package:flutter/services.dart';
 import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
-/// Plan 29 — on-device speech-to-text, app-only.
-///
-/// Wraps the `speech_to_text` plugin behind a testable contract. The audio
-/// is captured by the recognizer and transcribed in-stream — **no audio file
-/// is ever created** — and `onDevice: true` forces local recognition so the
-/// audio never leaves the device (decisions #2 / #7). The output is plain
-/// text that the caller drops into the chat composer for manual review.
-///
-/// ### On-device detection (Risk 1 spike — resolved)
-///
-/// `speech_to_text` 7.x does **not** expose a per-locale on-device capability
-/// query: `locales()` returns a flat list of recognition locales with no
-/// "supportsOnDevice" tag, and `onDevice` is only honored at `listen()` time
-/// (`SpeechListenOptions.onDevice`). On iOS that maps to
-/// `SFSpeechRecognizer.requiresOnDeviceRecognition`; a locale with no local
-/// model fails the listen attempt at runtime (delivered via `onError`).
-///
-/// So detection is best-effort: [init] resolves the locale from `locales()`
-/// membership (preferred → same-language → `en_US` → any English, decision
-/// #9), and the `onDevice: true` flag plus the runtime `onError` backstop
-/// guard the rare "listed but no local model" case (a permanent error there
-/// surfaces as an empty transcript → no-op, decision #12).
+/// Local speech recognition; text stays in the composer until manual Send.
+/// Locale membership is not evidence that a local model is installed.
 abstract class SpeechService extends Service {
   /// Resolve permission + on-device availability + the locale to use.
   /// [preferredLocaleId] defaults to the platform locale when null.
@@ -39,7 +20,13 @@ abstract class SpeechService extends Service {
   Stream<double> get soundLevel;
 
   /// Begin on-device capture for [localeId], hard-capped at [maxDuration].
-  Future<void> start({required String localeId, required Duration maxDuration});
+  Future<void> start({
+    required String localeId,
+    required Duration maxDuration,
+    void Function(String text)? onTranscript,
+    void Function()? onEnded,
+    void Function()? onError,
+  });
 
   /// Stop capture and resolve with the accumulated transcript (trimmed;
   /// empty string when nothing was recognized).
@@ -104,9 +91,12 @@ final class SpeechUnsupported extends SpeechAvailability {
 /// The plugin is reached through the [SttPlugin] seam so the locale-resolution
 /// / cap / transcript-accumulation logic is unit-testable without a device.
 class SpeechToTextService implements SpeechService {
-  SpeechToTextService([SttPlugin? plugin, SoundLevelScale? levelScale])
-    : _plugin = plugin ?? SttPluginImpl(),
-      _levelScale = levelScale ?? SoundLevelScale.forPlatform();
+  SpeechToTextService([
+    SttPlugin? plugin,
+    SoundLevelScale? levelScale,
+    this.finalWait = const Duration(seconds: 2),
+  ]) : _plugin = plugin ?? SttPluginImpl(),
+       _levelScale = levelScale ?? SoundLevelScale.forPlatform();
 
   final SttPlugin _plugin;
   final SoundLevelScale _levelScale;
@@ -115,14 +105,38 @@ class SpeechToTextService implements SpeechService {
 
   /// Latest recognized words (partial or final). Reset on each [start].
   String _transcript = '';
+  final Duration finalWait;
+  int _generation = 0;
+  bool _disposed = false;
+  bool _ended = false;
+  Completer<void>? _completion;
+  Future<String>? _stopping;
+  void Function()? _onEnded;
+  void Function()? _onError;
   bool _initialized = false;
+  Future<void> _nativeTail = Future<void>.value();
 
   @override
   Stream<double> get soundLevel => _levelController.stream;
 
   @override
   Future<SpeechAvailability> init({String? preferredLocaleId}) async {
-    final ok = _initialized || await _plugin.initialize();
+    final ok =
+        _initialized ||
+        await _plugin.initialize(
+          onStatus: (status) {
+            if (_completion == null || _disposed) return;
+            // Android stop can emit doneNoResult (normalized to done)
+            // BEFORE its first/final result. Only a real final ends the wait.
+            if (status == 'notListening' || status == 'done') _end();
+          },
+          onError: () {
+            if (_completion == null || _disposed) return;
+            _onError?.call();
+            _complete();
+            _end();
+          },
+        );
     if (!ok) {
       // initialize() returns false for either a denied permission or an
       // unavailable recognizer — disambiguate via hasPermission().
@@ -143,38 +157,111 @@ class SpeechToTextService implements SpeechService {
   Future<void> start({
     required String localeId,
     required Duration maxDuration,
+    void Function(String text)? onTranscript,
+    void Function()? onEnded,
+    void Function()? onError,
   }) async {
-    _transcript = '';
-    await _plugin.listen(
-      localeId: localeId,
-      listenFor: maxDuration,
-      onResult: (words, _) {
-        // Decision #6 — partial results are accumulated but never shown live;
-        // the latest text wins and only materializes on stop().
-        if (words.isNotEmpty) _transcript = words;
-      },
-      onLevel: (level) {
-        if (!_levelController.isClosed) {
-          _levelController.add(_levelScale.normalize(level));
-        }
-      },
+    final generation = ++_generation;
+    _complete();
+    _completion = null;
+    _stopping = null;
+    await _serialize(() async {
+      if (generation != _generation || _disposed) return;
+      _transcript = '';
+      _ended = false;
+      _completion = Completer<void>();
+      _onEnded = onEnded;
+      _onError = onError;
+      await _plugin.listen(
+        localeId: localeId,
+        listenFor: maxDuration,
+        onResult: (words, isFinal) {
+          if (generation != _generation || _disposed) return;
+          if (words.trim().isNotEmpty) {
+            _transcript = words.trim();
+            onTranscript?.call(_transcript);
+          }
+          if (isFinal) {
+            _complete();
+            _end();
+          }
+        },
+        onLevel: (level) {
+          if (generation == _generation && !_levelController.isClosed) {
+            _levelController.add(_levelScale.normalize(level));
+          }
+        },
+      );
+    });
+  }
+
+  /// Keep native listen/stop/cancel ordered across route-scoped owners. The
+  /// returned operation still propagates its error; only the queue tail recovers.
+  Future<void> _serialize(Future<void> Function() action) {
+    final operation = _nativeTail.then((_) => action());
+    _nativeTail = operation.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stack) {},
     );
+    return operation;
+  }
+
+  void _complete() {
+    final completion = _completion;
+    if (completion != null && !completion.isCompleted) completion.complete();
+  }
+
+  void _end() {
+    if (_ended) return;
+    _ended = true;
+    _onEnded?.call();
   }
 
   @override
-  Future<String> stop() async {
-    await _plugin.stop();
-    return _transcript.trim();
+  Future<String> stop() => _stopping ??= _finish();
+
+  Future<String> _finish() async {
+    final generation = _generation;
+    final completion = _completion;
+    if (completion == null) return '';
+    // Native stop acknowledges the request, NOT final recognition. Wait for a
+    // real final/done/error callback, with a bounded last-valid-partial fallback.
+    try {
+      await Future.wait<void>([
+        _serialize(_plugin.stop),
+        completion.future,
+      ]).timeout(finalWait, onTimeout: () => <void>[]);
+    } on PlatformException {
+      _onError?.call();
+    }
+    if (generation != _generation || _disposed) return '';
+    final text = _transcript;
+    ++_generation; // reject late results, even before the next start
+    _completion = null;
+    _onEnded = null;
+    _onError = null;
+    // Release even a stopped recognizer whose final never arrived, and fence
+    // channel messages before another route/session acquires the singleton.
+    await _serialize(_plugin.cancel);
+    return text;
   }
 
   @override
   Future<void> cancel() async {
+    ++_generation;
+    _complete();
+    _completion = null;
+    _onEnded = null;
+    _onError = null;
     _transcript = '';
-    await _plugin.cancel();
+    _stopping = null;
+    await _serialize(_plugin.cancel);
   }
 
   @override
   void dispose() {
+    _disposed = true;
+    unawaited(cancel());
     if (!_levelController.isClosed) _levelController.close();
   }
 
@@ -217,7 +304,6 @@ class SpeechToTextService implements SpeechService {
         firstWhere((s) => s == 'en_US') ??
         firstWhere((s) => s.split('_').first == 'en');
   }
-
 }
 
 /// Maps the plugin's raw `onSoundLevelChange` value to the `0..1` envelope the
@@ -272,7 +358,10 @@ typedef SttLevelCallback = void Function(double level);
 abstract class SttPlugin {
   /// Initialize the recognizer (triggers the native permission prompt on the
   /// first call). Returns false if unavailable or permission denied.
-  Future<bool> initialize();
+  Future<bool> initialize({
+    void Function(String status)? onStatus,
+    void Function()? onError,
+  });
 
   Future<bool> hasPermission();
 
@@ -299,13 +388,20 @@ class SttPluginImpl implements SttPlugin {
     : _stt = plugin ?? stt.SpeechToText();
 
   final stt.SpeechToText _stt;
+  bool _nativeEnded = false;
 
   @override
-  Future<bool> initialize() => _stt.initialize(
-    // The error stream is consulted by the service only as a backstop for
-    // the "listed locale, no on-device model" case; swallow here so a
-    // transient error during init doesn't throw into the ViewModel.
-    onError: (SpeechRecognitionError _) {},
+  Future<bool> initialize({
+    void Function(String status)? onStatus,
+    void Function()? onError,
+  }) => _stt.initialize(
+    onStatus: (status) {
+      if (status == 'notListening' || status == 'done') _nativeEnded = true;
+      onStatus?.call(status);
+    },
+    onError: (SpeechRecognitionError _) => onError?.call(),
+    // Disable plugin partial-as-final synthesis; service owns fallback timing.
+    finalTimeout: Duration.zero,
   );
 
   @override
@@ -324,6 +420,7 @@ class SttPluginImpl implements SttPlugin {
     required SttResultCallback onResult,
     required SttLevelCallback onLevel,
   }) async {
+    _nativeEnded = false;
     await _stt.listen(
       onResult: (SpeechRecognitionResult r) =>
           onResult(r.recognizedWords, r.finalResult),
@@ -331,16 +428,19 @@ class SttPluginImpl implements SttPlugin {
       listenOptions: stt.SpeechListenOptions(
         // Decision #7 — local recognition only; audio never leaves the device.
         onDevice: true,
-        // Accumulate partials internally (decision #6 hides them visually).
+        listenMode: stt.ListenMode.dictation,
+        // Cumulative recognition hypotheses are shown live by replacement.
         partialResults: true,
-        // Hold-to-talk: don't auto-stop on a pause; only the user release or
-        // the listenFor cap ends the session.
+        // Request the cap; native engines can end earlier on silence.
         pauseFor: listenFor,
         listenFor: listenFor,
         localeId: localeId,
         cancelOnError: false,
       ),
     );
+    if (!_stt.isListening && !_nativeEnded) {
+      throw stt.ListenNotStartedException();
+    }
   }
 
   @override

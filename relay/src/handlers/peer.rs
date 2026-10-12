@@ -16,7 +16,7 @@ use crate::auth::challenge::{
     HELLO_TIMEOUT_MS, challenge_line, gen_nonce, parse_hello, verify_auth,
 };
 use crate::protocol::outer::{OuterEnvelope, parse_line};
-use crate::rooms::{RoomMeta, RoomMetaPatch};
+use crate::rooms::{RoomDisplay, RoomMeta, RoomMetaPatch};
 
 /// Axum route handler: validates the WebSocket upgrade and hands the upgraded
 /// socket to `handle_peer`, which owns the connection for its lifetime.
@@ -81,48 +81,10 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
     let peer_short = peer_id[peer_id.len().saturating_sub(8)..].to_string();
 
     // Extract room_id and room_meta from hello (auth handled separately above).
-    let room_meta = {
-        let hello: serde_json::Value =
-            serde_json::from_str(&hello_text).unwrap_or(serde_json::Value::Null);
-        let room_id = hello
-            .get("room_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("main")
-            .to_string();
-        let room_meta_val = hello.get("room_meta");
-        let name = room_meta_val
-            .and_then(|m| m.get("name"))
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let cwd = room_meta_val
-            .and_then(|m| m.get("cwd"))
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let model = room_meta_val
-            .and_then(|m| m.get("model"))
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let thinking = room_meta_val
-            .and_then(|m| m.get("thinking"))
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let working = room_meta_val
-            .and_then(|m| m.get("working"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let started_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
-        RoomMeta {
-            room_id,
-            name,
-            cwd,
-            model,
-            thinking,
-            working,
-            started_at,
-        }
+    let hello = serde_json::from_str(&hello_text).unwrap_or(serde_json::Value::Null);
+    let Some(room_meta) = room_meta_from_hello(&hello) else {
+        warn!(peer = %peer_short, "invalid hello display metadata, closing");
+        return;
     };
     let room_id = room_meta.room_id.clone();
 
@@ -232,26 +194,10 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     rooms.unsubscribe(&peer_id, peers).await;
                                 }
                                 "rooms_check" => {
-                                    for target_peer in &peers {
-                                        let active_rooms = registry.rooms_of(target_peer);
-                                        let resp = serde_json::json!({
-                                            "type": "rooms",
-                                            "peer": target_peer,
-                                            "rooms": active_rooms,
-                                        })
-                                        .to_string();
-                                        // Dedup per (conn, target_peer):
-                                        // first reply always sent; subsequent
-                                        // identical snapshots dropped.
-                                        if last_rooms_resp.get(target_peer) == Some(&resp) {
-                                            metrics.inc_rooms_suppressed(1);
-                                            continue;
-                                        }
-                                        last_rooms_resp.insert(target_peer.clone(), resp.clone());
-                                        if sink.send(Message::Text(resp)).await.is_err() {
-                                            break 'routing;
-                                        }
-                                        metrics.inc_rooms_emitted(1);
+                                    if !registry.queue_rooms_check(
+                                        &peer_id, &room_id, conn_id, &peers, &mut last_rooms_resp,
+                                    ) {
+                                        break 'routing;
                                     }
                                 }
 
@@ -271,31 +217,18 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                         .and_then(|v| v.as_str())
                                         .unwrap_or(&room_id)
                                         .to_string();
-                                    let meta_obj = frame
-                                        .get("meta")
-                                        .and_then(|v| v.as_object());
-                                    let model_patch = meta_obj
-                                        .and_then(|m| m.get("model"))
-                                        .map(|v| v.as_str().map(String::from));
-                                    let thinking_patch = meta_obj
-                                        .and_then(|m| m.get("thinking"))
-                                        .map(|v| v.as_str().map(String::from));
-                                    let working_patch = meta_obj
-                                        .and_then(|m| m.get("working"))
-                                        .and_then(|v| v.as_bool());
-                                    let patch = RoomMetaPatch {
-                                        model: model_patch,
-                                        thinking: thinking_patch,
-                                        working: working_patch,
+                                    let Some(patch) = room_meta_patch(&frame) else {
+                                        warn!(peer = %peer_short, "invalid display update metadata, dropping");
+                                        continue;
                                     };
                                     if !registry
-                                        .update_room_meta(&peer_id, &target_room, patch)
+                                        .update_room_meta(&peer_id, &target_room, conn_id, patch)
                                         .await
                                     {
                                         warn!(
                                             peer = %peer_short,
                                             room = %target_room,
-                                            "room_meta_update for unknown (peer, room), dropping"
+                                            "room_meta_update rejected, dropping"
                                         );
                                     }
                                 }
@@ -395,4 +328,293 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
     registry.unregister(&peer_id, &room_id, conn_id).await;
     rooms.unsubscribe_all(&peer_id).await;
     info!(peer = %peer_short, room = %room_id, addr = %peer_addr, "disconnected");
+}
+
+fn room_meta_from_hello(hello: &serde_json::Value) -> Option<RoomMeta> {
+    let room_id = hello
+        .get("room_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("main")
+        .to_string();
+    let room_meta_val = hello.get("room_meta");
+    let name = room_meta_val
+        .and_then(|m| m.get("name"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let cwd = room_meta_val
+        .and_then(|m| m.get("cwd"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let model = room_meta_val
+        .and_then(|m| m.get("model"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let thinking = room_meta_val
+        .and_then(|m| m.get("thinking"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let working = room_meta_val
+        .and_then(|m| m.get("working"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let started_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let display = match room_meta_val.and_then(|m| m.get("display")) {
+        Some(value) => Some(RoomDisplay::from_value(value)?),
+        None => None,
+    };
+    Some(RoomMeta {
+        room_id,
+        name,
+        cwd,
+        model,
+        thinking,
+        working,
+        started_at,
+        display,
+    })
+}
+
+fn room_meta_patch(frame: &serde_json::Value) -> Option<RoomMetaPatch> {
+    let meta = frame.get("meta").and_then(|v| v.as_object());
+    let display = match meta.and_then(|m| m.get("display")) {
+        Some(value) => Some(RoomDisplay::from_value(value)?),
+        None => None,
+    };
+    Some(RoomMetaPatch {
+        model: meta
+            .and_then(|m| m.get("model"))
+            .map(|v| v.as_str().map(String::from)),
+        thinking: meta
+            .and_then(|m| m.get("thinking"))
+            .map(|v| v.as_str().map(String::from)),
+        working: meta
+            .and_then(|m| m.get("working"))
+            .and_then(|v| v.as_bool()),
+        display,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn producer_serialization_fixtures_parse_without_routing_rekey() {
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/81-display-serialization.json"
+        ))
+        .unwrap();
+        let frames: Vec<_> = fixtures
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| &v["frame"])
+            .collect();
+        let legacy = room_meta_from_hello(frames[0]).unwrap();
+        assert!(legacy.display.is_none());
+        let initial = room_meta_from_hello(frames[1]).unwrap();
+        assert_eq!(initial.room_id, "0123456789ab");
+        assert_eq!(initial.name.as_deref(), Some("routing-agent"));
+        let display = initial.display.unwrap();
+        assert_eq!(display.revision, 0);
+        assert!(display.name.is_none());
+        let rename = room_meta_patch(frames[2]).unwrap().display.unwrap();
+        assert!(display.same_incarnation(&rename));
+        assert_eq!(rename.revision, 1);
+        assert_eq!(rename.name.as_deref(), Some("Pi · system"));
+        let reset = room_meta_patch(frames[3]).unwrap().display.unwrap();
+        assert_eq!(reset.revision, 2);
+        assert!(reset.name.is_none());
+        assert_eq!(
+            room_meta_from_hello(frames[4]).unwrap().display,
+            Some(reset)
+        );
+        let unrelated = room_meta_patch(frames[5]).unwrap();
+        assert!(unrelated.display.is_none());
+        assert_eq!(unrelated.working, Some(false));
+    }
+
+    #[test]
+    fn invalid_display_hello_and_update_fail_closed_but_legacy_patch_semantics_remain() {
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!({}),
+            serde_json::json!("alias"),
+        ] {
+            assert!(
+                room_meta_from_hello(&serde_json::json!({"room_meta": {"display": invalid}}))
+                    .is_none()
+            );
+            assert!(
+                room_meta_patch(
+                    &serde_json::json!({"meta": {"display": invalid, "working": true}})
+                )
+                .is_none()
+            );
+        }
+        let patch = room_meta_patch(
+            &serde_json::json!({"meta": {"model": null, "thinking": "high", "working": null}}),
+        )
+        .unwrap();
+        assert_eq!(patch.model, Some(None));
+        assert_eq!(patch.thinking, Some(Some("high".into())));
+        assert!(patch.working.is_none());
+        assert!(patch.display.is_none());
+        assert!(
+            room_meta_patch(&serde_json::json!({"meta": {}}))
+                .unwrap()
+                .is_empty()
+        );
+        let hello = room_meta_from_hello(&serde_json::json!({})).unwrap();
+        assert_eq!(hello.room_id, "main");
+        assert!(!hello.working);
+    }
+
+    #[tokio::test]
+    async fn producer_serialization_fixtures_round_trip_registry_snapshots_and_subscriber_frames() {
+        use crate::{FirehoseMetrics, PeerRegistry, PresenceManager, RoomManager};
+        use std::sync::Arc;
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/81-display-serialization.json"
+        ))
+        .unwrap();
+        let frames: Vec<_> = fixtures
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| &v["frame"])
+            .collect();
+        let rooms = Arc::new(RoomManager::new());
+        let registry = PeerRegistry::new(
+            Arc::new(PresenceManager::new()),
+            rooms.clone(),
+            Arc::new(FirehoseMetrics::new()),
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        registry
+            .register(
+                "app".into(),
+                room_meta_from_hello(&serde_json::json!({})).unwrap(),
+                tx,
+            )
+            .await;
+        rooms.subscribe("app".into(), vec!["pi".into()]).await;
+        let initial = room_meta_from_hello(frames[1]).unwrap();
+        let room = initial.room_id.clone();
+        let (tx, _) = mpsc::unbounded_channel();
+        let conn = registry.register("pi".into(), initial, tx).await;
+        let announced: serde_json::Value =
+            serde_json::from_str(rx.try_recv().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(announced["type"], "room_announced");
+        assert_eq!(announced["display"], frames[1]["room_meta"]["display"]);
+        for frame in [frames[2], frames[3], frames[5]] {
+            assert!(
+                registry
+                    .update_room_meta("pi", &room, conn, room_meta_patch(frame).unwrap())
+                    .await
+            );
+            let pushed: serde_json::Value =
+                serde_json::from_str(rx.try_recv().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(pushed["type"], "room_meta_updated");
+            let snapshot = serde_json::to_value(registry.rooms_of("pi")).unwrap();
+            assert_eq!(pushed["meta"]["display"], snapshot[0]["display"]);
+            assert_eq!(snapshot[0]["name"], "routing-agent");
+            assert_eq!(snapshot[0]["room_id"], room);
+            if let Some(display) = frame["meta"].get("display") {
+                assert_eq!(&pushed["meta"]["display"], display);
+            }
+        }
+        let (tx, _) = mpsc::unbounded_channel();
+        let reconnect = registry
+            .register("pi".into(), room_meta_from_hello(frames[4]).unwrap(), tx)
+            .await;
+        assert!(rx.try_recv().is_err());
+        registry.unregister("pi", &room, conn).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "same cached identity is not a new room/presence edge"
+        );
+        assert_eq!(
+            serde_json::to_value(registry.rooms_of("pi")).unwrap()[0]["display"],
+            frames[4]["room_meta"]["display"]
+        );
+        registry.unregister("pi", &room, reconnect).await;
+        let ended: serde_json::Value =
+            serde_json::from_str(rx.try_recv().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(ended["type"], "room_ended");
+        assert!(registry.rooms_of("pi").is_empty());
+    }
+
+    #[tokio::test]
+    async fn rooms_check_cannot_overtake_pending_display_announcement_and_invalidation() {
+        use crate::{FirehoseMetrics, PeerRegistry, PresenceManager, RoomManager};
+        use std::sync::Arc;
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/81-display-serialization.json"
+        ))
+        .unwrap();
+        let initial = &fixtures[1]["frame"];
+        let rooms = Arc::new(RoomManager::new());
+        let metrics = Arc::new(FirehoseMetrics::new());
+        let registry = PeerRegistry::new(
+            Arc::new(PresenceManager::new()),
+            rooms.clone(),
+            metrics.clone(),
+        );
+        let (tx, mut queued) = mpsc::unbounded_channel();
+        let app_conn = registry
+            .register(
+                "app".into(),
+                room_meta_from_hello(&serde_json::json!({})).unwrap(),
+                tx,
+            )
+            .await;
+        rooms.subscribe("app".into(), vec!["pi".into()]).await;
+        let (tx, _) = mpsc::unbounded_channel();
+        let old_conn = registry
+            .register("pi".into(), room_meta_from_hello(initial).unwrap(), tx)
+            .await;
+        let mut competing = initial.clone();
+        competing["room_meta"]["display"]["epoch"] = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into();
+        let (tx, _) = mpsc::unbounded_channel();
+        registry
+            .register("pi".into(), room_meta_from_hello(&competing).unwrap(), tx)
+            .await;
+        assert!(registry.rooms_of("pi")[0].display.is_none());
+        // Exercise the same capture/dedup/enqueue call as the handler. A
+        // ready incoming check cannot bypass the pending authority channel.
+        let mut cache = HashMap::new();
+        assert!(registry.queue_rooms_check("app", "main", app_conn, &["pi".into()], &mut cache));
+        let mut delivered = Vec::new();
+        while let Ok(message) = queued.try_recv() {
+            delivered.push(
+                serde_json::from_str::<serde_json::Value>(message.to_text().unwrap()).unwrap(),
+            );
+        }
+        assert_eq!(
+            delivered
+                .iter()
+                .map(|v| v["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["room_announced", "room_meta_updated", "rooms"],
+            "a current snapshot must not overtake older queued authority frames"
+        );
+        assert!(delivered[2]["rooms"][0].get("display").is_none());
+        registry
+            .unregister("pi", initial["room_id"].as_str().unwrap(), old_conn)
+            .await;
+        assert!(registry.queue_rooms_check("app", "main", app_conn, &["pi".into()], &mut cache));
+        let refresh: serde_json::Value =
+            serde_json::from_str(queued.try_recv().unwrap().to_text().unwrap()).unwrap();
+        let snapshot: serde_json::Value =
+            serde_json::from_str(queued.try_recv().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(refresh["type"], "room_announced");
+        assert_eq!(snapshot["type"], "rooms");
+        assert_eq!(refresh["display"], competing["room_meta"]["display"]);
+        assert_eq!(snapshot["rooms"][0]["display"], refresh["display"]);
+        assert!(queued.try_recv().is_err());
+    }
 }

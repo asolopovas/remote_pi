@@ -1,5 +1,6 @@
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
+import 'package:app/ui/core/session_label.dart';
 import 'package:flutter/foundation.dart' show listEquals, mapEquals;
 
 sealed class HomeState {
@@ -33,20 +34,8 @@ class HomeItem {
 
   const HomeItem({required this.peer, required this.room});
 
-  /// Display name preference: explicit room.name → cwd basename →
-  /// `<peer-nickname>` → fallback session_name.
-  String get displayName {
-    if (room.name != null && room.name!.isNotEmpty) return room.name!;
-    final cwd = room.cwd;
-    if (cwd != null && cwd.isNotEmpty) {
-      final last = cwd.split('/').where((s) => s.isNotEmpty).toList();
-      if (last.isNotEmpty) return last.last;
-    }
-    if (peer.nickname != null && peer.nickname!.isNotEmpty) {
-      return peer.nickname!;
-    }
-    return peer.sessionName;
-  }
+  /// Uses the same presentation precedence as tiles and chat navigation.
+  String get displayName => sessionDisplayName(room, peer);
 
   @override
   bool operator ==(Object other) =>

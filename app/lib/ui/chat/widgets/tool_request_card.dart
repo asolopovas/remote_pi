@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'compact_output_header.dart';
 import 'source_code.dart';
+import 'codemode_preview.dart';
 
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
@@ -37,6 +38,17 @@ class _ToolRequestCardState extends State<ToolRequestCard>
   bool _expanded = false;
   // Retain explicit choices, not every default collapsed row in the lazy list.
   bool _touched = false;
+  String? _parsedScript;
+  List<EmbeddedSource> _embedded = const [];
+
+  List<EmbeddedSource> _previews(String script) {
+    if (_parsedScript != script) {
+      _parsedScript = script;
+      _embedded = embeddedCodemodeSource(script);
+    }
+    return _embedded;
+  }
+
   @override
   bool get wantKeepAlive => _touched;
 
@@ -47,6 +59,8 @@ class _ToolRequestCardState extends State<ToolRequestCard>
         oldWidget.tool.toolCallId != tool.toolCallId) {
       _expanded = false;
       _touched = false;
+      _parsedScript = null;
+      _embedded = const [];
       updateKeepAlive();
     }
   }
@@ -83,7 +97,10 @@ class _ToolRequestCardState extends State<ToolRequestCard>
           borderRadius: BorderRadius.circular(8),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        child: _buildCodeBlock(context, color),
+        child: LayoutBuilder(
+          builder: (context, constraints) =>
+              _buildCodeBlock(context, color, constraints.maxWidth),
+        ),
       ),
     );
   }
@@ -120,8 +137,24 @@ class _ToolRequestCardState extends State<ToolRequestCard>
     );
   }
 
-  Widget _buildCodeBlock(BuildContext context, Color color) {
+  Widget _buildCodeBlock(
+    BuildContext context,
+    Color color,
+    double nestedFrameWidth,
+  ) {
     final source = _source(tool.tool, tool.args);
+    final toolName = _toolName(tool.tool);
+    final codemode = toolName == 'codemode';
+    final embedded =
+        _expanded &&
+            codemode &&
+            source != null &&
+            {
+              'javascript',
+              'typescript',
+            }.contains(SourceCode.normalizeLanguage(source.language))
+        ? _previews(source.text)
+        : const <EmbeddedSource>[];
     final fullDetails = _expanded
         ? [
             _fullText(tool.args),
@@ -130,11 +163,18 @@ class _ToolRequestCardState extends State<ToolRequestCard>
           ].join('\n\n')
         : '';
     final text = _expanded ? source?.text ?? fullDetails : '';
+    final originalOutput = _expanded && tool.result != null
+        ? _fullText(tool.result)
+        : '';
+    final output = _expanded && tool.result != null
+        ? readableToolOutput(toolName, tool.result) ?? originalOutput
+        : '';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         CodeViewport(
           key: ValueKey('tool-code-${tool.id}'),
+          bodyWrapWidth: embedded.isNotEmpty ? nestedFrameWidth : null,
           headerBuilder: (context, controls) =>
               _buildHeader(context, color, controls),
           text: text,
@@ -152,7 +192,42 @@ class _ToolRequestCardState extends State<ToolRequestCard>
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (source != null) ...[
+                      if (embedded.isNotEmpty) ...[
+                        Text(
+                          'Static embedded source · not execution records',
+                          style: context.typo.monoSmall,
+                        ),
+                        // Outer Scroll unbounds its body, not nested frames.
+                        for (final preview in embedded)
+                          SizedBox(
+                            width: nestedFrameWidth,
+                            child: CodeViewport(
+                              key: ValueKey(
+                                'tool-embedded-${tool.id}-${preview.offset}',
+                              ),
+                              label: '${preview.label} · ${preview.language}',
+                              text: preview.text,
+                              copyTooltip: 'Copy decoded embedded string',
+                              child: SourceCode(
+                                preview.text,
+                                language: preview.language,
+                              ),
+                            ),
+                          ),
+                        SizedBox(
+                          width: nestedFrameWidth,
+                          child: CodeViewport(
+                            key: ValueKey('tool-original-${tool.id}'),
+                            label: 'Original Script · ${source!.language}',
+                            text: source.text,
+                            copyTooltip: 'Copy original script',
+                            child: SourceCode(
+                              source.text,
+                              language: source.language,
+                            ),
+                          ),
+                        ),
+                      ] else if (source != null) ...[
                         Text(
                           '${source.label} · ${source.language}',
                           style: context.typo.monoSmall,
@@ -164,7 +239,7 @@ class _ToolRequestCardState extends State<ToolRequestCard>
                       if (tool.result != null) ...[
                         const SizedBox(height: 8),
                         Text('Output', style: context.typo.monoSmall),
-                        Text(_fullText(tool.result), style: context.typo.mono),
+                        Text(output, style: context.typo.mono),
                       ],
                       if (tool.error?.isNotEmpty ?? false) ...[
                         const SizedBox(height: 8),
@@ -178,6 +253,16 @@ class _ToolRequestCardState extends State<ToolRequestCard>
                   ),
                 ),
         ),
+        if (_expanded && tool.result != null && output != originalOutput)
+          CodeViewport(
+            key: ValueKey('tool-original-output-${tool.id}'),
+            label: 'Original Output',
+            text: originalOutput,
+            copyTooltip: 'Copy original output',
+            child: SelectionArea(
+              child: Text(originalOutput, style: context.typo.mono),
+            ),
+          ),
         // Original source/metadata and complete output remain optional, not primary.
         if (_expanded &&
             (source != null ||

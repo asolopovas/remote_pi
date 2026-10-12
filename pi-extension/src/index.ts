@@ -68,7 +68,8 @@ import type {
   WireImage,
   QueuedMessageItem,
 } from "./protocol/types.js";
-import { RelayClient, RoomAlreadyOpenError } from "./transport/relay_client.js";
+import { RelayClient, RoomAlreadyOpenError, type RoomMeta } from "./transport/relay_client.js";
+import { ownTuiosWindow, TuiosDisplayAdapter } from "./session/tuios_display.js";
 import { PlainPeerChannel } from "./transport/peer_channel.js";
 import {
   createExtensionUiBridge,
@@ -225,7 +226,30 @@ let _myRoomId: string | null = null;   // this Pi's room id (derived from cwd)
 // open instead of starting null. The SDK fires `thinking_level_select`
 // on every change (initial load + user toggle), mirrored to room_meta
 // the same way model is — apps subscribe to one channel for both.
-let _myRoomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; working?: boolean } | null = null;
+let _myRoomMeta: RoomMeta | null = null;
+let _displayAdapter: TuiosDisplayAdapter | null = null;
+let _displaySessionIsCurrent: (() => boolean) | null = null;
+
+/** Start only after hello has advertised this incarnation, never in factory. */
+function _activateRoomDisplay(relay: RelayClient, roomId: string): void {
+  const adapter = _displayAdapter;
+  if (!adapter || _myRoomMeta?.display?.epoch !== adapter.snapshot().epoch) return;
+  const generation = _relayLifecycleGeneration;
+  const isCurrent = (): boolean => (
+    !_disposed && _state === "started" && _displayAdapter === adapter &&
+    _displaySessionIsCurrent?.() === true &&
+    _relayLifecycleGeneration === generation && _relay === relay && _myRoomId === roomId
+  );
+  adapter.activate({
+    isCurrent,
+    publish: (display) => {
+      if (!isCurrent() || !_myRoomMeta) return;
+      _myRoomMeta = { ..._myRoomMeta, display };
+      if (!isCurrent()) return;
+      relay.sendControl({ type: "room_meta_update", room_id: roomId, meta: { display } });
+    },
+  });
+}
 let _currentModel: string | undefined = undefined;  // last-known model name
 let _currentThinking: ThinkingLevel | undefined = undefined;  // last-known thinking level
 
@@ -1390,6 +1414,7 @@ async function _findKnownPeer(appPeerIdStd: string): Promise<PeerRecord | null> 
  * by omitting the reason; app falls back to ping miss naturally.
  */
 function _goIdle(byeReason?: import("./protocol/types.js").ByeReason): void {
+  _displayAdapter?.deactivate();
   _rootLifecycleGeneration += 1;
   _relayLifecycleGeneration += 1;
 
@@ -1465,6 +1490,7 @@ function _onRelayClose(closedRelay: RelayClient): void {
   if (_relay !== closedRelay) return; // delayed close from a replaced Relay
   if (_state === "idle") return;  // already torn down (e.g. /remote-pi stop)
 
+  _displayAdapter?.deactivate();
   _relayLifecycleGeneration += 1;
   _stopAutoListener?.();
   _stopAutoListener = null;
@@ -1540,6 +1566,12 @@ async function _attemptReconnect(
   if (!_cachedEd25519) return;
   if (!_isCurrentReconnect(lifecycleGeneration, url)) return;
 
+  const displayAdapter = _displayAdapter;
+  const isCurrentCandidate = (): boolean => (
+    _isCurrentReconnect(lifecycleGeneration, url) && _displayAdapter === displayAdapter &&
+    (!displayAdapter || _displaySessionIsCurrent?.() === true)
+  );
+  if (!isCurrentCandidate()) return;
   const edKp = _cachedEd25519;
   // _relayUrl is stored in canonical http(s):// form — convert at the
   // WS boundary, same as _cmdStart.
@@ -1557,18 +1589,19 @@ async function _attemptReconnect(
     // A reconnect candidate stays local until publication; every rejected
     // candidate is deterministically closed before stale-return or retry.
     try { relay.close(); } catch { /* best-effort rejected candidate cleanup */ }
-    if (!_isCurrentReconnect(lifecycleGeneration, url)) return;
+    if (!isCurrentCandidate()) return;
     _scheduleReconnect(lifecycleGeneration, url);
     return;
   }
 
-  if (!_isCurrentReconnect(lifecycleGeneration, url)) {
+  if (!isCurrentCandidate()) {
     try { relay.close(); } catch { /* best-effort stale candidate cleanup */ }
     return;
   }
 
   _relay = relay;
   _reconnectAttempt = 0;
+  if (_myRoomId) _activateRoomDisplay(relay, _myRoomId);
 
   relay.on("close", () => _onRelayClose(relay));
   _stopAutoListener = _installAutoListener(relay);
@@ -2339,6 +2372,20 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // New session. Fires on startup/new/fork/reload/resume; the ctx is always
   // bound to the current session.
   pi.on("session_start", (_event, ctx) => {
+    _displayAdapter?.deactivate();
+    _displayAdapter = null;
+    _displaySessionIsCurrent = null;
+    try {
+      const nativeSessionId = ctx.sessionManager.getSessionId();
+      _displayAdapter = new TuiosDisplayAdapter({
+        nativeSessionId,
+        candidate: ownTuiosWindow(process.env, ctx.mode),
+      });
+      _displaySessionIsCurrent = () => {
+        try { return ctx.sessionManager.getSessionId() === nativeSessionId; }
+        catch { return false; }
+      };
+    } catch { /* unavailable native identity: legacy display fallback */ }
     _lastEventCtx = ctx;
     // session_shutdown disposes per-session pi-ask subscriptions. A host that
     // reuses this module instance does NOT re-run the factory, so rebind the
@@ -2439,6 +2486,9 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // generations keep queued work stale even if a same-module session_start
     // clears `_disposed` before its promises settle.
     _disposed = true;
+    _displayAdapter?.deactivate();
+    _displayAdapter = null;
+    _displaySessionIsCurrent = null;
     _rootLifecycleGeneration += 1;
     _relayLifecycleGeneration += 1;
     _meshJoinGeneration += 1;
@@ -2720,6 +2770,10 @@ async function _cmdRootInner(
   // clears while an outgoing continuation may still be pending.
   if (!_isCurrentRootLifecycle(rootLifecycleGeneration)) return;
 
+  // Native managed workers inherit the parent's config, but are not primary
+  // mobile sessions. Keep their local mesh/locks; only explicit `relay start`
+  // may expose them. Never infer this role from UI mode, cwd, or assigned name.
+  const autoStartRelay = process.env["PI_SUBAGENT_CHILD"] !== "1";
   const cwd = "cwd" in ctx ? (ctx as ExtensionCommandContext).cwd : process.cwd();
   // Lock identity is (cwd, name). Several agents may run in the SAME folder; the
   // requested name just has to be made unique. Derive the name the same way
@@ -2781,7 +2835,7 @@ async function _cmdRootInner(
     if (!_isCurrentRootLifecycle(rootLifecycleGeneration)) return;
     await _cmdJoin(ctx);
     if (!_isCurrentRootLifecycle(rootLifecycleGeneration) || !_meshNode) return;
-    if (effectiveAutoStartRelay(newConfig)) await _cmdStart(ctx);
+    if (autoStartRelay && effectiveAutoStartRelay(newConfig)) await _cmdStart(ctx);
     if (!_isCurrentRootLifecycle(rootLifecycleGeneration) || !_meshNode) return;
     _cmdStatus(ctx);
     return;
@@ -2798,7 +2852,7 @@ async function _cmdRootInner(
   // `_cmdJoin` returns void on a canceled/failed join, so recheck both the
   // root lifecycle and publication before bringing the Relay up.
   if (!_isCurrentRootLifecycle(rootLifecycleGeneration) || !_meshNode) return;
-  if (effectiveAutoStartRelay(config) && _state === "idle") await _cmdStart(ctx);
+  if (autoStartRelay && effectiveAutoStartRelay(config) && _state === "idle") await _cmdStart(ctx);
   if (!_isCurrentRootLifecycle(rootLifecycleGeneration) || !_meshNode) return;
   _cmdStatus(ctx);
 }
@@ -2837,9 +2891,12 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
     return;
   }
   const lifecycleGeneration = ++_relayLifecycleGeneration;
+  const displayAdapter = _displayAdapter;
   const isCurrentCandidate = (): boolean => (
     !_disposed &&
     lifecycleGeneration === _relayLifecycleGeneration &&
+    _displayAdapter === displayAdapter &&
+    (!displayAdapter || _displaySessionIsCurrent?.() === true) &&
     _state === "idle" &&
     _relay === null
   );
@@ -2954,7 +3011,8 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
     _currentThinking = _pi?.getThinkingLevel() as ThinkingLevel | undefined;
   } catch { /* defensive — never block /remote-pi start on this */ }
 
-  const roomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel } = { name: sessionName, cwd };
+  const roomMeta: RoomMeta = { name: sessionName, cwd };
+  if (_displayAdapter) roomMeta.display = _displayAdapter.snapshot();
   const modelName = _currentModelName();
   if (modelName) roomMeta.model = modelName;
   if (_currentThinking) roomMeta.thinking = _currentThinking;
@@ -3003,6 +3061,7 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   _peerShort = myShort;
   _myRoomId = roomId;
   _state = "started";
+  _activateRoomDisplay(relay, roomId);
   // Set _sessionStartedAt ONLY on first /remote-pi start since process boot.
   // Subsequent start cycles (after stop) preserve the original epoch so the
   // app keeps treating it as the same session (and merges new events from
@@ -3196,6 +3255,7 @@ async function _cmdPair(ctx: Pick<ExtensionContext, "ui" | "cwd">, args = ""): P
  * `/remote-pi` again.
  */
 async function _cmdStop(ctx: Pick<ExtensionContext, "ui">): Promise<void> {
+  _displayAdapter?.deactivate();
   // Invalidate queued root work and local async candidates even when none has
   // published yet.
   _rootLifecycleGeneration += 1;

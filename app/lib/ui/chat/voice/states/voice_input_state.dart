@@ -1,9 +1,4 @@
-/// Plan 29 — voice-input state machine (decision-driven).
-///
-/// The mic is hold-to-talk: idle → recording (while held) → transcribing
-/// (brief, on release / 60s cap) → idle. Permission/locale failures land on
-/// [VoiceUnavailable] so the input bar can hide the mic or guide the user to
-/// Settings.
+/// Tap dictation: starting → recording → finalizing → idle/error.
 sealed class VoiceInputState {
   const VoiceInputState();
 }
@@ -19,7 +14,7 @@ final class VoiceIdle extends VoiceInputState {
   int get hashCode => (VoiceIdle).hashCode;
 }
 
-/// Recording in progress — drives the WhatsApp-style strip.
+/// Native capture is active; composer remains visible.
 /// [elapsed] is the running time; [level] is the `0..1` amplitude envelope.
 final class VoiceRecording extends VoiceInputState {
   const VoiceRecording({required this.elapsed, required this.level});
@@ -37,8 +32,7 @@ final class VoiceRecording extends VoiceInputState {
   int get hashCode => Object.hash(elapsed, level);
 }
 
-/// Released (or hit the 60s cap); the recognizer is finalizing. Short-lived —
-/// on-device transcription is fast, but this covers the gap.
+/// Capture ended; waiting for native final/done or bounded partial fallback.
 final class VoiceTranscribing extends VoiceInputState {
   const VoiceTranscribing();
 
@@ -71,4 +65,22 @@ final class VoiceUnavailable extends VoiceInputState {
 
   @override
   int get hashCode => reason.hashCode;
+}
+
+/// Initialization/permission is pending, not yet listening.
+final class VoiceStarting extends VoiceInputState {
+  const VoiceStarting();
+  @override
+  bool operator ==(Object other) => other is VoiceStarting;
+  @override
+  int get hashCode => (VoiceStarting).hashCode;
+}
+
+/// Recognition ended with an error. Already-visible words are retained.
+final class VoiceFailed extends VoiceInputState {
+  const VoiceFailed();
+  @override
+  bool operator ==(Object other) => other is VoiceFailed;
+  @override
+  int get hashCode => (VoiceFailed).hashCode;
 }

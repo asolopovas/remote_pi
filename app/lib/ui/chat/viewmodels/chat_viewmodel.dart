@@ -39,6 +39,9 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   PeerRecord? _activePeer;
   String _activeRoomId = 'main';
+  String? _notifiedRoomPeer;
+  String? _notifiedRoomId;
+  RoomInfo? _notifiedRoom;
   bool _bootstrapping = true;
   bool _disposed = false;
 
@@ -277,7 +280,21 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   void _recompute() {
     if (_disposed) return;
-    emit(_compose());
+    final room = activeRoom;
+    final peer = activePeer?.remoteEpk;
+    final metadataChanged =
+        peer != _notifiedRoomPeer ||
+        _activeRoomId != _notifiedRoomId ||
+        room != _notifiedRoom;
+    _notifiedRoomPeer = peer;
+    _notifiedRoomId = _activeRoomId;
+    _notifiedRoom = room;
+    final next = _compose();
+    final stateChanged = state != next;
+    emit(next);
+    // Room metadata lives in the header getters, outside ChatReady equality.
+    // Notify once without changing messages, queues or connection lifecycle.
+    if (metadataChanged && !stateChanged) notifyListeners();
   }
 
   ChatState _compose() {

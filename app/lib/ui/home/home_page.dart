@@ -3,6 +3,7 @@ import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart' show RoomInfo;
 import 'package:app/routing/adaptive.dart';
 import 'package:app/ui/core/themes/themes.dart';
+import 'package:app/ui/core/session_label.dart';
 import 'package:app/ui/home/states/home_state.dart';
 import 'package:app/ui/settings/settings_sheet.dart';
 import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
@@ -247,12 +248,16 @@ class HomePage extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 6),
-        Text(
-          statusLabel,
-          style: TextStyle(
-            fontFamily: kMonoFamily,
-            color: statusColor,
-            fontSize: 13,
+        Flexible(
+          child: Text(
+            statusLabel,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontFamily: kMonoFamily,
+              color: statusColor,
+              fontSize: 13,
+            ),
           ),
         ),
       ],
@@ -392,7 +397,7 @@ class HomePage extends StatelessWidget {
               ListTile(
                 leading: Icon(LucideIcons.pencil, color: colors.accent),
                 title: Text(
-                  'Rename session',
+                  'Mobile alias',
                   style: TextStyle(color: colors.text),
                 ),
                 onTap: () {
@@ -435,20 +440,20 @@ class HomePage extends StatelessWidget {
     HomeViewModel vm,
     HomeItem it,
   ) async {
-    final controller = TextEditingController(text: it.room.name ?? '');
+    final controller = TextEditingController(text: it.room.localName ?? '');
     final result = await showDialog<String?>(
       context: context,
       builder: (dCtx) {
         final colors = dCtx.colors;
         return AlertDialog(
           backgroundColor: colors.bg,
-          title: Text('Rename session', style: TextStyle(color: colors.text)),
+          title: Text('Mobile alias', style: TextStyle(color: colors.text)),
           content: TextField(
             controller: controller,
             autofocus: true,
             style: TextStyle(color: colors.text, fontFamily: kMonoFamily),
             decoration: InputDecoration(
-              hintText: it.room.cwd ?? 'Session',
+              hintText: 'Empty uses desktop name or project',
               hintStyle: TextStyle(color: colors.muted),
               enabledBorder: OutlineInputBorder(
                 borderSide: BorderSide(color: colors.border),
@@ -560,10 +565,9 @@ class HomePage extends StatelessWidget {
 
   /// Plan/24-fix-title: the peer/room label we already know here, so the
   /// Chat AppBar doesn't show '—' / 'Remote Pi' until the ChatViewModel
-  /// loads the PeerRecord + the first room_meta_updated arrives. Prefers
-  /// room.name (per-cwd title) → cwd tail → nickname → sessionName.
+  /// loads the PeerRecord and exact-room metadata. Uses the shared resolver.
   static String _titleFor(PeerRecord peer, RoomInfo room) =>
-      sessionProjectName(room.cwd) ?? sessionFallbackName(room, peer);
+      sessionDisplayName(room, peer);
 }
 
 /// Plan-17 follow-up — soft empty state for paired-but-no-rooms.

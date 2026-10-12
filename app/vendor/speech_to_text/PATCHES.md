@@ -1,0 +1,20 @@
+# App-local speech_to_text 7.4.0 (plan76)
+
+Source: unmodified installed cache `/home/andrius/.pub-cache/hosted/pub.dev/speech_to_text-7.4.0`, copied offline on 2026-10-11. Upstream: https://github.com/csdcorp/speech_to_text, published package version **7.4.0**. Original hosted lock archive checksum: `75587f7400f485fdf166beacd471549d98fe5d58e634f708916bb65dec05d6a4`. No archive was fetched and no global cache source was edited.
+
+License: upstream BSD 3-Clause, copyright 2019 Corner Software Development Corp.; complete unchanged `LICENSE` retained for Flutter dependency license collection. `pubspec.yaml` retains the upstream version and dependencies. `UPSTREAM.sha256` records original copied bytes before patching. Production `lib/`, `android/`, `darwin/`, upstream README/changelog/license/config are retained; examples, scripts, upstream tests and the development-only `android/gradle/` sample (including its local.properties) are excluded.
+
+## Capture-lifecycle patch
+
+- Android initialization/capture requires API31+ actual on-device capability. Capture rechecks availability and creates only `createOnDeviceSpeechRecognizer`. Non-local requests fail closed; `intentLookup` and generic/cloud fallback cannot bypass this. Availability/creation/start failures close capture without Listening. No model download API is invoked.
+- Every capture gets a fresh recognizer and a distinct `RecognitionListener`, checked by identity and token. All callbacks carry the Dart-issued capture ID across the channel. The Android-only Dart adapter rejects untagged/stale/cancelled queued events before dispatching upstream result/status/error/level listeners.
+- Stop keeps the same listener until final/error or a bounded two-second finalization limit. End-of-speech immediately ends Listening, independent of requested pause length. Final/error/cancel/engine or activity detach destroys the captured recognizer; invalidation precedes cancel/destroy callbacks. Native cap is at most60s. Old timers cannot destroy another capture.
+- API33+ locale queries report installed local languages only, finish once on unavailable/error/exception/timeout, and release their local probe. API31/32 exposes default/English locale **candidates**, not a model guarantee; capture remains strictly on-device and may reject an unavailable locale.
+- `SpeechToText.initialize` rebinds owner listeners even when its singleton is initialized. Current tagged Android errors after stop remain observable. Android early-end/listen-reply races do not restart plugin timers. Other platform implementations are unchanged. Vendor lint config disables only an upstream provider's newly introduced inference style rule, rather than rewriting unrelated source.
+- App service requests dictation mode, retains cumulative corrections/manual Send, and cancels after bounded stop completion to release/fence the native listener. ViewModel cannot resurrect Listening when early finalization completes before native startup returns.
+
+## Proof and limits
+
+`test/native/speech_to_text/run.sh` compiles the actual patched plugin with cached Gradle/Kotlin/Android/release Flutter embedding (offline, **no APK**) and executes those class files against explicit JVM Android/Flutter/JSON doubles. Tests exercise factory selection, creation/start races, listener identity/generation, queued token contract, final-after-stop, early end/error, cap/cancel/dispose and locale/permission completion. This is production native lifecycle code execution, but **not** Android framework/engine behavior or acoustic proof. Cached Robolectric/JUnit/debug embedding are unavailable; no tooling was downloaded. Dart adapter/service/composer tests use synthetic channel results, not speech audio.
+
+Independent source review, a separate exact-source code25-or-higher build/install, real local-engine/privacy/microphone controls and human multiword/second-tap acceptance remain gates. No APK, ADB, permission acceptance, audio playback or automatic send was performed in this source lane.

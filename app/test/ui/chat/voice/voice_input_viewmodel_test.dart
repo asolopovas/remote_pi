@@ -12,6 +12,12 @@ import 'package:flutter_test/flutter_test.dart';
 class _FakeSpeechService implements SpeechService {
   SpeechAvailability availability = const SpeechReady('en_US');
   String transcript = 'hello world';
+  Completer<void>? initGate;
+  Completer<void>? startGate;
+  Completer<String>? stopGate;
+  void Function(String)? live;
+  void Function()? ended;
+  void Function()? error;
 
   final StreamController<double> _level = StreamController<double>.broadcast();
   int startCalls = 0;
@@ -21,8 +27,10 @@ class _FakeSpeechService implements SpeechService {
   Duration? startedMax;
 
   @override
-  Future<SpeechAvailability> init({String? preferredLocaleId}) async =>
-      availability;
+  Future<SpeechAvailability> init({String? preferredLocaleId}) async {
+    if (initGate != null) await initGate!.future;
+    return availability;
+  }
 
   @override
   Stream<double> get soundLevel => _level.stream;
@@ -31,16 +39,23 @@ class _FakeSpeechService implements SpeechService {
   Future<void> start({
     required String localeId,
     required Duration maxDuration,
+    void Function(String text)? onTranscript,
+    void Function()? onEnded,
+    void Function()? onError,
   }) async {
     startCalls++;
     startedLocale = localeId;
     startedMax = maxDuration;
+    live = onTranscript;
+    ended = onEnded;
+    error = onError;
+    if (startGate != null) await startGate!.future;
   }
 
   @override
   Future<String> stop() async {
     stopCalls++;
-    return transcript;
+    return stopGate == null ? transcript : stopGate!.future;
   }
 
   @override
@@ -53,6 +68,143 @@ class _FakeSpeechService implements SpeechService {
 }
 
 void main() {
+  group('generation and capture lifecycle', () {
+    test(
+      'rapid taps cancel pending permission without starting microphone',
+      () async {
+        final svc = _FakeSpeechService()..initGate = Completer<void>();
+        final vm = VoiceInputViewModel(svc);
+        final starting = vm.startRecording();
+        expect(vm.state, isA<VoiceStarting>());
+        final stopping = vm.stopAndTranscribe();
+        svc.initGate!.complete();
+        await starting;
+        await stopping;
+        expect(vm.state, isA<VoiceIdle>());
+        expect(svc.startCalls, 0);
+        vm.dispose();
+      },
+    );
+
+    test(
+      'dispose during permission never starts or emits into another room',
+      () async {
+        final svc = _FakeSpeechService()..initGate = Completer<void>();
+        final vm = VoiceInputViewModel(svc);
+        final starting = vm.startRecording();
+        vm.dispose();
+        svc.initGate!.complete();
+        await starting;
+        expect(svc.startCalls, 0);
+        expect(svc.cancelCalls, 0);
+      },
+    );
+
+    test(
+      'cancel/dispose during pending native startup releases microphone',
+      () async {
+        for (final dispose in [false, true]) {
+          final svc = _FakeSpeechService()..startGate = Completer<void>();
+          final vm = VoiceInputViewModel(svc);
+          final starting = vm.startRecording();
+          await Future<void>.delayed(Duration.zero);
+          Future<void>? cancelled;
+          if (dispose) {
+            vm.dispose();
+          } else {
+            cancelled = vm.cancel();
+          }
+          svc.startGate!.complete();
+          await starting;
+          await cancelled;
+          expect(svc.cancelCalls, 1);
+          if (!dispose) {
+            expect(vm.state, isA<VoiceIdle>());
+            vm.dispose();
+          }
+        }
+      },
+    );
+
+    test(
+      'cancel while finalizing rejects transcript and old generation callbacks',
+      () async {
+        final svc = _FakeSpeechService()..stopGate = Completer<String>();
+        final vm = VoiceInputViewModel(svc);
+        final got = <String>[];
+        vm.transcripts.listen(got.add);
+        await vm.startRecording();
+        final oldLive = svc.live!;
+        final finishing = vm.stopAndTranscribe();
+        await vm.cancel();
+        svc.stopGate!.complete('cancelled final');
+        await finishing;
+        oldLive('old late words');
+        expect(got, isEmpty);
+        await vm.startRecording();
+        oldLive('old callback in new capture');
+        svc.live!('new correction');
+        expect(got, ['new correction']);
+        vm.dispose();
+      },
+    );
+
+    test('native end during startup never re-enters Listening', () async {
+      final svc = _FakeSpeechService()
+        ..startGate = Completer<void>()
+        ..stopGate = Completer<String>();
+      final vm = VoiceInputViewModel(svc);
+      final starting = vm.startRecording();
+      await Future<void>.delayed(Duration.zero);
+      svc.ended!();
+      expect(vm.state, isA<VoiceTranscribing>());
+      svc.startGate!.complete();
+      await starting;
+      expect(vm.state, isA<VoiceTranscribing>());
+      svc.stopGate!.complete('early final');
+      await Future<void>.delayed(Duration.zero);
+      expect(vm.state, isA<VoiceIdle>());
+      vm.dispose();
+    });
+
+    test(
+      'native errors stop honestly and retain valid partial/final words',
+      () async {
+        final svc = _FakeSpeechService();
+        final vm = VoiceInputViewModel(svc);
+        final got = <String>[];
+        vm.transcripts.listen(got.add);
+        await vm.startRecording();
+        svc.live!('valid partial');
+        svc.error!();
+        svc.ended!();
+        await Future<void>.delayed(Duration.zero);
+        expect(vm.state, isA<VoiceFailed>());
+        expect(got, ['valid partial', 'hello world']);
+        expect(svc.stopCalls, 1);
+        vm.dispose();
+      },
+    );
+
+    test(
+      'stop/cap race finalizes once, blocks restart and releases on dispose',
+      () async {
+        final svc = _FakeSpeechService()..stopGate = Completer<String>();
+        final vm = VoiceInputViewModel(svc);
+        await vm.startRecording();
+        final stopping = vm.stopAndTranscribe();
+        expect(await vm.stopAndTranscribe(), isEmpty);
+        await vm.startRecording();
+        expect(svc.startCalls, 1);
+        vm.dispose();
+        svc.stopGate!.complete('late final');
+        expect(await stopping, isEmpty);
+        expect(svc.stopCalls, 1);
+        expect(svc.cancelCalls, 1);
+      },
+    );
+  });
+
   group('startRecording', () {
     test('start → VoiceRecording, with the resolved locale + cap', () async {
       final svc = _FakeSpeechService();

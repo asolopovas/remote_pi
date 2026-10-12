@@ -3,17 +3,10 @@ import 'dart:async';
 import 'package:app/data/voice/speech_service.dart';
 import 'package:app/ui/chat/voice/states/voice_input_state.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
+import 'package:flutter/services.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 
-/// Plan 29 — drives the [SpeechService] for hold-to-talk voice input.
-///
-/// Lifecycle: [startRecording] (lazy [ensureInit] → native permission prompt
-/// on first use, decision #10) → ticking [VoiceRecording] → [stopAndTranscribe]
-/// (on release **or** the 60s cap, decision #5) returns the transcript for the
-/// composer, or [cancel] (slide-to-cancel, decision #4) discards it.
-///
-/// The recognizer never auto-sends: the transcript is handed back to the
-/// caller, which drops it into the empty `TextField` for manual review and
-/// send (decision #3).
+/// Tap-toggle local dictation. Every hypothesis is cumulative, never a send.
 class VoiceInputViewModel extends ViewModel<VoiceInputState> {
   VoiceInputViewModel(
     this._service, {
@@ -23,39 +16,37 @@ class VoiceInputViewModel extends ViewModel<VoiceInputState> {
        super(const VoiceIdle());
 
   final SpeechService _service;
-
-  /// Hard cap on a single recording (decision #5).
   final Duration maxDuration;
   final Duration _tickInterval;
-
   SpeechAvailability? _availability;
-  String? _localeId;
   StreamSubscription<double>? _levelSub;
   Timer? _ticker;
+  int _generation = 0;
+  bool _disposed = false;
+  bool _nativeStarted = false;
+  bool _captureFailed = false;
+  bool _cancelling = false;
+  Future<void>? _start;
   Duration _elapsed = Duration.zero;
   double _level = 0;
-  bool _starting = false;
 
-  /// Finalized transcripts, delivered the same way whether the session ended
-  /// by user release or by the 60s cap (decision #5). The composer listens
-  /// here and populates the empty `TextField` — a single source of truth, so
-  /// the cap path can never silently drop a transcript.
   final StreamController<String> _transcripts =
-      StreamController<String>.broadcast();
+      StreamController<String>.broadcast(sync: true);
   Stream<String> get transcripts => _transcripts.stream;
+  bool get active =>
+      state is VoiceStarting ||
+      state is VoiceRecording ||
+      state is VoiceTranscribing;
 
-  /// Resolve permission + on-device locale, caching the outcome. Idempotent:
-  /// once [SpeechReady] is reached it short-circuits. On failure the state is
-  /// updated to the matching [VoiceUnavailable] so the UI reacts.
   Future<SpeechAvailability> ensureInit() async {
     final cached = _availability;
     if (cached is SpeechReady) return cached;
-
+    final generation = _generation;
     final result = await _service.init();
+    if (_disposed || generation != _generation) return result;
     _availability = result;
     switch (result) {
-      case SpeechReady(:final localeId):
-        _localeId = localeId;
+      case SpeechReady():
         if (state is VoiceUnavailable) emit(const VoiceIdle());
       case SpeechPermissionDenied():
         emit(const VoiceUnavailable(VoiceUnavailableReason.permissionDenied));
@@ -65,79 +56,130 @@ class VoiceInputViewModel extends ViewModel<VoiceInputState> {
     return result;
   }
 
-  /// Begin a hold-to-talk session. No-op if already starting/recording.
-  Future<void> startRecording() async {
-    if (_starting || state is VoiceRecording) return;
-    _starting = true;
+  Future<void> startRecording() {
+    if (_disposed || active) return Future<void>.value();
+    final generation = ++_generation;
+    _captureFailed = false;
+    emit(const VoiceStarting());
+    return _start = _begin(generation);
+  }
+
+  bool _current(int generation) => !_disposed && generation == _generation;
+
+  Future<void> _begin(int generation) async {
     try {
       final availability = await ensureInit();
-      if (availability is! SpeechReady) return; // state already reflects it
-
+      if (!_current(generation) || availability is! SpeechReady) return;
       _elapsed = Duration.zero;
       _level = 0;
-      _levelSub?.cancel();
       _levelSub = _service.soundLevel.listen((level) {
+        if (!_current(generation)) return;
         _level = level;
         if (state is VoiceRecording) {
           emit(VoiceRecording(elapsed: _elapsed, level: _level));
         }
       });
-
-      await _service.start(localeId: _localeId!, maxDuration: maxDuration);
+      _nativeStarted = true;
+      var captureEnded = false;
+      await _service.start(
+        localeId: availability.localeId,
+        maxDuration: maxDuration,
+        onTranscript: (text) {
+          if (_current(generation)) _transcripts.add(text);
+        },
+        onEnded: () {
+          captureEnded = true;
+          if (_current(generation)) unawaited(_finish(generation));
+        },
+        onError: () {
+          if (_current(generation)) _captureFailed = true;
+        },
+      );
+      if (!_current(generation) || captureEnded || state is VoiceTranscribing) {
+        return;
+      }
       emit(VoiceRecording(elapsed: _elapsed, level: _level));
-
       _ticker = Timer.periodic(_tickInterval, (_) {
         _elapsed += _tickInterval;
         if (_elapsed >= maxDuration) {
-          // 60s cap — transcribe what we have, populate the field (#5).
-          // ignore: discarded_futures
-          stopAndTranscribe();
-          return;
-        }
-        if (state is VoiceRecording) {
+          unawaited(stopAndTranscribe());
+        } else if (_current(generation) && state is VoiceRecording) {
           emit(VoiceRecording(elapsed: _elapsed, level: _level));
         }
       });
-    } finally {
-      _starting = false;
+    } on stt.ListenFailedException {
+      await _fail(generation);
+    } on stt.ListenNotStartedException {
+      await _fail(generation);
+    } on PlatformException {
+      await _fail(generation);
     }
   }
 
-  /// Stop and resolve with the transcript (may be empty → caller no-ops, #12).
-  /// Idempotent: a concurrent call (release racing the cap) returns ''.
+  Future<void> _fail(int generation) async {
+    if (!_current(generation)) return;
+    _captureFailed = true;
+    await _finish(generation);
+  }
+
   Future<String> stopAndTranscribe() async {
-    if (state is! VoiceRecording) return '';
+    if (_disposed || _cancelling || !active || state is VoiceTranscribing) {
+      return '';
+    }
+    if (state is VoiceStarting) {
+      // Second tap during permission/init cancels intent. No capture starts
+      // behind the prompt; don't race a new start against the pending one.
+      await cancel();
+      return '';
+    }
+    return _finish(_generation);
+  }
+
+  Future<String> _finish(int generation) async {
+    if (!_current(generation) || state is VoiceTranscribing) return '';
     _stopTimers();
     emit(const VoiceTranscribing());
-    final text = await _service.stop();
-    emit(const VoiceIdle());
-    if (!_transcripts.isClosed) _transcripts.add(text);
+    final text = _nativeStarted ? await _service.stop() : '';
+    if (!_current(generation)) return '';
+    _nativeStarted = false;
+    if (text.isNotEmpty) _transcripts.add(text);
+    emit(_captureFailed ? const VoiceFailed() : const VoiceIdle());
     return text;
   }
 
-  /// Discard the recording (slide-to-cancel). Field stays untouched (#4).
+  /// Keeps already-visible words. Cancel invalidates all pending callbacks.
   Future<void> cancel() async {
-    if (state is! VoiceRecording && state is! VoiceTranscribing) return;
+    if (_disposed || _cancelling || !active) return;
+    _cancelling = true;
+    final generation = ++_generation;
     _stopTimers();
-    await _service.cancel();
-    emit(const VoiceIdle());
+    // Invalidate synchronously, but don't notify while a composer is unmounting.
+    await Future<void>.value();
+    if (_current(generation)) emit(const VoiceTranscribing());
+    if (_nativeStarted) {
+      _nativeStarted = false;
+      await _service.cancel();
+    }
+    await _start;
+    _cancelling = false;
+    if (_current(generation)) emit(const VoiceIdle());
   }
 
   void _stopTimers() {
     _ticker?.cancel();
     _ticker = null;
-    _levelSub?.cancel();
+    unawaited(_levelSub?.cancel());
     _levelSub = null;
   }
 
   @override
   void dispose() {
+    _disposed = true;
+    ++_generation;
     _stopTimers();
-    // Release the mic if we navigate away mid-recording. The service is an
-    // app-lifecycle singleton, so we cancel the session but never dispose it.
-    if (state is VoiceRecording || state is VoiceTranscribing) {
-      // ignore: discarded_futures
-      _service.cancel();
+    if (_nativeStarted) {
+      _nativeStarted = false;
+      unawaited(_service.cancel());
     }
     _transcripts.close();
     super.dispose();

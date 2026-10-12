@@ -1,5 +1,7 @@
 // Plan/71: exercise the production ChatPage list, not isolated static cards.
 import 'dart:async';
+import 'dart:convert';
+import 'package:app/ui/chat/widgets/codemode_preview.dart';
 import 'dart:io';
 
 import 'package:app/domain/session_state.dart';
@@ -238,6 +240,7 @@ void main() {
         (w) => w is ListView && w.reverse,
       );
       final mainScroll = tester.widget<ListView>(mainList).controller!;
+      final toolAlignedOffset = mainScroll.offset;
       mainScroll.jumpTo(mainScroll.offset - 200);
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
@@ -252,20 +255,20 @@ void main() {
       );
       vm.emit(ChatReady(messages: [failed, agent]));
       await tester.pumpAndSettle();
+      expect(find.byKey(const Key('accordion-pinned-heading')), findsNothing);
       expect(
-        find.descendant(
-          of: find.byKey(const Key('accordion-pinned-heading')),
-          matching: find.text('FAILED'),
-        ),
-        findsOneWidget,
+        find.byKey(const Key('tool-disclosure')).hitTestable(),
+        findsNothing,
       );
-      final pinned = find.byKey(const Key('accordion-pinned-heading'));
-      await tester.tap(
-        find.descendant(of: pinned, matching: find.byTooltip('Copy command')),
-      );
+      expect(mainScroll.offset, closeTo(readingOffset, 1));
+      mainScroll.jumpTo(toolAlignedOffset);
+      await tester.pumpAndSettle();
+      expect(find.text('FAILED'), findsOneWidget);
+      await tester.tap(find.byTooltip('Copy command').hitTestable());
       await tester.pump();
       expect(copied, (tool.args as Map)['command']);
-      expect(mainScroll.offset, closeTo(readingOffset, 1));
+      mainScroll.jumpTo(readingOffset);
+      await tester.pumpAndSettle();
       vm.emit(
         ChatReady(
           messages: [failed, agent],
@@ -302,15 +305,15 @@ void main() {
         closeTo(tester.getRect(agentList).top, 1),
       );
       final agentScroll = tester.widget<ListView>(agentList).controller!;
+      final agentAlignedOffset = agentScroll.offset;
       agentScroll.jumpTo(agentScroll.offset + 300);
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
+      expect(codeHeader, findsNothing);
+      expect(find.byKey(const Key('accordion-pinned-heading')), findsNothing);
+      agentScroll.jumpTo(agentAlignedOffset);
+      await tester.pumpAndSettle();
       expect(codeHeader, findsOneWidget);
-      expect(
-        tester.getRect(codeHeader).top,
-        closeTo(tester.getRect(agentList).top, 1),
-      );
-      // Exactly one accessible expanded code heading; its source is not interactive.
       expect(
         tester.getSemantics(codeHeader).flagsCollection.isExpanded,
         Tristate.isTrue,
@@ -326,8 +329,108 @@ void main() {
       expect(mainScroll.offset, closeTo(readingOffset, 1));
       expect(
         find.byKey(const Key('tool-disclosure')).hitTestable(),
+        findsNothing,
+      );
+      // Plan75: real recovered static source owns one nested viewport heading,
+      // not an inferred child-tool event. Its independent controls/state persist.
+      final recovered =
+          jsonDecode(
+                File(
+                  'test/ui/chat/fixtures/75/75-reported-tool.json',
+                ).readAsStringSync(),
+              )
+              as Map;
+      final recoveredScript = (recovered['arguments'] as Map)['code'] as String;
+      final preview = embeddedCodemodeSource(recoveredScript).first;
+      final nestedTool = ToolEvent(
+        id: 'nested',
+        toolCallId: 'nested',
+        tool: 'codemode',
+        args: recovered['arguments'],
+      );
+      vm.emit(ChatReady(messages: [nestedTool]));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('tool-disclosure')).hitTestable());
+      await tester.pumpAndSettle();
+      // The composite outer Scroll must not unbound nested frames or headings.
+      await tester.tap(find.byKey(const Key('code-wrap')).hitTestable());
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      final embeddedViewport = find.byKey(
+        ValueKey('tool-embedded-nested-${preview.offset}'),
+      );
+      await tester.tap(
+        find
+            .descendant(
+              of: embeddedViewport,
+              matching: find.byKey(const Key('code-disclosure')),
+            )
+            .hitTestable(),
+      );
+      await tester.pumpAndSettle();
+      final nestedHeading = find
+          .byKey(const Key('code-disclosure'))
+          .hitTestable();
+      expect(
+        tester.getRect(nestedHeading).top,
+        closeTo(tester.getRect(mainList).top, 1),
+      );
+      final nestedAlignedOffset = mainScroll.offset;
+      mainScroll.jumpTo(
+        (mainScroll.offset - 300).clamp(0, mainScroll.position.maxScrollExtent),
+      );
+      await tester.pumpAndSettle();
+      expect(nestedHeading, findsNothing);
+      expect(find.byKey(const Key('accordion-pinned-heading')), findsNothing);
+      mainScroll.jumpTo(nestedAlignedOffset);
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byTooltip('Copy decoded embedded string').hitTestable(),
+      );
+      await tester.pump();
+      expect(copied, preview.text);
+      await tester.tap(
+        find
+            .descendant(
+              of: embeddedViewport,
+              matching: find.byKey(const Key('code-wrap')),
+            )
+            .hitTestable(),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: embeddedViewport, matching: find.text('Wrap')),
         findsOneWidget,
       );
+      vm.emit(
+        ChatReady(
+          messages: [nestedTool.copyWith(status: ToolEventStatus.completed)],
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Sub-agents'));
+      await tester.pumpAndSettle();
+      expect(
+        find.byTooltip('Copy decoded embedded string').hitTestable(),
+        findsNothing,
+      );
+      await tester.tap(find.text('Main'));
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: embeddedViewport, matching: find.text('Wrap')),
+        findsOneWidget,
+      );
+      await tester.ensureVisible(
+        find.descendant(
+          of: embeddedViewport,
+          matching: find.byKey(const Key('code-disclosure')),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(nestedHeading);
+      await tester.pumpAndSettle();
+      expect(find.text(preview.text), findsNothing);
+      expect(tester.takeException(), isNull);
       vm.testPeer = const PeerRecord(
         remoteEpk: 'another-peer',
         roomId: 'other-room',
@@ -363,7 +466,7 @@ void main() {
   );
 
   testWidgets(
-    'last reverse tool aligns and pins its heading through reading and collapse',
+    'last reverse tool aligns once and its original heading scrolls away',
     (tester) async {
       final conn = ConnectionManager(
         factory: (_, _) async => _FakeChannel(),
@@ -422,17 +525,23 @@ void main() {
       expect(heading, findsOneWidget);
       expect(tester.getRect(heading).top, closeTo(tester.getRect(list).top, 1));
       final scroll = tester.widget<ListView>(list).controller!;
+      final alignedOffset = scroll.offset;
       scroll.jumpTo(
         (scroll.offset - 300).clamp(0, scroll.position.maxScrollExtent),
       );
       await tester.pumpAndSettle();
-      expect(heading, findsOneWidget);
-      expect(tester.getRect(heading).top, closeTo(tester.getRect(list).top, 1));
+      expect(heading, findsNothing);
+      expect(find.byKey(const Key('accordion-pinned-heading')), findsNothing);
+      final readingOffset = scroll.offset;
       tester.view.viewInsets = const FakeViewPadding(bottom: 180);
       addTearDown(tester.view.resetViewInsets);
       await tester.pumpAndSettle();
+      expect(heading, findsNothing);
+      expect(scroll.offset, closeTo(readingOffset, 1));
+      scroll.jumpTo(alignedOffset);
+      await tester.ensureVisible(find.byKey(const Key('tool-disclosure')));
+      await tester.pumpAndSettle();
       expect(heading, findsOneWidget);
-      expect(tester.getRect(heading).top, closeTo(tester.getRect(list).top, 1));
       await tester.tap(heading);
       await tester.pumpAndSettle();
       expect(find.textContaining('Line 149'), findsNothing);
@@ -450,7 +559,7 @@ void main() {
   );
 
   testWidgets(
-    'reverse assistant code hands off from another expanded tool and removes header beyond its range',
+    'reverse assistant code aligns independently and scrolls its heading away',
     (tester) async {
       final conn = ConnectionManager(
         factory: (_, _) async => _FakeChannel(),
@@ -530,7 +639,11 @@ void main() {
             .length,
         2,
       );
+      final codeAlignedOffset = scroll.offset;
       scroll.jumpTo(scroll.offset - 200);
+      await tester.pumpAndSettle();
+      expect(heading, findsNothing);
+      scroll.jumpTo(codeAlignedOffset);
       await tester.pumpAndSettle();
       expect(heading, findsOneWidget);
       await tester.tap(heading);

@@ -205,6 +205,20 @@ vi.mock("./mesh/self_revoke.js", async (importOriginal) => {
   return { ...original, SelfRevoke: CapturingSelfRevoke };
 });
 
+// Display queries are always synthetic, including inherited TUIOS environment.
+const displayHarness = vi.hoisted(() => ({
+  query: vi.fn<(args: readonly string[], signal: AbortSignal) => Promise<string>>(),
+}));
+vi.mock("./session/tuios_display.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./session/tuios_display.js")>();
+  class SyntheticDisplayAdapter extends original.TuiosDisplayAdapter {
+    constructor(options: ConstructorParameters<typeof original.TuiosDisplayAdapter>[0]) {
+      super({ ...options, query: displayHarness.query });
+    }
+  }
+  return { ...original, TuiosDisplayAdapter: SyntheticDisplayAdapter };
+});
+
 // Import AFTER mocks
 const indexModule = await import("./index.js");
 const {
@@ -4779,6 +4793,168 @@ describe("session_start auto-init skips relay in print/-p mode (#44)", () => {
   });
 });
 
+// ── primary-agent presence (plan/78) ──────────────────────────────────────────
+
+describe("managed-child automatic Relay presence", () => {
+  const savedArgv = process.argv;
+  let cwd: string;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    _knownPeers.length = 0;
+    relayRef.current = null;
+    relayInstances.length = 0;
+    _defaultConnectImpl = async () => undefined;
+    _setDisposedForTest(false);
+    const stop = captureHandler("remote-pi stop");
+    await stop("", makeMockCtx());
+    _resetAutoInitedForTest();
+    _resetCwdLockForTest();
+    cwd = mkdtempSync(join(tmpdir(), "pi-presence-"));
+    process.argv = ["node", "pi"];
+    vi.stubEnv("PI_SUBAGENT_CHILD", undefined);
+    vi.stubEnv("REMOTE_PI_DAEMON", undefined);
+    vi.stubEnv("REMOTE_PI_DIRECT_CONFIG", JSON.stringify({
+      agent_name: "continue",
+      auto_start_relay: true,
+    }));
+  });
+
+  afterEach(async () => {
+    const stop = captureHandler("remote-pi stop");
+    await stop("", makeMockCtx(cwd));
+    _resetCwdLockForTest();
+    _resetAutoInitedForTest();
+    _setDisposedForTest(false);
+    process.argv = savedArgv;
+    vi.unstubAllEnvs();
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  async function startSession(): Promise<void> {
+    const start = captureEventHandler("session_start");
+    start({ type: "session_start" }, makeMockCtx(cwd));
+    await vi.waitFor(() => expect(_hasMeshNodeForTest()).toBe(true));
+    // Wait for the root's post-join continuation (including status) to drain.
+    await captureHandler("remote-pi")("", makeMockCtx(cwd));
+  }
+
+  test("auto=true managed child retains local mesh/lock but opens no Relay; explicit relay start works", async () => {
+    vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+    await startSession();
+
+    expect(_getLockedNameForTest()).toBe("continue");
+    expect(relayInstances).toHaveLength(0);
+    expect(_getState()).toBe("idle");
+
+    const relay = captureHandler("remote-pi relay");
+    await relay("start", makeMockCtx(cwd));
+    expect(relayInstances).toHaveLength(1);
+    expect(_getState()).toBe("started");
+    expect(_hasMeshNodeForTest()).toBe(true);
+  });
+
+  test("genuine same-cwd root still exposes Relay even when its lock name has a suffix", async () => {
+    const first = await acquireCwdLock(cwd, "continue");
+    expect(first.ok).toBe(true);
+    try {
+      await startSession();
+      expect(_getLockedNameForTest()).toBe("continue#2");
+      expect(relayInstances).toHaveLength(1);
+      expect(_getState()).toBe("started");
+    } finally {
+      if (first.ok) first.release();
+    }
+  });
+
+  test.each([undefined, "1"])("supervised headless daemon respects only the explicit child marker (%s)", async (child) => {
+    vi.stubEnv("REMOTE_PI_DAEMON", "1");
+    vi.stubEnv("PI_SUBAGENT_CHILD", child);
+    const start = captureEventHandler("session_start");
+    start({ type: "session_start" }, { ui: { notify: vi.fn() }, hasUI: false });
+    await vi.waitFor(() => expect(_hasMeshNodeForTest()).toBe(true));
+    await captureHandler("remote-pi")("", makeMockCtx(process.cwd()));
+    expect(relayInstances).toHaveLength(child === "1" ? 0 : 1);
+    expect(_getLockedNameForTest()).toBe("continue");
+  });
+
+  test("only marker value 1 suppresses exposure, not headless UI or child-like names", async () => {
+    vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+    const start = captureEventHandler("session_start");
+    start({ type: "session_start" }, { ...makeMockCtx(cwd), hasUI: false });
+    await vi.waitFor(() => expect(_getState()).toBe("started"));
+    expect(relayInstances).toHaveLength(1);
+  });
+
+  test.each(["-p", "--print"])("managed child preserves the %s fresh-boot guard", async (flag) => {
+    vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+    process.argv.push(flag);
+    const ctx = makeMockCtx(cwd);
+    captureEventHandler("session_start")({ type: "session_start" }, ctx);
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(_hasMeshNodeForTest()).toBe(false);
+    expect(_getLockedNameForTest()).toBeNull();
+    expect(relayInstances).toHaveLength(0);
+  });
+
+  test("config-off stays idle at boot and explicit root joins only the mesh", async () => {
+    vi.stubEnv("REMOTE_PI_DIRECT_CONFIG", JSON.stringify({
+      agent_name: "continue",
+      auto_start_relay: false,
+    }));
+    captureEventHandler("session_start")({ type: "session_start" }, makeMockCtx(cwd));
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(_hasMeshNodeForTest()).toBe(false);
+    await captureHandler("remote-pi")("", makeMockCtx(cwd));
+    expect(_hasMeshNodeForTest()).toBe(true);
+    expect(relayInstances).toHaveLength(0);
+  });
+
+  test("reused disposed managed child re-arms its local mesh without automatic Relay", async () => {
+    vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+    await startSession();
+    await captureEventHandler("session_shutdown")({ type: "session_shutdown", reason: "resume" });
+    expect(_hasMeshNodeForTest()).toBe(false);
+    await startSession();
+    expect(_getLockedNameForTest()).toBe("continue");
+    expect(relayInstances).toHaveLength(0);
+    expect(_getState()).toBe("idle");
+  });
+
+  test.each([false, true])("pending managed-child lock retains replacement authority (stop=%s)", async (stopReplacement) => {
+    vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+    const lockGate = deferred<Awaited<ReturnType<typeof acquireCwdLock>>>();
+    const staleRelease = vi.fn();
+    const lockModule = await import("./session/cwd_lock.js");
+    const lockSpy = vi.spyOn(lockModule, "acquireCwdLock")
+      .mockImplementationOnce(() => lockGate.promise);
+    let released = false;
+    try {
+      captureEventHandler("session_start")({ type: "session_start" }, makeMockCtx(cwd));
+      await vi.waitFor(() => expect(lockSpy).toHaveBeenCalledTimes(1));
+      await captureEventHandler("session_shutdown")({ type: "session_shutdown", reason: "resume" });
+      captureEventHandler("session_start")({ type: "session_start" }, makeMockCtx(cwd));
+      if (stopReplacement) await captureHandler("remote-pi stop")("", makeMockCtx(cwd));
+      released = true;
+      lockGate.resolve({ ok: true, release: staleRelease });
+      await vi.waitFor(() => expect(staleRelease).toHaveBeenCalledTimes(1));
+      if (!stopReplacement) {
+        await vi.waitFor(() => expect(_hasMeshNodeForTest()).toBe(true));
+        await captureHandler("remote-pi")("", makeMockCtx(cwd));
+        expect(lockSpy).toHaveBeenCalledTimes(2);
+      } else {
+        expect(_hasMeshNodeForTest()).toBe(false);
+        expect(lockSpy).toHaveBeenCalledTimes(1);
+      }
+      expect(relayInstances).toHaveLength(0);
+      expect(_getState()).toBe("idle");
+    } finally {
+      if (!released) lockGate.resolve({ ok: true, release: staleRelease });
+      lockSpy.mockRestore();
+    }
+  });
+});
+
 // ── relay reconnect with backoff ──────────────────────────────────────────────
 
 describe("relay reconnect", () => {
@@ -5965,5 +6141,157 @@ describe("model meta", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ── display-only producer (plan/81) ────────────────────────────────────────────
+
+describe("UUID-scoped room display producer", () => {
+  const A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const W = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  let name: string | null;
+  let nativeId: string;
+  let start: ReturnType<typeof captureEventHandler>;
+  const ctx = () => ({
+    ...makeMockCtx("/tmp/display-routing"),
+    mode: "tui",
+    sessionManager: { getSessionId: () => nativeId },
+  });
+  const displayFrames = (relay: MockRelay) => relay.sendControl.mock.calls
+    .map(([frame]) => frame as { type: string; room_id: string; meta: { display?: import("./transport/relay_client.js").RoomDisplay } })
+    .filter(frame => frame.meta?.display);
+
+  beforeEach(async () => {
+    await captureHandler("remote-pi stop")("", makeMockCtx());
+    _setDisposedForTest(false);
+    _setAutoInitedForTest(true);
+    vi.stubEnv("PI_SUBAGENT_CHILD", undefined);
+    vi.stubEnv("TUIOS_ENV", "1");
+    vi.stubEnv("TUIOS_WINDOW_ID", W);
+    vi.stubEnv("TUIOS_PANE_ID", W);
+    vi.stubEnv("TUIOS_SESSION", "work");
+    _defaultConnectImpl = async () => undefined;
+    relayInstances.length = 0;
+    nativeId = A;
+    name = "Pi · system";
+    displayHarness.query.mockReset().mockImplementation(async args => JSON.stringify(
+      args[0] === "get-agent-state" ? { agent_session_id: nativeId } : { custom_name: name, title: "not routing", cwd: "/duplicate" },
+    ));
+    start = captureEventHandler("session_start");
+    vi.useFakeTimers();
+  });
+
+  afterEach(async () => {
+    await captureEventHandler("session_shutdown")({ type: "session_shutdown" }, ctx());
+    await captureHandler("remote-pi stop")("", makeMockCtx());
+    _setDisposedForTest(false);
+    _setAutoInitedForTest(false);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  async function boot() {
+    start({ type: "session_start" }, ctx());
+    await _startRelayForTest(ctx());
+    await vi.advanceTimersByTimeAsync(0);
+    return relayRef.current!;
+  }
+
+  test("hello advertises initial null identity; rename/reset only patch display, stable routing and presence", async () => {
+    const relay = await boot();
+    const hello = relay.connect.mock.calls[0][0] as { roomId: string; roomMeta: import("./transport/relay_client.js").RoomMeta };
+    expect(hello.roomMeta.display).toEqual({ native_session_id: A, epoch: expect.any(String), revision: 0, name: null });
+    const routing = { roomId: hello.roomId, name: hello.roomMeta.name, cwd: hello.roomMeta.cwd };
+    expect(displayFrames(relay)[0]).toEqual({ type: "room_meta_update", room_id: routing.roomId, meta: {
+      display: { ...hello.roomMeta.display, revision: 1, name },
+    } });
+    name = "Renamed desktop";
+    await vi.advanceTimersByTimeAsync(2_000);
+    name = null;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(displayFrames(relay).map(f => f.meta.display!.name)).toEqual(["Pi · system", "Renamed desktop", null]);
+    expect(relayInstances).toHaveLength(1);
+    expect(relay.close).not.toHaveBeenCalled();
+    expect(_getState()).toBe("started");
+    expect(hello.roomId).toBe(routing.roomId);
+    expect(hello.roomMeta.name).toBe(routing.name);
+    expect(hello.roomMeta.cwd).toBe(routing.cwd);
+    expect(displayFrames(relay).every(f => Object.keys(f.meta).join() === "display")).toBe(true);
+  });
+
+  test("reconnect hello replays exact cached display and routing without changing incarnation", async () => {
+    const first = await boot();
+    const initialHello = first.connect.mock.calls[0][0] as { roomId: string };
+    const cached = displayFrames(first).at(-1)!.meta.display!;
+    first.emit("close");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const second = relayRef.current!;
+    expect(second).not.toBe(first);
+    const hello = second.connect.mock.calls[0][0] as { roomId: string; roomMeta: import("./transport/relay_client.js").RoomMeta };
+    expect(hello.roomId).toBe(initialHello.roomId);
+    expect(hello.roomMeta.display).toEqual(cached);
+    expect(displayFrames(second)).toEqual([]);
+  });
+
+  test("managed child with explicitly started Relay never queries inherited parent candidate", async () => {
+    vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+    const relay = await boot();
+    expect(displayHarness.query).not.toHaveBeenCalled();
+    const hello = relay.connect.mock.calls[0][0] as { roomMeta: import("./transport/relay_client.js").RoomMeta };
+    expect(hello.roomMeta.display?.name).toBeNull();
+  });
+
+  test("native A-B-A/reload each advertise fresh epoch/null before queries", async () => {
+    const hellos: import("./transport/relay_client.js").RoomDisplay[] = [];
+    for (const id of [A, B, A, A]) {
+      nativeId = id;
+      const relay = await boot();
+      hellos.push((relay.connect.mock.calls[0][0] as { roomMeta: import("./transport/relay_client.js").RoomMeta }).roomMeta.display!);
+      await captureEventHandler("session_shutdown")({ type: "session_shutdown" }, ctx());
+      // Prevent existing reuse-host automatic root startup: this test owns relay-only start.
+      _setDisposedForTest(false);
+    }
+    expect(new Set(hellos.map(d => d.epoch)).size).toBe(4);
+    expect(hellos.every(d => d.revision === 0 && d.name === null)).toBe(true);
+  });
+
+  test("stop/room switch during name query discards late results and aborts work", async () => {
+    let finish!: (raw: string) => void;
+    let querySignal!: AbortSignal;
+    displayHarness.query.mockImplementation(async (args, signal) => {
+      if (args[0] === "get-agent-state") return JSON.stringify({ agent_session_id: A });
+      querySignal = signal;
+      return new Promise<string>(resolve => { finish = resolve; });
+    });
+    const first = await boot();
+    expect(finish).toBeTypeOf("function");
+    await captureHandler("remote-pi stop")("", makeMockCtx());
+    expect(querySignal.aborted).toBe(true);
+    // A new session/room cannot accept the outgoing adapter's completion.
+    nativeId = B;
+    start({ type: "session_start" }, ctx());
+    displayHarness.query.mockImplementation(async args => JSON.stringify(
+      args[0] === "get-agent-state" ? { agent_session_id: B } : { custom_name: "B" },
+    ));
+    await _startRelayForTest(makeMockCtx("/tmp/other-display-room"));
+    finish(JSON.stringify({ custom_name: "late A" }));
+    await vi.advanceTimersByTimeAsync(0);
+    const second = relayRef.current!;
+    expect(displayFrames(first)).toEqual([]);
+    expect(displayFrames(second).map(f => f.meta.display!.name)).toEqual(["B"]);
+    expect(displayFrames(second)[0].room_id).not.toBe((first.connect.mock.calls[0][0] as { roomId: string }).roomId);
+  });
+
+  test("SDK ID change during query rejects publication even without a shutdown callback", async () => {
+    let finish!: (raw: string) => void;
+    displayHarness.query.mockImplementation(async () => new Promise<string>(resolve => { finish = resolve; }));
+    const relay = await boot();
+    nativeId = B;
+    finish(JSON.stringify({ agent_session_id: A }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(displayFrames(relay)).toEqual([]);
+    expect(displayHarness.query).toHaveBeenCalledTimes(1);
   });
 });

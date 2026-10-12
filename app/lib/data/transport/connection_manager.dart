@@ -33,6 +33,7 @@ import 'dart:async';
 
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/epk_encoding.dart';
+import 'package:app/data/transport/room_display_authority.dart';
 import 'package:app/domain/contracts/service.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
@@ -119,7 +120,40 @@ class ConnectionManager extends Service {
   final Map<String, Set<String>> _liveRoomIds = <String, Set<String>>{};
   final _roomsController =
       StreamController<Map<String, List<RoomInfo>>>.broadcast();
+  final Map<String, Map<String, RoomDisplayAuthority>> _displayAuthorities = {};
+  int _socketGeneration = 0;
   bool _roomsRestored = false;
+
+  bool _hasDisplayPeerScope(String key) =>
+      _subscribedEpks.contains(key) ||
+      (_activePeer != null && toStandardB64(_activePeer!.remoteEpk) == key);
+
+  RoomDisplayAuthority _displayAuthority(String key, String roomId) =>
+      (_displayAuthorities[key] ??= {})[roomId] ??= RoomDisplayAuthority();
+
+  void _endDisplayRoom(String key, String roomId) {
+    _displayAuthorities[key]?.remove(roomId);
+    final list = _roomsByPeer[key];
+    if (list == null) return;
+    final idx = list.indexWhere((r) => r.roomId == roomId);
+    if (idx >= 0 && list[idx].display != null) {
+      list[idx] = list[idx].copyWith(display: null);
+      _scheduleRoomsEmit();
+    }
+  }
+
+  void _endDisplaySocket() {
+    _socketGeneration++;
+    _displayAuthorities.clear();
+    _liveRoomIds.clear();
+    for (final list in _roomsByPeer.values) {
+      for (var i = 0; i < list.length; i++) {
+        list[i] = list[i].copyWith(display: null);
+      }
+    }
+    _scheduleRoomsEmit();
+  }
+
   ConnectionStatus _status = const StatusNoPeer();
   PeerRecord? _activePeer;
   // Plan 17 — active room on the destination Pi. 'main' is the implicit
@@ -307,6 +341,11 @@ class ConnectionManager extends Service {
     if (!_setEquals(standard.toSet(), _subscribedEpks.toSet())) {
       _clearHeartbeatRecovery();
     }
+    for (final key in _subscribedEpks.where((key) => !standard.contains(key))) {
+      for (final room in _roomsByPeer[key] ?? <RoomInfo>[]) {
+        _endDisplayRoom(key, room.roomId);
+      }
+    }
     _subscribedEpks = standard;
     final link = _controlLink;
     if (link == null) {
@@ -416,6 +455,7 @@ class ConnectionManager extends Service {
   // pairing handshake). Skips the factory entirely — the channel is already
   // connected and ready for use.
   void adopt(IChannel channel, PeerRecord peer) {
+    _endDisplaySocket();
     _cancelRetry();
     _cancelPing();
     _connectCancel?.cancel();
@@ -451,6 +491,7 @@ class ConnectionManager extends Service {
   /// avoiding the visible Online → NoPeer → Connecting flicker that used
   /// to trip up `ChatViewModel._bootstrap`.
   Future<void> _teardownActive({required bool emitNoPeer}) async {
+    _endDisplaySocket();
     _cancelRetry();
     _cancelPing();
     _connectCancel?.cancel();
@@ -472,6 +513,7 @@ class ConnectionManager extends Service {
 
   @override
   void dispose() {
+    _endDisplaySocket();
     _cancelRetry();
     _cancelPing();
     _watchdogTimer?.cancel();
@@ -491,6 +533,7 @@ class ConnectionManager extends Service {
   // ---------------------------------------------------------------------------
 
   Future<void> _connect(PeerRecord peer) async {
+    _endDisplaySocket();
     _cancelRetry();
     _cancelPing();
     _connectCancel?.cancel();
@@ -561,8 +604,11 @@ class ConnectionManager extends Service {
       _controlSub = null;
       return;
     }
+    final generation = _socketGeneration;
     _controlSub = (ch as IControlLink).controlFrames.listen((frame) {
-      if (identical(channel, ch)) _onControl(frame);
+      if (generation == _socketGeneration && identical(channel, ch)) {
+        _onControl(frame);
+      }
     });
   }
 
@@ -618,6 +664,7 @@ class ConnectionManager extends Service {
         :final name,
         :final cwd,
         :final startedAt,
+        :final display,
         :final model,
         :final thinking,
         :final working,
@@ -625,10 +672,8 @@ class ConnectionManager extends Service {
         final key = toStandardB64(peer);
         _clearHeartbeatRecoveryForRoom(key, roomId);
         final list = _roomsByPeer[key] ?? <RoomInfo>[];
-        // Preserve any localName the user already set for this room
-        // (long-press rename) — only the live metadata comes from the
-        // wire, the rename is local-only.
-        String? preservedName;
+        // Only explicit mobile-local provenance survives a fresh snapshot.
+        String? preservedLocalName;
         // Plan/28 Wave D — also preserve a previously-learned thinking
         // level when the announce frame omits it. Relays that don't
         // flatten `meta.thinking` will keep `thinking == null` here;
@@ -641,13 +686,17 @@ class ConnectionManager extends Service {
         var preservedWorking = false;
         final existingIdx = list.indexWhere((r) => r.roomId == roomId);
         if (existingIdx >= 0) {
-          preservedName = list[existingIdx].name;
+          preservedLocalName = list[existingIdx].localName;
           preservedThinking = list[existingIdx].thinking;
           preservedWorking = list[existingIdx].working;
         }
         final next = RoomInfo(
           roomId: roomId,
-          name: preservedName ?? name,
+          name: name,
+          localName: preservedLocalName,
+          display: _hasDisplayPeerScope(key)
+              ? _displayAuthority(key, roomId).snapshot(display)
+              : null,
           cwd: cwd,
           startedAt: startedAt,
           model: model,
@@ -685,7 +734,13 @@ class ConnectionManager extends Service {
         if (_liveRoomIds[key]?.isEmpty ?? false) {
           _liveRoomIds.remove(key);
         }
-        if (removed) roomsDirty = true;
+        final hadDisplay =
+            _roomsByPeer[key]?.any(
+              (r) => r.roomId == roomId && r.display != null,
+            ) ??
+            false;
+        _endDisplayRoom(key, roomId);
+        if (removed || hadDisplay) roomsDirty = true;
       case RoomMetaUpdated(
         :final peer,
         :final roomId,
@@ -694,6 +749,8 @@ class ConnectionManager extends Service {
         :final working,
         :final hasModel,
         :final hasThinking,
+        :final display,
+        :final hasDisplay,
       ):
         final key = toStandardB64(peer);
         final list = _roomsByPeer[key];
@@ -714,15 +771,22 @@ class ConnectionManager extends Service {
         // non-null sets it. This is what carries the relay's
         // turn_start/turn_end broadcast to the Home dot for EVERY room.
         final nextWorking = working ?? current.working;
+        final authority = _displayAuthorities[key]?[roomId];
+        final nextDisplay =
+            hasDisplay && _hasDisplayPeerScope(key) && authority != null
+            ? authority.update(display)
+            : current.display;
         if (current.model == nextModel &&
             current.thinking == nextThinking &&
-            current.working == nextWorking) {
+            current.working == nextWorking &&
+            current.display == nextDisplay) {
           break; // dedup: nothing actually changed
         }
         list[idx] = current.copyWith(
           model: nextModel,
           thinking: nextThinking,
           working: nextWorking,
+          display: nextDisplay,
         );
         roomsDirty = true;
         // ignore: unawaited_futures
@@ -736,14 +800,18 @@ class ConnectionManager extends Service {
         final existing = _roomsByPeer[key] ?? <RoomInfo>[];
         final byId = {for (final r in existing) r.roomId: r};
         for (final r in rooms) {
-          final preservedName = byId[r.roomId]?.name ?? r.name;
+          final preservedLocalName = byId[r.roomId]?.localName;
           final preservedModel = r.model ?? byId[r.roomId]?.model;
           // Plan/28 Wave D — same convention as model: keep the
           // previously-known thinking when the snapshot omits it.
           final preservedThinking = r.thinking ?? byId[r.roomId]?.thinking;
           byId[r.roomId] = RoomInfo(
             roomId: r.roomId,
-            name: preservedName,
+            name: r.name,
+            localName: preservedLocalName,
+            display: _hasDisplayPeerScope(key)
+                ? _displayAuthority(key, r.roomId).snapshot(r.display)
+                : null,
             cwd: r.cwd,
             startedAt: r.startedAt,
             model: preservedModel,
@@ -754,8 +822,12 @@ class ConnectionManager extends Service {
             working: r.working,
           );
         }
-        final newList = byId.values.toList();
         final newLive = rooms.map((r) => r.roomId).toSet();
+        for (final id in byId.keys.where((id) => !newLive.contains(id))) {
+          _displayAuthorities[key]?.remove(id);
+          byId[id] = byId[id]!.copyWith(display: null);
+        }
+        final newList = byId.values.toList();
         final liveChanged = !_setEquals(
           newLive,
           _liveRoomIds[key] ?? const <String>{},
@@ -919,7 +991,8 @@ class ConnectionManager extends Service {
           .map(
             (c) => RoomInfo(
               roomId: c.roomId,
-              name: c.localName ?? c.name,
+              name: c.name,
+              localName: c.localName,
               cwd: c.cwd,
               startedAt: c.startedAt,
               model: c.model,
@@ -945,15 +1018,6 @@ class ConnectionManager extends Service {
     }
     if (match == null) return;
     final list = _roomsByPeer[peerKey] ?? const <RoomInfo>[];
-    // Read the current on-disk localNames so we don't drop the user's
-    // long-press rename when we re-persist in response to a wire
-    // metadata refresh.
-    final existing = await _storage.loadRooms(match.remoteEpk);
-    final localById = {
-      for (final p in existing)
-        if (p.localName != null && p.localName!.isNotEmpty)
-          p.roomId: p.localName!,
-    };
     final persisted = list
         .map(
           (r) => PersistedRoom(
@@ -961,7 +1025,7 @@ class ConnectionManager extends Service {
             name: r.name,
             cwd: r.cwd,
             startedAt: r.startedAt,
-            localName: localById[r.roomId],
+            localName: r.localName,
             model: r.model,
           ),
         )
@@ -984,14 +1048,9 @@ class ConnectionManager extends Service {
     // `model`, which made the tile subtitle fall back to
     // "Last Paired: …" right after a rename — bug.
     list[idx] = old.copyWith(
-      name: (name != null && name.isNotEmpty) ? name : old.name,
+      localName: (name != null && name.isNotEmpty) ? name : null,
     );
-    // Persist with localName so it survives cold start.
-    final cached = await _storage.loadRooms(epk);
-    final updated = cached
-        .map((c) => c.roomId == roomId ? c.copyWith(localName: name) : c)
-        .toList();
-    await _storage.saveRooms(epk, updated);
+    await _persistRoomsForPeer(key);
     if (!_roomsController.isClosed) {
       _roomsController.add(_roomsSnapshot());
     }
@@ -1001,6 +1060,7 @@ class ConnectionManager extends Service {
   /// the room is offline (not live); UI gates this.
   Future<void> deleteCachedRoom(String epk, String roomId) async {
     final key = toStandardB64(epk);
+    _endDisplayRoom(key, roomId);
     final list = _roomsByPeer[key];
     if (list != null) {
       list.removeWhere((r) => r.roomId == roomId);
@@ -1064,9 +1124,10 @@ class ConnectionManager extends Service {
 
   void _watchChannel(PeerRecord peer, IChannel ch) {
     _channelSub?.cancel();
+    final generation = _socketGeneration;
     _channelSub = ch.serverMessages.listen(
       (msg) {
-        if (!identical(channel, ch)) return;
+        if (generation != _socketGeneration || !identical(channel, ch)) return;
         // Only a current probe reply can undo OUR heartbeat removal of a
         // previously live room. Arbitrary traffic retains backoff semantics
         // but cannot grant live authority to cached/ended rooms.
@@ -1077,13 +1138,13 @@ class ConnectionManager extends Service {
           if (_recoverHeartbeatRoom()) refreshDiscovery();
         }
       },
-      onError: (_) => _onChannelLost(peer, ch),
-      onDone: () => _onChannelLost(peer, ch),
+      onError: (_) => _onChannelLost(peer, ch, generation),
+      onDone: () => _onChannelLost(peer, ch, generation),
     );
   }
 
-  void _onChannelLost(PeerRecord peer, IChannel ch) {
-    if (_status is! StatusOnline) return;
+  void _onChannelLost(PeerRecord peer, IChannel ch, int generation) {
+    if (generation != _socketGeneration || _status is! StatusOnline) return;
     final cur = (_status as StatusOnline).channel;
     if (!identical(cur, ch)) {
       // Stale: this onDone came from a channel we already replaced. The
@@ -1097,6 +1158,7 @@ class ConnectionManager extends Service {
   }
 
   void _scheduleRetry(PeerRecord peer) {
+    _endDisplaySocket();
     final delay = _backoffFor(_retryAttempt);
     _emit(StatusRetrying(nextRetry: delay, attempt: _retryAttempt));
     // Cancel any previous timer before scheduling — prevents the
@@ -1110,8 +1172,9 @@ class ConnectionManager extends Service {
   }
 
   void _startPing(PeerRecord peer, IChannel ch) {
+    final generation = _socketGeneration;
     _pingTimer = Timer.periodic(const Duration(seconds: 25), (_) async {
-      if (_status is! StatusOnline) return;
+      if (generation != _socketGeneration || _status is! StatusOnline) return;
       // Plan-18 follow-up — DECOUPLED Pi-liveness from WS-liveness.
       //
       // Before: 3 missed Pongs from the Pi triggered `_onChannelLost`,
@@ -1142,8 +1205,9 @@ class ConnectionManager extends Service {
         _pendingPingId = id;
         await ch.send(Ping(id: id));
       } catch (e) {
+        if (generation != _socketGeneration) return;
         _cancelPing();
-        _onChannelLost(peer, ch);
+        _onChannelLost(peer, ch, generation);
       }
     });
   }

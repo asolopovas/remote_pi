@@ -17,9 +17,10 @@ import 'package:app/ui/chat/widgets/subagent_panel.dart';
 import 'package:app/ui/chat/widgets/accordion_viewport.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:app/ui/chat/widgets/extension_ui_sheet.dart';
-import 'package:app/ui/home/widgets/session_tile.dart' show sessionProjectName;
+import 'package:app/ui/core/session_label.dart';
 import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
@@ -66,6 +67,34 @@ class ChatPage extends StatefulWidget {
 class _ChatPageState extends State<ChatPage> {
   bool _subagents = false;
   Object? _session;
+  final Set<_SessionInfoLease> _infoDialogs = {};
+  bool _infoOwnerActive = true;
+
+  @override
+  void deactivate() {
+    _infoOwnerActive = false;
+    for (final lease in _infoDialogs) {
+      lease.invalidate(deferNotification: true);
+    }
+    super.deactivate();
+  }
+
+  @override
+  void activate() {
+    super.activate();
+    _infoOwnerActive = true;
+  }
+
+  @override
+  void dispose() {
+    // Revoke validity now; only the notification waits for the tree to unlock.
+    // The route retains ownership until its overlay has actually unmounted.
+    for (final lease in _infoDialogs) {
+      lease.invalidate(deferNotification: true);
+    }
+    super.dispose();
+  }
+
   String? get initialTitle => widget.initialTitle;
   String? get initialDevice => widget.initialDevice;
   bool get initialOnline => widget.initialOnline;
@@ -74,6 +103,11 @@ class _ChatPageState extends State<ChatPage> {
   @override
   Widget build(BuildContext context) {
     final vm = context.watch<ChatViewModel>();
+    for (final lease in _infoDialogs) {
+      if (!identical(lease.vm, vm)) {
+        lease.invalidate(deferNotification: true);
+      }
+    }
     final state = vm.state;
     final session = (vm.activePeer?.remoteEpk, vm.activePeer?.roomId);
     if (_session != session) {
@@ -201,7 +235,7 @@ class _ChatPageState extends State<ChatPage> {
     // either line of the AppBar (room or peer) shows it instead of
     // the generic placeholders when the ViewModel hasn't finished
     // bootstrapping yet.
-    final roomName = _roomDisplayName(room, state, initialTitle);
+    final roomName = _roomDisplayName(room, peer, state, initialTitle);
     // Plan/32g — line 2 (device) falls back to `initialDevice` (the Mac name
     // Home passed), NOT `initialTitle` (the room name) — so it shows the right
     // device from frame 1 and doesn't flip when the PeerRecord loads.
@@ -232,7 +266,8 @@ class _ChatPageState extends State<ChatPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  _truncate(roomName, 28),
+                  roomName,
+                  maxLines: 1,
                   style: TextStyle(
                     fontFamily: kMonoFamily,
                     fontSize: 13,
@@ -317,7 +352,7 @@ class _ChatPageState extends State<ChatPage> {
             onPressed: () {
               final p = vm.activePeer;
               if (p != null) {
-                _showSessionInfo(context, p, vm.activeRoom, roomName);
+                _showSessionInfo(context, vm, p);
               }
             },
           ),
@@ -329,75 +364,123 @@ class _ChatPageState extends State<ChatPage> {
   /// Session details dialog — surfaced from the AppBar info action.
   /// Shows the human name, the Pi-side path (cwd), the owning device,
   /// plus model/room/paired-date when known.
-  static Future<void> _showSessionInfo(
+  Future<void> _showSessionInfo(
     BuildContext context,
+    ChatViewModel vm,
     PeerRecord peer,
-    RoomInfo? room,
-    String name,
-  ) {
-    final owner = (peer.nickname?.isNotEmpty ?? false)
-        ? peer.nickname!
-        : peer.sessionName.isNotEmpty
-        ? peer.sessionName
-        : peer.remoteEpk.substring(0, 8);
-    final model = room?.model;
-    final paired = peer.pairedAt.contains('T')
-        ? peer.pairedAt.split('T').first
-        : peer.pairedAt;
-    return showDialog<void>(
-      context: context,
-      builder: (dCtx) {
-        final colors = dCtx.colors;
-        return AlertDialog(
-          backgroundColor: colors.bg,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-            side: BorderSide(color: colors.border),
-          ),
-          title: Text(
-            'Session info',
-            style: TextStyle(
-              fontFamily: kMonoFamily,
-              fontSize: 15,
-              color: colors.text,
-            ),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _InfoRow(label: 'Name', value: name),
-              _InfoRow(label: 'Path', value: room?.cwd ?? '—'),
-              _InfoRow(label: 'Owner', value: owner),
-              if (model != null && model.isNotEmpty)
-                _InfoRow(label: 'Model', value: model),
-              _InfoRow(label: 'Room', value: room?.roomId ?? '—'),
-              _InfoRow(label: 'Paired', value: paired),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dCtx).pop(),
-              child: Text(
-                'Close',
-                style: TextStyle(fontFamily: kMonoFamily, color: colors.accent),
-              ),
-            ),
-          ],
-        );
-      },
+  ) async {
+    final lease = _SessionInfoLease(
+      vm,
+      peer.remoteEpk,
+      peer.roomId ?? 'main',
+      // A dialog may build before this page rebuilds after provider replacement.
+      // Never consult an inactive/deactivated page's inherited context.
+      isCurrentOwner: () =>
+          mounted &&
+          _infoOwnerActive &&
+          identical(this.context.read<ChatViewModel>(), vm),
     );
+    _infoDialogs.add(lease);
+    try {
+      final navigator = Navigator.of(context, rootNavigator: true);
+      final route = DialogRoute<void>(
+        context: context,
+        themes: InheritedTheme.capture(from: context, to: navigator.context),
+        barrierColor:
+            DialogTheme.of(context).barrierColor ??
+            Theme.of(context).dialogTheme.barrierColor ??
+            Colors.black54,
+        traversalEdgeBehavior: TraversalEdgeBehavior.closedLoop,
+        builder: (dCtx) => ListenableBuilder(
+          listenable: lease,
+          builder: (dCtx, _) {
+            final colors = dCtx.colors;
+            final snapshot = lease.readSnapshot();
+            final model = snapshot?.room.model;
+            final pairedAt = snapshot?.peer.pairedAt ?? '—';
+            return AlertDialog(
+              scrollable: true,
+              backgroundColor: colors.bg,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+                side: BorderSide(color: colors.border),
+              ),
+              title: Text(
+                'Session info',
+                style: TextStyle(
+                  fontFamily: kMonoFamily,
+                  fontSize: 15,
+                  color: colors.text,
+                ),
+              ),
+              content: snapshot == null
+                  ? Text(
+                      'Session unavailable',
+                      style: TextStyle(color: colors.text),
+                    )
+                  : Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _InfoRow(
+                          label: 'Name',
+                          value: sessionDisplayName(
+                            snapshot.room,
+                            snapshot.peer,
+                            fallback: 'Remote Pi',
+                          ),
+                        ),
+                        _InfoRow(
+                          label: 'Path',
+                          value: snapshot.room.cwd ?? '—',
+                        ),
+                        _InfoRow(
+                          label: 'Owner',
+                          value: _peerDisplayName(snapshot.peer, null),
+                        ),
+                        if (model != null && model.isNotEmpty)
+                          _InfoRow(label: 'Model', value: model),
+                        _InfoRow(label: 'Room', value: snapshot.room.roomId),
+                        _InfoRow(
+                          label: 'Paired',
+                          value: pairedAt.split('T').first,
+                        ),
+                      ],
+                    ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dCtx).pop(),
+                  child: Text(
+                    'Close',
+                    style: TextStyle(
+                      fontFamily: kMonoFamily,
+                      color: colors.accent,
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      );
+      navigator.push<void>(route);
+      // The pop-result Future completes before the reverse animation. Keep the
+      // lease (including page invalidation) through actual overlay teardown.
+      await route.completed;
+    } finally {
+      _infoDialogs.remove(lease);
+      lease.dispose();
+    }
   }
 
   static String _roomDisplayName(
     RoomInfo? room,
+    PeerRecord? peer,
     ChatState state,
     String? initialTitle,
   ) {
     if (room != null) {
-      final projectName = sessionProjectName(room.cwd);
-      if (projectName != null) return projectName;
-      if (room.name != null && room.name!.isNotEmpty) return room.name!;
+      return sessionDisplayName(room, peer, fallback: 'Remote Pi');
     }
     if (state is ChatReady && state.messages.isNotEmpty) {
       return _inferSessionName(state.messages);
@@ -518,6 +601,7 @@ class _ChatPageState extends State<ChatPage> {
         !isPresenceOffline;
 
     return InputBar(
+      key: ValueKey((vm.activePeer?.remoteEpk, vm.activePeer?.roomId)),
       disabled:
           !isReady ||
           isOffline ||
@@ -532,7 +616,7 @@ class _ChatPageState extends State<ChatPage> {
       queuedMessages: isReady ? state.queuedMessages : const [],
       onSetQueued: vm.queueMessage,
       onClearQueued: vm.clearQueuedMessage,
-      // Plan/29 — hold-to-talk voice input. The VM is route-scoped (bound in
+      // Plan/29 — tap-toggle voice input. The VM is route-scoped (bound in
       // app_router alongside ChatViewModel); InputBar listens to it directly,
       // so a read() is enough here.
       voice: context.read<VoiceInputViewModel>(),
@@ -606,21 +690,12 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  /// Surfaces the InputBar's voice hints (decision #10 permission path +
-  /// the "hold to talk" nudge) as snackbars. Captures the messenger up front
+  /// Surfaces microphone permission guidance as a snackbar. Captures the messenger up front
   /// so the settings deep-link is safe across the async permission round-trip.
   static void _handleVoiceHint(BuildContext context, VoiceHint hint) {
     final messenger = ScaffoldMessenger.of(context);
     messenger.hideCurrentSnackBar();
     switch (hint) {
-      case VoiceHint.holdToTalk:
-        messenger.showSnackBar(
-          const SnackBar(
-            content: Text('Hold the mic to talk'),
-            duration: Duration(seconds: 2),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
       case VoiceHint.permissionDenied:
         messenger.showSnackBar(
           SnackBar(
@@ -851,6 +926,83 @@ class _RevokedBanner extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// One info action's exact VM/peer/room lease, never a selection-following view.
+class _SessionInfoLease extends ChangeNotifier {
+  _SessionInfoLease(
+    this.vm,
+    this.peerEpk,
+    this.roomId, {
+    required this.isCurrentOwner,
+  }) {
+    if (readSnapshot() != null) vm.addListener(_changed);
+  }
+
+  final ChatViewModel vm;
+  final String peerEpk;
+  final String roomId;
+  final bool Function() isCurrentOwner;
+  bool _valid = true;
+  bool _disposed = false;
+  bool _notificationPending = false;
+
+  ({PeerRecord peer, RoomInfo room})? readSnapshot() {
+    if (_disposed || !_valid) return null;
+    if (!isCurrentOwner()) {
+      invalidate(deferNotification: true);
+      return null;
+    }
+    // Getters can change before the VM publishes a notification. Validate the
+    // one snapshot used by this build before accessing any metadata fields.
+    final peer = vm.activePeer;
+    final room = vm.activeRoom;
+    if (peer == null ||
+        peer.remoteEpk != peerEpk ||
+        (peer.roomId ?? 'main') != roomId ||
+        room == null ||
+        room.roomId != roomId) {
+      invalidate(deferNotification: true);
+      return null;
+    }
+    return (peer: peer, room: room);
+  }
+
+  void _changed() {
+    if (readSnapshot() != null) _notify();
+  }
+
+  void invalidate({bool deferNotification = false}) {
+    if (_disposed || !_valid) return;
+    _valid = false;
+    vm.removeListener(_changed);
+    _notify(deferNotification: deferNotification);
+  }
+
+  void _notify({bool deferNotification = false}) {
+    if (_disposed) return;
+    if (deferNotification ||
+        SchedulerBinding.instance.schedulerPhase ==
+            SchedulerPhase.persistentCallbacks) {
+      if (_notificationPending) return;
+      _notificationPending = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _notificationPending = false;
+        if (!_disposed) notifyListeners();
+      });
+    } else {
+      notifyListeners();
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    _valid = false;
+    vm.removeListener(_changed);
+    super.dispose();
   }
 }
 

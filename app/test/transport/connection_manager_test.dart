@@ -1421,7 +1421,8 @@ void _registerRoomsTests() {
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
         final after = cm.roomsFor('epk_test').single;
-        expect(after.name, 'meu-projeto',
+        expect(after.name, 'work', reason: 'remote routing name stays unchanged');
+        expect(after.localName, 'meu-projeto',
             reason: 'local name override applied');
         expect(after.model, 'claude-sonnet-4.5',
             reason: 'model must survive rename');

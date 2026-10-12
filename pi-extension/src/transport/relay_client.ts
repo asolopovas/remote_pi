@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import WebSocket from "ws";
 import { ed25519Sign } from "../pairing/crypto.js";
 import type { Ed25519Keypair } from "../pairing/crypto.js";
+import type { ThinkingLevel } from "../protocol/types.js";
 
 const AUTH_TIMEOUT_MS = 5_000;
 
@@ -27,19 +28,30 @@ interface HelloMsg {
 interface ChallengeMsg { type: "challenge"; nonce: string }
 interface AuthMsg { type: "auth"; sig: string }
 
+/** Optional whole-object display metadata; never a routing/history identity. */
+export interface RoomDisplay {
+  native_session_id: string;
+  epoch: string;
+  revision: number;
+  name: string | null;
+}
+
 export interface RoomMeta {
   name: string;
   cwd: string;
   /** Friendly model name (e.g. "claude-sonnet-4.5"). Optional — pi-ext sends
    *  when `ExtensionContext.model` is available; relay/app tolerate absence. */
   model?: string;
+  thinking?: ThinkingLevel;
+  working?: boolean;
+  display?: RoomDisplay;
 }
 
 /** Control frame sent to relay (not routed to app peer). */
 export interface RoomMetaUpdateFrame {
   type: "room_meta_update";
   room_id: string;
-  meta: { model?: string };
+  meta: Pick<RoomMeta, "model" | "thinking" | "working" | "display">;
 }
 
 export interface ConnectOptions {

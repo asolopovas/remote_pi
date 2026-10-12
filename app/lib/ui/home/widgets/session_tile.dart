@@ -1,7 +1,11 @@
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/themes/themes.dart';
+import 'package:app/ui/core/session_label.dart';
 import 'package:flutter/material.dart';
+
+export 'package:app/ui/core/session_label.dart'
+    show sessionProjectName, sessionFallbackName;
 
 /// A row in the Home list.
 ///
@@ -99,18 +103,7 @@ class SessionTile extends StatelessWidget {
     );
   }
 
-  String _avatarName() {
-    final r = room;
-    if (r != null) {
-      if (r.name != null && r.name!.isNotEmpty) return r.name!;
-      final cwd = r.cwd;
-      if (cwd != null && cwd.isNotEmpty) {
-        return sessionProjectName(cwd) ?? cwd;
-      }
-    }
-    if (peer.nickname?.isNotEmpty == true) return peer.nickname!;
-    return peer.sessionName;
-  }
+  String _avatarName() => sessionDisplayName(room, peer);
 }
 
 class _PresenceDot extends StatelessWidget {
@@ -165,8 +158,7 @@ class _TitleBlock extends StatelessWidget {
     final colors = context.colors;
     final r = room;
     final path = r?.cwd;
-    final project = sessionProjectName(path);
-    final title = project ?? sessionFallbackName(r, peer);
+    final title = sessionDisplayName(r, peer);
     final status = isWorking
         ? 'Working'
         : isReconnecting
@@ -217,22 +209,6 @@ class _TitleBlock extends StatelessWidget {
       ],
     );
   }
-}
-
-String? sessionProjectName(String? path) {
-  if (path == null || path.trim().isEmpty) return null;
-  final normalized = path
-      .replaceAll('\\', '/')
-      .replaceFirst(RegExp(r'/+$'), '');
-  if (normalized.isEmpty) return path;
-  return normalized.split('/').last;
-}
-
-String sessionFallbackName(RoomInfo? room, PeerRecord peer) {
-  if (room?.name?.isNotEmpty == true) return room!.name!;
-  if (peer.nickname?.isNotEmpty == true) return peer.nickname!;
-  if (peer.sessionName.isNotEmpty) return peer.sessionName;
-  return room?.roomId ?? 'Session';
 }
 
 String _truncateModel(String name) =>
