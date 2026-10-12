@@ -45,33 +45,35 @@ class SettingsPage extends StatelessWidget {
           child: Divider(color: colors.border, height: 1),
         ),
       ),
-      body: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+      body: Column(
         children: [
-          const _RelaySection(),
-          Divider(color: colors.border, height: 1),
-          const _DisplaySection(),
-          Divider(color: colors.border, height: 1),
-          const _SectionHeader('Pairings'),
-          switch (state) {
-            SettingsLoading() => Padding(
-              padding: const EdgeInsets.symmetric(vertical: 32),
-              child: Center(
-                child: CircularProgressIndicator(color: colors.accent),
-              ),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              children: [
+                const _RelaySection(),
+                Divider(color: colors.border, height: 1),
+                const _DisplaySection(),
+                Divider(color: colors.border, height: 1),
+                const _SectionHeader('Pairings'),
+                switch (state) {
+                  SettingsLoading() => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 32),
+                    child: Center(
+                      child: CircularProgressIndicator(color: colors.accent),
+                    ),
+                  ),
+                  SettingsNoPeer() => const _EmptyState(),
+                  SettingsList(:final peers) => _PeerList(
+                    peers: peers,
+                    onRevoke: vm.revoke,
+                    onSetNickname: vm.setNickname,
+                  ),
+                },
+              ],
             ),
-            SettingsNoPeer() => const _EmptyState(),
-            SettingsList(:final peers) => _PeerList(
-              peers: peers,
-              onRevoke: vm.revoke,
-              onSetNickname: vm.setNickname,
-            ),
-          },
-          // Plan-17 follow-up — entry point to pair an additional Pi.
-          // The flow itself lives at /pair and survives whatever
-          // peers/rooms already exist (PairingViewModel handles the
-          // add path the same way as the first pair).
-          const _AddPairingButton(),
+          ),
+          const SafeArea(top: false, child: _AddPairingButton()),
         ],
       ),
     );
@@ -85,7 +87,7 @@ class _AddPairingButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 12, 18, 16),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
       child: OutlinedButton.icon(
         onPressed: () => context.push('/pair'),
         style: OutlinedButton.styleFrom(
@@ -95,12 +97,12 @@ class _AddPairingButton extends StatelessWidget {
           shape: const RoundedRectangleBorder(
             borderRadius: BorderRadius.all(Radius.circular(6)),
           ),
-          minimumSize: const Size.fromHeight(0),
+          minimumSize: const Size.fromHeight(48),
         ),
         icon: const Icon(LucideIcons.scanQrCode, size: 18),
         label: Text(
           'Add new pairing',
-          style: const TextStyle(fontFamily: kMonoFamily, fontSize: 13),
+          style: context.typo.mono.copyWith(fontSize: 13),
         ),
       ),
     );
@@ -200,8 +202,10 @@ class _RelaySectionState extends State<_RelaySection> {
               const SizedBox(height: 10),
               Align(
                 alignment: Alignment.centerLeft,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
+                child: Wrap(
+                  spacing: 12,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     FilledButton(
                       onPressed: _save,
@@ -224,7 +228,6 @@ class _RelaySectionState extends State<_RelaySection> {
                         ),
                       ),
                     ),
-                    const SizedBox(width: 12),
                     TextButton(
                       onPressed: () {
                         _ctrl.text = kDefaultRelayUrl;
@@ -280,14 +283,8 @@ class _DisplaySection extends StatelessWidget {
                       value: ThemeMode.system,
                       label: Text('System'),
                     ),
-                    ButtonSegment(
-                      value: ThemeMode.light,
-                      label: Text('Light'),
-                    ),
-                    ButtonSegment(
-                      value: ThemeMode.dark,
-                      label: Text('Dark'),
-                    ),
+                    ButtonSegment(value: ThemeMode.light, label: Text('Light')),
+                    ButtonSegment(value: ThemeMode.dark, label: Text('Dark')),
                   ],
                   selected: {prefs.themeMode},
                   onSelectionChanged: (s) => prefs.setThemeMode(s.first),

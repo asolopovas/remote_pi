@@ -44,7 +44,20 @@ After the initial code30 installation, the user requests matching top/bottom bre
 - [x] Symmetric top/bottom inset when opened accordion aligns with the viewport: shared 8dp gutter.
 - [x] Shorter header chrome with same-row text/actions at ordinary phone widths; named green/red status icons replace visible Done/Failed words, with truthful working/other states.
 - [x] Focused regression checks and scoped review accepted. Retained writer `4c655b1b-f6d0-4c5e-a915-3ea1b1870191`: 57 focused tests, 15-path analyzer clean, three host captures. Retained reviewer `d2527913-a353-49cc-9255-a20719b9c280`: no findings, ready for code31. Parent source/capture hashes match and ordinary-width capture inspected. Active LSP: six confirmed clean, ten timed out without findings; no all-path LSP claim.
-- [ ] Updated follow-up APK installed in-place.
+- [x] Updated follow-up APK installed in-place: code31 from committed `d148db3823dd83ccf7a07df8bedd63a5b3bdb870`, SHA256 `6fcee5b5c95505a962e1cff00f3d50a54873c714fbcd517456d84c5a140011e7`. Builder `875adcaf-14eb-4feb-98ee-be217c21d6f4` released BUILD/ARTIFACT/DEVICE; same package/activity/signer, normal warmed offline incremental build, install-r Success. Bounded cold-launch/current-process/crash-buffer smoke passed; prior DNS exception absent in that window, not proof of resolution or full-device acceptance.
+
+## Settings follow-up — Add new pairing viewport safety
+
+The user reports **Add new pairing** outside the viewport. Current Settings puts the CTA after Relay, Display and the potentially long Pairings list inside an explicitly padded ListView, with no dedicated bottom safe-area protection. Inspect/fix the current phone and embedded-sheet presentation rather than assuming a screenshot was supplied.
+
+- Keep the Add new pairing CTA visible/reachable in the Settings viewport, ideally in a compact bottom SafeArea footer with the remaining settings in an independently scrollable region. Respect system navigation insets, IME and sheet constraints; do not overlay scroll content or duplicate the CTA.
+- Preserve `/pair` navigation and all existing pairing/preferences behavior. Maintain >=48dp target, readable large-text wrapping and theme identity. No transport/storage/data changes or new packages.
+- Add a few focused production Settings widget checks for small phone + many peers, bottom system inset, embedded sheet and keyboard/large text. Test visibility/hitability/navigation and scrollable settings, with no live pairing/device-data operation.
+- Existing packaging owner may transition serially to this narrowly approved App SOURCE/TEST fix **after its in-flight build tool finishes**, preserving the accepted chat-only candidate and pausing before installation if not already installed. No concurrent App writer. Return fix/tests/source hashes and release before a short scoped review, then rebuild/install the combined current UI via the existing cached lane.
+
+- [x] Add new pairing fits the visible Settings safe area and remains tappable on phone/sheet in actual production widget tests. Existing settings/peer list scrolls independently; CTA is a fixed bottom SafeArea footer with >=48dp target. Minimal Relay Row→Wrap addresses the observed 320dp/2x test overflow.
+- [x] Focused widget checks and direct scoped parent review accepted. Worker `2f451b76-3b3d-440a-ab46-6b2d8f20bb2a`: 17 Settings tests, two-path analyzer clean. Parent reviewed production diff and phone/embedded/IME/last-peer/navigation assertions, verified exact two hashes/whitespace/logs. Active LSP: one confirmed clean, one test timed out; no all-path LSP claim.
+- [ ] Combined latest UI installed in-place.
 
 ## Next plans
 
