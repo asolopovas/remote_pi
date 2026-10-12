@@ -3,38 +3,48 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('short status leaves title its intrinsic remaining width', (
+  testWidgets('status is one named icon, not a visible word beside title', (
     tester,
   ) async {
-    await tester.binding.setSurfaceSize(const Size(360, 160));
+    final semantics = tester.ensureSemantics();
+    await tester.binding.setSurfaceSize(const Size(320, 180));
     addTearDown(() => tester.binding.setSurfaceSize(null));
-    await tester.pumpWidget(
-      const MaterialApp(
-        home: Scaffold(
-          body: SizedBox(
-            width: 320,
-            child: CompactOutputHeader(
+    for (final (status, icon) in [
+      ('DONE', Icons.check_circle),
+      ('FAILED', Icons.error),
+      ('RUNNING', Icons.sync),
+      ('UNKNOWN', Icons.info_outline),
+    ]) {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: CompactOutputHeader(
               title: 'A command title that should remain readable',
-              status: 'DONE',
-              expanded: false,
-              disclosureKey: Key('header'),
+              status: status,
+              icon: icon,
+              expanded: true,
+              disclosureKey: const Key('header'),
               onToggle: _noop,
             ),
           ),
         ),
-      ),
-    );
-    final title = tester.getRect(
-      find.text('A command title that should remain readable'),
-    );
-    final status = tester.getRect(find.text('DONE'));
-    expect(status.width, lessThan(80));
-    expect(title.width, greaterThan(status.width * 2));
-    expect(status.left, greaterThan(title.left));
-    expect(tester.takeException(), isNull);
+      );
+      expect(find.text(status), findsNothing);
+      expect(find.byTooltip(status), findsOneWidget);
+      expect(find.bySemanticsLabel(status), findsOneWidget);
+      expect(find.byIcon(icon), findsOneWidget);
+      final title = tester.widget<Text>(
+        find.text('A command title that should remain readable'),
+      );
+      expect(title.maxLines, 1);
+      expect(title.overflow, TextOverflow.ellipsis);
+      expect(tester.getSize(find.byKey(const Key('header'))).height, 48);
+      expect(tester.takeException(), isNull);
+    }
+    semantics.dispose();
   });
 
-  testWidgets('long status remains bounded at narrow width and 2x text', (
+  testWidgets('long status semantics do not consume title space at 2x', (
     tester,
   ) async {
     await tester.binding.setSurfaceSize(const Size(320, 180));
@@ -59,9 +69,10 @@ void main() {
       ),
     );
     expect(tester.takeException(), isNull);
+    expect(tester.getSize(find.byKey(const Key('header'))).height, 48);
     expect(
-      tester.getSize(find.byKey(const Key('header'))).height,
-      greaterThanOrEqualTo(48),
+      find.text('FAILED WITH A VERY LONG STATUS DESCRIPTION'),
+      findsNothing,
     );
   });
 }

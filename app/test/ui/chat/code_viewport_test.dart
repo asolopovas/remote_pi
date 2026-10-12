@@ -61,15 +61,15 @@ void main() {
       expect(find.text('one\ntwo'), findsNothing);
       await tester.tap(find.text('dart · 2 lines'));
       await tester.pump();
-      expect(find.text('Scroll'), findsOneWidget);
+      expect(find.byTooltip('Scroll horizontally'), findsOneWidget);
       expect(find.byType(SingleChildScrollView), findsNothing);
       await tester.tap(find.byKey(const Key('code-wrap')));
       await tester.pump();
-      expect(find.text('Wrap'), findsOneWidget);
+      expect(find.byTooltip('Wrap code'), findsOneWidget);
       await tester.pumpWidget(wrap(code('one\ntwo\nthree')));
       expect(find.text('dart · 3 lines'), findsOneWidget);
       expect(find.text('one\ntwo\nthree'), findsOneWidget);
-      expect(find.text('Wrap'), findsOneWidget);
+      expect(find.byTooltip('Wrap code'), findsOneWidget);
       await tester.tap(find.byKey(const Key('code-copy')));
       await tester.pump();
       expect(copied, 'one\ntwo\nthree');
@@ -116,7 +116,7 @@ void main() {
       scroll.jumpTo(0);
       await tester.pumpAndSettle();
       expect(find.text('body 0'), findsOneWidget);
-      expect(find.text('Wrap'), findsOneWidget);
+      expect(find.byTooltip('Wrap code'), findsOneWidget);
       scope = 'peer2/session1';
       await pump();
       expect(find.text('body 0'), findsNothing);
@@ -144,7 +144,7 @@ void main() {
       );
       await tester.tap(find.byKey(const Key('code-disclosure')));
       await tester.pump();
-      expect(find.text('Scroll'), findsOneWidget);
+      expect(find.byTooltip('Scroll horizontally'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

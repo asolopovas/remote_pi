@@ -91,13 +91,13 @@ class _ToolRequestCardState extends State<ToolRequestCard>
     return Opacity(
       opacity: dimmed ? 0.65 : 1.0,
       child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 6),
+        margin: const EdgeInsets.symmetric(vertical: 3),
         decoration: BoxDecoration(
           color: context.colors.codeBg,
           border: Border.all(color: context.colors.border),
           borderRadius: BorderRadius.circular(8),
         ),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 8),
         child: LayoutBuilder(
           builder: (context, constraints) =>
               _buildCodeBlock(context, color, constraints.maxWidth),
@@ -106,7 +106,11 @@ class _ToolRequestCardState extends State<ToolRequestCard>
     );
   }
 
-  Widget _buildHeader(BuildContext context, Color color, Widget controls) {
+  Widget _buildHeader(
+    BuildContext context,
+    Color color,
+    List<Widget> controls,
+  ) {
     final statusLabel = switch (tool.status) {
       ToolEventStatus.pending || ToolEventStatus.allowed => 'RUNNING',
       ToolEventStatus.completed => 'DONE',
@@ -131,6 +135,8 @@ class _ToolRequestCardState extends State<ToolRequestCard>
           ? null
           : IconButton(
               tooltip: 'Copy output',
+              iconSize: 18,
+              padding: const EdgeInsets.all(4),
               constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
               onPressed: () => Clipboard.setData(
                 ClipboardData(
@@ -148,7 +154,7 @@ class _ToolRequestCardState extends State<ToolRequestCard>
         ToolEventStatus.failed => Icons.error,
         _ => Icons.info,
       },
-      controls: _expanded ? controls : null,
+      controls: _expanded ? controls : const [],
     );
   }
 

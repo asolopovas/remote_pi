@@ -182,10 +182,10 @@ void main() {
       await tester.pump();
       expect(find.byType(SelectableText), findsOneWidget);
       await pump(status: ToolEventStatus.completed, result: 'full output');
-      expect(find.text('Call returned'), findsOneWidget);
+      expect(find.byTooltip('Call returned'), findsOneWidget);
       expect(find.text('full output'), findsOneWidget);
       await pump(status: ToolEventStatus.failed, result: 'failure output');
-      expect(find.text('Failed'), findsOneWidget);
+      expect(find.byTooltip('Failed'), findsOneWidget);
       expect(find.text('failure output'), findsOneWidget);
       await pump(collapsed: false);
       expect(find.byType(SelectableText), findsNWidgets(2));
@@ -252,8 +252,10 @@ void main() {
         ),
       ),
     );
-    expect(find.text('Launched'), findsOneWidget);
-    expect(find.text('Call returned'), findsNothing);
+    expect(find.byTooltip('Launched'), findsOneWidget);
+    expect(find.bySemanticsLabel('Launched'), findsOneWidget);
+    expect(find.text('Launched'), findsNothing);
+    expect(find.byTooltip('Call returned'), findsNothing);
     final header = find.byKey(const ValueKey('subagent-a'));
     expect(tester.getSize(header).height, greaterThanOrEqualTo(48));
     expect(
@@ -265,7 +267,7 @@ void main() {
         isExpanded: false,
         hasTapAction: true,
         hasFocusAction: true,
-        label: 'scout · Review all files with full assignment\nLaunched',
+        label: 'scout · Review all files with full assignment',
       ),
     );
     await tester.tap(header);
@@ -309,7 +311,7 @@ void main() {
       expect(find.text('Shared original result'), findsOneWidget);
       expect(find.byKey(const ValueKey('subagent-a')), findsOneWidget);
       expect(find.textContaining('scout: Inspect'), findsWidgets);
-      expect(find.text('Call returned'), findsOneWidget);
+      expect(find.byTooltip('Call returned'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

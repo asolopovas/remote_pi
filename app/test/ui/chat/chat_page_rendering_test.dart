@@ -21,6 +21,7 @@ import 'package:app/routing/adaptive.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/chat_page.dart';
 import 'package:app/ui/chat/widgets/input_bar.dart';
+import 'package:app/ui/chat/widgets/subagent_panel.dart';
 import 'package:app/ui/chat/widgets/accordion_viewport.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
 import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
@@ -55,6 +56,18 @@ class _FakeStorage extends PairingStorage {
 }
 
 class _FakeSecureStorage implements FlutterSecureStorage {
+  @override
+  Future<void> write({
+    required String key,
+    required String? value,
+    IOSOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    MacOsOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async {}
+
   @override
   Future<String?> read({
     required String key,
@@ -91,8 +104,10 @@ void main() {
   setUpAll(() async {
     dir = Directory.systemTemp.createTempSync('rp_rendering_');
     await LocalBoxes.initForTest(dir.path);
-    if (const bool.fromEnvironment('CAPTURE83')) {
-      Directory('build/83-chat').createSync(recursive: true);
+    if (const bool.fromEnvironment('CAPTURE86')) {
+      Directory(
+        'build/86-compact-chat/${const String.fromEnvironment('CAPTURE_PHASE', defaultValue: 'followup')}',
+      ).createSync(recursive: true);
       final loader = FontLoader(kMonoFamily);
       loader.addFont(
         rootBundle.load('assets/fonts/fira_mono/FiraMonoNerdFont-Regular.otf'),
@@ -121,7 +136,7 @@ void main() {
 
   for (final dark in [false, true]) {
     testWidgets(
-      '${dark ? 'dark' : 'light'} bottom toggle retains reverse disclosure and nested shared code at 320px/2x without child composer or stale room header',
+      '${dark ? 'dark' : 'light'} compact fixed control retains reverse disclosure and nested shared code at 320px/2x without child composer or stale room header',
       (tester) async {
         String? copied;
         tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -197,11 +212,28 @@ void main() {
         vm.emit(const ChatReady(messages: []));
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
-        expect(find.text('Main'), findsNothing);
-        expect(find.text('Sub-agents'), findsNothing);
         final toggle = find.byKey(const Key('thread-toggle'));
+        expect(toggle, findsNothing);
+        expect(find.byType(InputBar), findsOneWidget);
+        expect(tester.getRect(find.byType(InputBar)).bottom, 1000);
+        const initialAgent = ToolEvent(
+          id: 'initial-agent',
+          toolCallId: 'initial-agent',
+          tool: 'subagent',
+          args: {'agent': 'scout', 'task': 'Inspect'},
+          status: ToolEventStatus.pending,
+        );
+        vm.emit(const ChatReady(messages: [initialAgent]));
+        await tester.pumpAndSettle();
         expect(tester.getSize(toggle).height, greaterThanOrEqualTo(48));
-        expect(find.text('Sub-Agents'), findsOneWidget);
+        expect(tester.getSize(toggle).width, lessThan(300));
+        expect(tester.getRect(toggle).left, 8);
+        expect(find.text('Sub-agents'), findsOneWidget);
+        await prefs.setHideToolCalls(true);
+        await tester.pumpAndSettle();
+        expect(toggle, findsOneWidget);
+        await prefs.setHideToolCalls(false);
+        await tester.pumpAndSettle();
         await tester.enterText(
           find.byType(TextField).first,
           'retained main draft',
@@ -224,18 +256,20 @@ void main() {
               .hasFocus,
           isFalse,
         );
-        expect(find.text('Main-Thread'), findsOneWidget);
+        expect(find.text('Main'), findsOneWidget);
         expect(find.byType(InputBar), findsNothing);
-        await tester.tap(find.text('Main-Thread'));
+        await tester.tap(find.text('Main'));
         await tester.pumpAndSettle();
         expect(find.byType(InputBar), findsOneWidget);
         expect(find.text('retained main draft'), findsOneWidget);
-        await tester.tap(find.text('Sub-Agents'));
+        await tester.tap(find.text('Sub-agents'));
         await tester.pumpAndSettle();
+        vm.emit(const ChatReady(messages: []));
+        await tester.pumpAndSettle();
+        expect(toggle, findsNothing);
+        expect(find.byType(InputBar), findsOneWidget);
+        expect(find.text('retained main draft'), findsOneWidget);
         expect(tester.takeException(), isNull);
-        expect(find.text('No sub-agents in this session'), findsOneWidget);
-        expect(find.byType(InputBar), findsNothing);
-        await tester.tap(find.text('Main-Thread'));
         final lines = List.generate(100, (i) => 'nested line $i').join('\n');
         final tool = ToolEvent(
           id: 'tool',
@@ -274,7 +308,7 @@ void main() {
           tester.getRect(find.byKey(const Key('chat-toolbar'))).bottom,
         );
         final toolAlignedOffset = mainScroll.offset;
-        if (const bool.fromEnvironment('CAPTURE83') && dark) {
+        if (const bool.fromEnvironment('CAPTURE86') && dark) {
           await tester.runAsync(() async {
             final image =
                 await (capture.currentContext!.findRenderObject()
@@ -284,17 +318,19 @@ void main() {
               format: ui.ImageByteFormat.png,
             );
             await File(
-              'build/83-chat/chat-aligned-320-2x.png',
+              'build/86-compact-chat/${const String.fromEnvironment('CAPTURE_PHASE', defaultValue: 'followup')}/chat-aligned-320-2x.png',
             ).writeAsBytes(bytes!.buffer.asUint8List());
             image.dispose();
           });
         }
+        final fixedControlRect = tester.getRect(toggle);
         mainScroll.jumpTo(mainScroll.offset - 200);
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
+        expect(tester.getRect(toggle), fixedControlRect);
         final readingOffset = mainScroll.offset;
-        final latest = find.widgetWithText(FilledButton, 'Latest');
-        expect(tester.getSize(latest).height, greaterThanOrEqualTo(56));
+        final latest = find.byKey(const Key('scroll-to-latest'));
+        expect(tester.getSize(latest).height, greaterThanOrEqualTo(48));
         expect(
           tester
               .widget<Icon>(
@@ -307,36 +343,36 @@ void main() {
           tester.getRect(latest).bottom,
           lessThan(tester.getRect(toggle).top),
         );
+        expect(find.byTooltip('Scroll to latest message'), findsOneWidget);
+        expect(
+          find.bySemanticsLabel('Scroll to latest message'),
+          findsOneWidget,
+        );
         tester.view.viewInsets = const FakeViewPadding(bottom: 220);
         addTearDown(tester.view.resetViewInsets);
         await tester.pumpAndSettle();
         expect(tester.getRect(toggle).bottom, lessThanOrEqualTo(780));
         expect(
+          tester.getRect(toggle).bottom,
+          lessThanOrEqualTo(tester.getRect(find.byType(InputBar)).top),
+        );
+        tester.view.padding = const FakeViewPadding(bottom: 24);
+        addTearDown(tester.view.resetPadding);
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(
           tester.getRect(latest).bottom,
           lessThan(tester.getRect(toggle).top),
         );
+        expect(find.byTooltip('Scroll to latest message'), findsOneWidget);
         expect(tester.takeException(), isNull);
+        tester.view.resetPadding();
         tester.view.resetViewInsets();
         await tester.pumpAndSettle();
-        if (const bool.fromEnvironment('CAPTURE83') && dark) {
-          await tester.runAsync(() async {
-            final image =
-                await (capture.currentContext!.findRenderObject()
-                        as RenderRepaintBoundary)
-                    .toImage();
-            final bytes = await image.toByteData(
-              format: ui.ImageByteFormat.png,
-            );
-            await File(
-              'build/83-chat/chat-main-320-2x.png',
-            ).writeAsBytes(bytes!.buffer.asUint8List());
-            image.dispose();
-          });
-        }
         await tester.tap(latest);
         await tester.pumpAndSettle();
         expect(mainScroll.offset, 0);
-        expect(find.text('Latest'), findsNothing);
+        expect(latest, findsNothing);
         mainScroll.jumpTo(readingOffset);
         await tester.pumpAndSettle();
         final failed = ToolEvent(
@@ -357,7 +393,7 @@ void main() {
         expect(mainScroll.offset, closeTo(readingOffset, 1));
         mainScroll.jumpTo(toolAlignedOffset);
         await tester.pumpAndSettle();
-        expect(find.text('FAILED'), findsOneWidget);
+        expect(find.byTooltip('FAILED'), findsOneWidget);
         await tester.tap(find.byTooltip('Copy command').hitTestable());
         await tester.pump();
         expect(copied, (tool.args as Map)['command']);
@@ -375,7 +411,7 @@ void main() {
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
         expect(mainScroll.offset, closeTo(readingOffset, 1));
-        await tester.tap(find.text('Sub-Agents'));
+        await tester.tap(find.text('Sub-agents'));
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
         expect(find.byType(InputBar), findsNothing);
@@ -384,7 +420,7 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
-        expect(find.text('Call returned'), findsWidgets);
+        expect(find.byTooltip('Call returned'), findsWidgets);
         expect(find.textContaining('not live child telemetry'), findsOneWidget);
         await tester.tap(
           find.byKey(const Key('code-disclosure')).hitTestable(),
@@ -400,9 +436,24 @@ void main() {
         expect(codeHeader, findsOneWidget);
         expect(
           tester.getRect(codeHeader).top,
-          closeTo(tester.getRect(agentList).top, 1),
+          closeTo(tester.getRect(agentList).top + kAccordionGutter, 1),
         );
         final agentScroll = tester.widget<ListView>(agentList).controller!;
+        if (const bool.fromEnvironment('CAPTURE86') && dark) {
+          await tester.runAsync(() async {
+            final image =
+                await (capture.currentContext!.findRenderObject()
+                        as RenderRepaintBoundary)
+                    .toImage();
+            final bytes = await image.toByteData(
+              format: ui.ImageByteFormat.png,
+            );
+            await File(
+              'build/86-compact-chat/${const String.fromEnvironment('CAPTURE_PHASE', defaultValue: 'followup')}/chat-children-320-2x.png',
+            ).writeAsBytes(bytes!.buffer.asUint8List());
+            image.dispose();
+          });
+        }
         final agentAlignedOffset = agentScroll.offset;
         agentScroll.jumpTo(agentScroll.offset + 300);
         await tester.pumpAndSettle();
@@ -410,10 +461,10 @@ void main() {
         expect(codeHeader, findsNothing);
         expect(find.byKey(const Key('accordion-pinned-heading')), findsNothing);
         final agentReadingOffset = agentScroll.offset;
-        await tester.tap(find.text('Main-Thread'));
+        await tester.tap(find.text('Main'));
         await tester.pumpAndSettle();
         expect(mainScroll.offset, closeTo(readingOffset, 1));
-        await tester.tap(find.text('Sub-Agents'));
+        await tester.tap(find.text('Sub-agents'));
         await tester.pumpAndSettle();
         expect(agentScroll.offset, closeTo(agentReadingOffset, 1));
         agentScroll.jumpTo(agentAlignedOffset);
@@ -427,7 +478,7 @@ void main() {
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
         expect(find.textContaining('nested line 99'), findsNothing);
-        await tester.tap(find.text('Main-Thread'));
+        await tester.tap(find.text('Main'));
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
         expect(find.byType(InputBar), findsOneWidget);
@@ -454,7 +505,7 @@ void main() {
           tool: 'codemode',
           args: recovered['arguments'],
         );
-        vm.emit(ChatReady(messages: [nestedTool]));
+        vm.emit(ChatReady(messages: [nestedTool, agent, initialAgent]));
         await tester.pumpAndSettle();
         mainScroll.jumpTo(0);
         await tester.pumpAndSettle();
@@ -483,7 +534,7 @@ void main() {
             .hitTestable();
         expect(
           tester.getRect(nestedHeading).top,
-          closeTo(tester.getRect(mainList).top, 1),
+          closeTo(tester.getRect(mainList).top + kAccordionGutter, 1),
         );
         final nestedAlignedOffset = mainScroll.offset;
         mainScroll.jumpTo(
@@ -512,25 +563,42 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(
-          find.descendant(of: embeddedViewport, matching: find.text('Wrap')),
+          find.descendant(
+            of: embeddedViewport,
+            matching: find.byTooltip('Wrap code'),
+          ),
           findsOneWidget,
         );
         vm.emit(
           ChatReady(
-            messages: [nestedTool.copyWith(status: ToolEventStatus.completed)],
+            messages: [
+              nestedTool.copyWith(status: ToolEventStatus.completed),
+              agent,
+              initialAgent,
+            ],
           ),
         );
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Sub-Agents'));
+        await tester.tap(find.text('Sub-agents'));
         await tester.pumpAndSettle();
         expect(
           find.byTooltip('Copy decoded embedded string').hitTestable(),
           findsNothing,
         );
-        await tester.tap(find.text('Main-Thread'));
+        expect(
+          tester
+              .widget<SubagentPanel>(find.byType(SubagentPanel))
+              .invocations
+              .length,
+          2,
+        );
+        await tester.tap(find.text('Main'));
         await tester.pumpAndSettle();
         expect(
-          find.descendant(of: embeddedViewport, matching: find.text('Wrap')),
+          find.descendant(
+            of: embeddedViewport,
+            matching: find.byTooltip('Wrap code'),
+          ),
           findsOneWidget,
         );
         await tester.ensureVisible(
@@ -544,6 +612,8 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text(preview.text), findsNothing);
         expect(tester.takeException(), isNull);
+        await tester.tap(toggle);
+        await tester.pumpAndSettle();
         vm.testPeer = const PeerRecord(
           remoteEpk: 'another-peer',
           roomId: 'other-room',
@@ -565,10 +635,13 @@ void main() {
         expect(find.byType(InputBar), findsOneWidget);
         expect(find.text('Other room'), findsWidgets);
         expect(find.text('retained main draft'), findsNothing);
-        expect(find.text('Sub-Agents'), findsOneWidget);
+        expect(toggle, findsNothing);
         expect(find.byType(AccordionAnchor), findsNothing);
-        await tester.tap(find.text('Sub-Agents'));
+        vm.emit(const ChatReady(messages: [initialAgent]));
         await tester.pumpAndSettle();
+        await tester.tap(toggle);
+        await tester.pumpAndSettle();
+        expect(find.byType(InputBar), findsNothing);
         vm.testPeer = const PeerRecord(
           remoteEpk: 'another-peer',
           roomId: 'same-peer-new-room',
@@ -582,7 +655,7 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        expect(find.text('Sub-Agents'), findsOneWidget);
+        expect(toggle, findsNothing);
         expect(find.byType(InputBar), findsOneWidget);
         expect(find.text('Same peer next room'), findsWidgets);
         expect(tester.takeException(), isNull);
@@ -602,6 +675,11 @@ void main() {
   testWidgets(
     'last reverse tool aligns once and its original heading scrolls away',
     (tester) async {
+      tester.view.physicalSize = const Size(360, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final capture = GlobalKey();
       final conn = ConnectionManager(
         factory: (_, _) async => _FakeChannel(),
         storage: _FakeStorage(),
@@ -622,6 +700,7 @@ void main() {
       final sel = SessionSelection();
       await tester.pumpWidget(
         MaterialApp(
+          theme: buildDarkTheme(),
           home: MultiProvider(
             providers: [
               ChangeNotifierProvider<ChatViewModel>.value(value: vm),
@@ -630,7 +709,10 @@ void main() {
               ChangeNotifierProvider<Preferences>.value(value: prefs),
               ChangeNotifierProvider<SessionSelection>.value(value: sel),
             ],
-            child: const ChatPage(initialOnline: true),
+            child: RepaintBoundary(
+              key: capture,
+              child: const ChatPage(initialOnline: true),
+            ),
           ),
         ),
       );
@@ -657,7 +739,38 @@ void main() {
       await tester.pumpAndSettle();
       final heading = find.byKey(const Key('tool-disclosure')).hitTestable();
       expect(heading, findsOneWidget);
-      expect(tester.getRect(heading).top, closeTo(tester.getRect(list).top, 1));
+      expect(
+        tester.getRect(heading).top,
+        closeTo(tester.getRect(list).top + kAccordionGutter, 1),
+      );
+      expect(tester.getSize(heading).height, 48);
+      for (final action in [
+        find.byTooltip('Copy output'),
+        find.byTooltip('Copy command'),
+        find.byTooltip('Scroll horizontally'),
+      ]) {
+        expect(tester.getRect(action).top, tester.getRect(heading).top);
+        expect(tester.getSize(action), const Size(48, 48));
+        expect(
+          tester.getRect(action).overlaps(tester.getRect(heading)),
+          isFalse,
+        );
+      }
+      expect(find.text('DONE'), findsNothing);
+      expect(find.byTooltip('DONE'), findsOneWidget);
+      if (const bool.fromEnvironment('CAPTURE86')) {
+        await tester.runAsync(() async {
+          final image =
+              await (capture.currentContext!.findRenderObject()
+                      as RenderRepaintBoundary)
+                  .toImage();
+          final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+          await File(
+            'build/86-compact-chat/${const String.fromEnvironment('CAPTURE_PHASE', defaultValue: 'followup')}/chat-ordinary-360-1x.png',
+          ).writeAsBytes(bytes!.buffer.asUint8List());
+          image.dispose();
+        });
+      }
       final scroll = tester.widget<ListView>(list).controller!;
       final alignedOffset = scroll.offset;
       scroll.jumpTo(
@@ -763,7 +876,10 @@ void main() {
       await tester.pumpAndSettle();
       final heading = find.byKey(const Key('code-disclosure')).hitTestable();
       expect(heading, findsOneWidget);
-      expect(tester.getRect(heading).top, closeTo(tester.getRect(list).top, 1));
+      expect(
+        tester.getRect(heading).top,
+        closeTo(tester.getRect(list).top + kAccordionGutter, 1),
+      );
       expect(
         tester
             .widgetList<AccordionAnchor>(
@@ -913,7 +1029,7 @@ void main() {
       expect(find.text('directory'), findsNothing);
       await tester.tap(find.byKey(const Key('tool-disclosure')).hitTestable());
       await tester.pump();
-      expect(find.text('Wrap').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('Wrap code').hitTestable(), findsOneWidget);
 
       // Tool classification can remove a retained row from the main thread.
       await show([

@@ -115,6 +115,18 @@ class _ChatPageState extends State<ChatPage> {
       _subagents = false;
     }
 
+    // ChatReady messages are already scoped by the ViewModel to this peer/room.
+    // Membership is the same invocation parser used by the child panel, not
+    // room presence or tool-visibility preferences.
+    final hasSubagents =
+        state is ChatReady &&
+        state.messages.any(
+          (message) =>
+              message is ToolEvent &&
+              SubagentInvocation.fromTool(message) != null,
+        );
+    if (!hasSubagents) _subagents = false;
+
     final scaffold = Scaffold(
       backgroundColor: context.colors.bg,
       body: SafeArea(
@@ -129,29 +141,38 @@ class _ChatPageState extends State<ChatPage> {
             if (state is ChatReady && state.pairingRevoked)
               _RevokedBanner(onRePair: () => context.go('/pair')),
             Expanded(child: _buildBody(context, state, vm)),
+            if (hasSubagents)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    key: const Key('thread-toggle'),
+                    style: TextButton.styleFrom(
+                      minimumSize: const Size(48, 48),
+                      foregroundColor: context.colors.accent,
+                      backgroundColor: context.colors.surface,
+                      textStyle: context.typo.monoSmall,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      shape: const StadiumBorder(),
+                    ),
+                    onPressed: () {
+                      FocusManager.instance.primaryFocus?.unfocus();
+                      setState(() => _subagents = !_subagents);
+                    },
+                    icon: Icon(
+                      _subagents
+                          ? Icons.arrow_back
+                          : Icons.account_tree_outlined,
+                      size: 20,
+                    ),
+                    label: Text(_subagents ? 'Main' : 'Sub-agents'),
+                  ),
+                ),
+              ),
             Offstage(
               offstage: _subagents,
               child: _buildInput(context, state, vm),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-              child: SizedBox(
-                width: double.infinity,
-                child: TextButton(
-                  key: const Key('thread-toggle'),
-                  style: TextButton.styleFrom(
-                    minimumSize: const Size.fromHeight(48),
-                    foregroundColor: context.colors.accent,
-                    backgroundColor: context.colors.surface,
-                    textStyle: context.typo.mono,
-                  ),
-                  onPressed: () {
-                    FocusManager.instance.primaryFocus?.unfocus();
-                    setState(() => _subagents = !_subagents);
-                  },
-                  child: Text(_subagents ? 'Main-Thread' : 'Sub-Agents'),
-                ),
-              ),
             ),
           ],
         ),
@@ -513,17 +534,16 @@ class _ChatPageState extends State<ChatPage> {
         onAction: () => context.go('/pair'),
       ),
       ChatReady(:final messages, :final streaming) => () {
-        final visible = hideToolCalls
-            ? messages.where((m) => m is! ToolEvent).toList()
-            : messages;
         final subagents = <SubagentInvocation>[];
         final mainMessages = <ChatMessage>[];
-        for (final message in visible) {
+        for (final message in messages) {
           final invocation = message is ToolEvent
               ? SubagentInvocation.fromTool(message)
               : null;
           if (invocation == null) {
-            mainMessages.add(message);
+            if (!hideToolCalls || message is! ToolEvent) {
+              mainMessages.add(message);
+            }
           } else {
             subagents.add(invocation);
           }
@@ -812,21 +832,26 @@ class _MessageListState extends State<_MessageList> {
               Positioned(
                 bottom: 8,
                 right: 16,
-                child: FilledButton.icon(
+                child: IconButton.filledTonal(
+                  key: const Key('scroll-to-latest'),
+                  tooltip: 'Scroll to latest message',
+                  constraints: const BoxConstraints(
+                    minWidth: 48,
+                    minHeight: 48,
+                  ),
+                  style: IconButton.styleFrom(
+                    foregroundColor: context.colors.accent,
+                    backgroundColor: context.colors.surface,
+                  ),
                   onPressed: () => _scroll.animateTo(
                     0,
                     duration: const Duration(milliseconds: 200),
                     curve: Curves.easeOut,
                   ),
-                  icon: const Icon(LucideIcons.arrowDown, size: 24),
-                  label: const Text('Latest'),
-                  style: FilledButton.styleFrom(
-                    textStyle: context.typo.mono.copyWith(fontSize: 16),
-                    minimumSize: const Size(0, 56),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
+                  icon: const Icon(
+                    Icons.keyboard_arrow_down,
+                    size: 24,
+                    semanticLabel: 'Scroll to latest message',
                   ),
                 ),
               ),

@@ -34,7 +34,8 @@ class CodeViewport extends StatefulWidget {
   // Composite bodies need stable ancestry while their nested frames keep state.
   // Null preserves the original viewport behavior for all existing callers.
   final double? bodyWrapWidth;
-  final Widget Function(BuildContext context, Widget controls)? headerBuilder;
+  final Widget Function(BuildContext context, List<Widget> controls)?
+  headerBuilder;
   final bool collapsible;
   final bool showContent;
   final bool headerExpanded;
@@ -94,43 +95,33 @@ class _CodeViewportState extends State<CodeViewport>
       borderRadius: BorderRadius.circular(8),
       border: Border.all(color: colors.border),
     );
-    final controls = Wrap(
-      alignment: WrapAlignment.end,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        if (_expanded || !widget.collapsible)
-          TextButton.icon(
-            key: const Key('code-wrap'),
-            onPressed: _toggleWrap,
-            icon: Icon(
-              _wrap ? LucideIcons.moveHorizontal : LucideIcons.wrapText,
-              size: 14,
-            ),
-            label: Text(_wrap ? 'Scroll' : 'Wrap'),
-            style: TextButton.styleFrom(
-              foregroundColor: colors.muted2,
-              textStyle: context.typo.monoSmall.copyWith(fontSize: 10),
-              minimumSize: const Size(0, 48),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: VisualDensity.compact,
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            ),
-          ),
+    final controls = <Widget>[
+      if (_expanded || !widget.collapsible)
         IconButton(
-          key: const Key('code-copy'),
-          tooltip: widget.copyTooltip,
-          iconSize: 14,
+          key: const Key('code-wrap'),
+          tooltip: _wrap ? 'Scroll horizontally' : 'Wrap code',
+          onPressed: _toggleWrap,
+          iconSize: 18,
           constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
           padding: const EdgeInsets.all(4),
-          visualDensity: VisualDensity.compact,
-          onPressed: _copy,
           icon: Icon(
-            _copied ? LucideIcons.check : LucideIcons.copy,
-            color: _copied ? colors.success : colors.muted2,
+            _wrap ? LucideIcons.moveHorizontal : LucideIcons.wrapText,
+            color: colors.muted2,
           ),
         ),
-      ],
-    );
+      IconButton(
+        key: const Key('code-copy'),
+        tooltip: widget.copyTooltip,
+        iconSize: 18,
+        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        padding: const EdgeInsets.all(4),
+        onPressed: _copy,
+        icon: Icon(
+          _copied ? LucideIcons.check : LucideIcons.copy,
+          color: _copied ? colors.success : colors.muted2,
+        ),
+      ),
+    ];
     final header =
         widget.headerBuilder?.call(context, controls) ??
         CompactOutputHeader(
@@ -148,8 +139,8 @@ class _CodeViewportState extends State<CodeViewport>
           controls: controls,
         );
     final padding = standalone
-        ? const EdgeInsets.fromLTRB(8, 2, 8, 8)
-        : const EdgeInsets.only(top: 4, bottom: 8);
+        ? const EdgeInsets.fromLTRB(8, 2, 8, kAccordionGutter)
+        : const EdgeInsets.only(top: 4, bottom: kAccordionGutter);
     final content = widget.bodyWrapWidth != null
         ? Scrollbar(
             controller: _scroll,
@@ -183,7 +174,7 @@ class _CodeViewportState extends State<CodeViewport>
           );
     return Container(
       width: double.infinity,
-      margin: standalone ? const EdgeInsets.symmetric(vertical: 10) : null,
+      margin: standalone ? const EdgeInsets.symmetric(vertical: 4) : null,
       decoration: standalone ? frame : null,
       child: AccordionAnchor(
         expanded: standalone ? _expanded : widget.headerExpanded,

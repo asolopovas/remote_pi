@@ -181,7 +181,7 @@ void main() {
             tester.getSize(firstCopy).shortestSide,
             greaterThanOrEqualTo(48),
           );
-          final status = inside('first', find.text('DONE'));
+          final status = inside('first', find.byTooltip('DONE'));
           expect(
             tester.getRect(firstCopy).left,
             greaterThanOrEqualTo(tester.getRect(status).right),
@@ -210,7 +210,7 @@ void main() {
           await tester.pumpAndSettle();
           expect(copied, readableToolOutput('bash', result));
           expect(scroll.offset, offset);
-          expect(inside('first', find.text('Wrap')), findsOneWidget);
+          expect(inside('first', find.byTooltip('Wrap code')), findsOneWidget);
           expect(inside('first', find.text('Output')), findsOneWidget);
           await tester.tap(inside('first', find.byTooltip('Copy command')));
           await tester.pumpAndSettle();

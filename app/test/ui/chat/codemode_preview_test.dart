@@ -208,7 +208,7 @@ void main() {
         await tester.tap(innerWrap);
         await tester.pump();
         expect(
-          find.descendant(of: preview, matching: find.text('Wrap')),
+          find.descendant(of: preview, matching: find.byTooltip('Wrap code')),
           findsOneWidget,
         );
         await tester.ensureVisible(find.byTooltip('Copy source'));
@@ -261,11 +261,11 @@ void main() {
         expect(find.text(previews.first.text), findsOneWidget);
         expect(find.text(script), findsOneWidget);
         expect(
-          find.descendant(of: preview, matching: find.text('Wrap')),
+          find.descendant(of: preview, matching: find.byTooltip('Wrap code')),
           findsOneWidget,
         );
         expect(
-          find.descendant(of: original, matching: find.text('Wrap')),
+          find.descendant(of: original, matching: find.byTooltip('Wrap code')),
           findsOneWidget,
         );
         await tester.tap(outerWrap);
@@ -489,7 +489,10 @@ void main() {
           await tester.tap(wrap);
           await tester.pump();
           expect(
-            find.descendant(of: viewport, matching: find.text('Wrap')),
+            find.descendant(
+              of: viewport,
+              matching: find.byTooltip('Wrap code'),
+            ),
             findsOneWidget,
           );
           await tester.tap(wrap);

@@ -40,6 +40,76 @@ const _editToolWithHunk = ToolEvent(
 
 void main() {
   testWidgets(
+    'compact card keeps separate 48dp actions at narrow/scaled widths',
+    (tester) async {
+      for (final (width, scale) in [(320.0, 1.0), (400.0, 1.0), (320.0, 2.0)]) {
+        await tester.binding.setSurfaceSize(Size(width, 1000));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: buildDarkTheme(),
+            home: MediaQuery(
+              data: MediaQueryData(textScaler: TextScaler.linear(scale)),
+              child: Scaffold(
+                body: SingleChildScrollView(
+                  child: ToolRequestCard(
+                    key: ValueKey((width, scale)),
+                    tool: _bashTool.copyWith(
+                      status: ToolEventStatus.completed,
+                      result: 'done',
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        final disclosure = find.byKey(const Key('tool-disclosure'));
+        final output = find.byTooltip('Copy output');
+        for (final target in [disclosure, output]) {
+          expect(tester.getSize(target).height, greaterThanOrEqualTo(48));
+        }
+        expect(tester.getSize(output).width, greaterThanOrEqualTo(48));
+        if (scale == 1) {
+          // One 48dp header plus the 6dp outer margin and 2dp border.
+          expect(tester.getSize(find.byType(ToolRequestCard)).height, 56);
+          expect(tester.getRect(output).top, tester.getRect(disclosure).top);
+        }
+        await tester.tap(disclosure);
+        await tester.pumpAndSettle();
+        final source = find.byTooltip('Copy command');
+        final wrap = find.byKey(const Key('code-wrap')).first;
+        for (final target in [source, output, wrap]) {
+          final size = tester.getSize(target);
+          expect(size.width, greaterThanOrEqualTo(48));
+          expect(size.height, greaterThanOrEqualTo(48));
+        }
+        expect(
+          tester.getRect(source).overlaps(tester.getRect(output)),
+          isFalse,
+        );
+        expect(tester.getRect(source).overlaps(tester.getRect(wrap)), isFalse);
+        if (scale == 1) {
+          for (final target in [output, source, wrap]) {
+            expect(tester.getRect(target).top, tester.getRect(disclosure).top);
+          }
+          expect(tester.getSize(disclosure).height, 48);
+        } else {
+          expect(
+            tester.getRect(source).top,
+            greaterThanOrEqualTo(tester.getRect(disclosure).bottom),
+          );
+        }
+        await tester.tap(wrap);
+        await tester.pumpAndSettle();
+        expect(find.byTooltip('Wrap code'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      }
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'multiline namespaced commands with metadata copy exact source, not wrapper',
     (tester) async {
       String? copied;
@@ -325,7 +395,7 @@ void main() {
       scroll.jumpTo(0);
       await tester.pumpAndSettle();
       expect(find.text('terminal output'), findsOneWidget);
-      expect(find.text('Wrap'), findsOneWidget);
+      expect(find.byTooltip('Wrap code'), findsOneWidget);
       await tester.tap(find.byKey(const Key('tool-disclosure')).first);
       await tester.pump();
       scroll.jumpTo(4000);
@@ -338,12 +408,12 @@ void main() {
         error: 'late failure',
       );
       await pump();
-      expect(find.text('FAILED'), findsOneWidget);
+      expect(find.byTooltip('FAILED'), findsOneWidget);
       expect(find.text('✗ late failure'), findsNothing);
       await tester.tap(find.byKey(const Key('tool-disclosure')).first);
       await tester.pump();
       expect(find.text('✗ late failure'), findsOneWidget);
-      expect(find.text('Wrap'), findsOneWidget);
+      expect(find.byTooltip('Wrap code'), findsOneWidget);
       event = const ToolEvent(
         id: 'different',
         toolCallId: 'different',
@@ -391,10 +461,10 @@ void main() {
       );
       await tester.tap(find.textContaining('BASH ·'));
       await tester.pump();
-      expect(find.text('RUNNING'), findsOneWidget);
+      expect(find.byTooltip('RUNNING'), findsOneWidget);
       await tester.tap(find.byKey(const Key('code-wrap')));
       await tester.pump();
-      expect(find.text('Wrap'), findsOneWidget);
+      expect(find.byTooltip('Wrap code'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -444,14 +514,16 @@ void main() {
       tester,
     ) async {
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
-      expect(find.text('RUNNING'), findsOneWidget);
+      expect(find.byTooltip('RUNNING'), findsOneWidget);
       expect(find.text('Allow'), findsNothing);
       expect(find.text('Deny'), findsNothing);
       expect(find.textContaining('s'), findsAny); // no '60s' countdown
       expect(find.textContaining('60s'), findsNothing);
     });
 
-    testWidgets('completed state shows DONE', (tester) async {
+    testWidgets('completed state has named success icon, no visible DONE', (
+      tester,
+    ) async {
       const done = ToolEvent(
         id: 'tc1',
         toolCallId: 'tc1',
@@ -460,11 +532,12 @@ void main() {
         status: ToolEventStatus.completed,
       );
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: done)));
-      expect(find.text('DONE'), findsOneWidget);
+      expect(find.byTooltip('DONE'), findsOneWidget);
+      expect(find.text('DONE'), findsNothing);
       expect(find.text('✓ Done'), findsNothing);
     });
 
-    testWidgets('denied state shows DENIED label', (tester) async {
+    testWidgets('denied state shows named DENIED icon', (tester) async {
       const denied = ToolEvent(
         id: 'tc1',
         toolCallId: 'tc1',
@@ -474,7 +547,7 @@ void main() {
         error: 'user denied',
       );
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: denied)));
-      expect(find.text('DENIED'), findsOneWidget);
+      expect(find.byTooltip('DENIED'), findsOneWidget);
     });
 
     testWidgets('allowed state shows RUNNING (still in flight)', (
@@ -488,12 +561,20 @@ void main() {
         status: ToolEventStatus.allowed,
       );
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: allowed)));
-      expect(find.text('RUNNING'), findsOneWidget);
+      expect(find.byTooltip('RUNNING'), findsOneWidget);
       expect(find.text('Allow'), findsNothing);
     });
 
     Color? outcomeColor(WidgetTester tester, String text) =>
-        tester.widget<Text>(find.text(text)).style?.color;
+        text.startsWith('✗')
+        ? tester.widget<Text>(find.text(text)).style?.color
+        : tester
+              .widget<Icon>(
+                find.byWidgetPredicate(
+                  (w) => w is Icon && w.semanticLabel == text,
+                ),
+              )
+              .color;
 
     testWidgets('completed → green header without duplicate footer', (
       tester,
@@ -507,10 +588,12 @@ void main() {
       );
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: done)));
       expect(outcomeColor(tester, 'DONE'), AppColors.dark.success);
+      expect(find.byIcon(Icons.check_circle), findsOneWidget);
+      expect(find.text('DONE'), findsNothing);
       expect(find.text('✓ Done'), findsNothing);
     });
 
-    testWidgets('failed → red "✗ {error}" + FAILED label', (tester) async {
+    testWidgets('failed → red "✗ {error}" + named FAILED icon', (tester) async {
       const failed = ToolEvent(
         id: 'tc1',
         toolCallId: 'tc1',
@@ -520,7 +603,10 @@ void main() {
         error: 'command failed: exit 1',
       );
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: failed)));
-      expect(find.text('FAILED'), findsOneWidget);
+      expect(find.byTooltip('FAILED'), findsOneWidget);
+      expect(find.byIcon(Icons.error), findsOneWidget);
+      expect(outcomeColor(tester, 'FAILED'), AppColors.dark.error);
+      expect(find.text('FAILED'), findsNothing);
       expect(find.textContaining('✗ command failed: exit 1'), findsNothing);
       await tester.tap(find.byKey(const Key('tool-disclosure')));
       await tester.pump();
@@ -535,6 +621,8 @@ void main() {
     ) async {
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
       expect(outcomeColor(tester, 'RUNNING'), AppColors.dark.accent);
+      expect(find.byIcon(Icons.sync), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle), findsNothing);
       expect(find.text('⏳ Running…'), findsNothing);
     });
   });

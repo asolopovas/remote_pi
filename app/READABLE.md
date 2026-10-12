@@ -108,3 +108,48 @@ Expanded tool/code/agent bodies support double-tap collapse on **non-text body p
 **Copy output** sits next to the owning tool's status with a 48dp target, independently of Copy command/source. It uses the existing lossless readable output normalization (including truthful result metadata) or exact raw fallback; no result means no action. At narrow/scaled widths, title, status/output-copy and source/Wrap controls occupy separate readable rows.
 
 Source evidence is bounded host production-widget testing/captures in `build/83-chat/`, with inert transport/clipboard fixtures and bundled FiraMono loaded for captures. It is not installed-device, microphone, real-chat or TalkBack acceptance. Fresh real-main code28 static packaging/provenance is separate in `build/83-chat/code28/`; parent artifact review/publication/download checks passed, while actual-device gestures remain pending. Published code27 and its frozen evidence remain unchanged.
+
+## Plan86 compact native chat controls (source review pending)
+
+Supersedes Plan83's full-width bottom toggle and labelled Latest pill, not its
+threading/copy/disclosure contracts. A theme-colored Material Sub-agents/Main
+control (20dp icon, >=48dp target) is fixed lower-left outside both lists, above
+the mounted composer/IME. It only exists for current `ChatReady` invocation
+entries parsed by the existing child parser, independent of Hide tool calls;
+losing the last entry returns to Main without dropping its draft. There is no
+reserved control row when absent. Latest is a 24dp down-chevron tonal icon
+button with a >=48dp target and “Scroll to latest message” tooltip/semantics.
+Streaming still does not pull readers back to the bottom.
+
+Tool margins are 3dp and horizontal inset 8dp; standalone code margins are 4dp.
+Shared headings use Material state layers and combine status/output-copy and
+source/Wrap actions where width permits, wrapping at 320dp/2x. Controls retain
+48dp targets and theme typography rather than reduced fonts/visual density.
+Agent body inset/bottom spacing is 16/8dp; Expand all also has a 48dp target.
+Original accordion alignment, short-edge cleanup, selection and innermost
+non-text double-tap behavior remain unchanged.
+
+Host evidence: `build/86-compact-chat/{before,after}/` contains deterministic
+production ChatPage PNGs with bundled FiraMono/icons loaded and inert transport
+fixtures (320dp/2x), not live phone/TalkBack acceptance. Focused tests, broader
+chat tests and scoped analysis logs live beside them. No APK/device operation
+was performed for this source change; independent review precedes packaging.
+
+### Plan86 incremental header/gutter follow-up (source review pending)
+
+Expansion alignment now retains the incumbent 8dp list/body gutter above the
+original heading, matching bottom breathing room. This is a one-time alignment,
+not a pinned header; normal scroll-out, nested/reverse disclosure and short-edge
+cleanup remain intact. Child-list vertical padding uses the same gutter.
+
+Headers prefer one 48dp row at ordinary phone widths: a one-line ellipsized
+title, named status icon and separate output-copy/source-copy/Wrap-or-Scroll
+icon targets. Status words (including Done/Failed) are not painted; success,
+failure, running and detached states retain distinct truthful glyphs/colors and
+named tooltips/semantics. Full source/task remains in the expanded body. Layout
+measures a ten-character title identity in theme typography plus 48dp action
+slots; when that cannot fit, actions wrap without shrinking their targets.
+Wrap actions are now icon-only, with “Scroll horizontally” / “Wrap code”
+tooltips. Focused host evidence and three updated font-loaded production
+ChatPage captures are under `build/86-compact-chat/followup/`; prior evidence and
+code30 artifacts remain untouched. No updated APK/device acceptance is claimed.

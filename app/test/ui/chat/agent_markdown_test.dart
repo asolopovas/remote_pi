@@ -19,11 +19,11 @@ void main() {
     expect(find.textContaining('final x = 1;'), findsNothing);
     await tester.tap(find.byKey(const Key('code-disclosure')));
     await tester.pump();
-    expect(find.text('Scroll'), findsOneWidget);
+    expect(find.byTooltip('Scroll horizontally'), findsOneWidget);
     expect(find.textContaining('final x = 1;'), findsOneWidget);
     await tester.tap(find.byKey(const Key('code-wrap')));
     await tester.pump();
-    expect(find.text('Wrap'), findsOneWidget);
+    expect(find.byTooltip('Wrap code'), findsOneWidget);
   });
 
   testWidgets('tapping copy puts the code on the clipboard', (tester) async {
@@ -95,7 +95,7 @@ void main() {
         tester,
         'Still writing.\n\n```dart\none\ntwo\n```\n\nFinished.',
       );
-      expect(find.text('Wrap'), findsOneWidget);
+      expect(find.byTooltip('Wrap code'), findsOneWidget);
       expect(find.textContaining('one\ntwo'), findsOneWidget);
       expect(find.textContaining('Finished.'), findsOneWidget);
     },

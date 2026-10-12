@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 
+// Matches the incumbent message-list and code-body breathing room.
+const kAccordionGutter = 8.0;
+
 /// Aligns the original disclosure heading once per expansion in this viewport.
 class AccordionViewport extends StatefulWidget {
   const AccordionViewport({
@@ -83,7 +86,7 @@ class _AccordionViewportState extends State<AccordionViewport> {
     if (align != null && expanded.contains(align)) {
       final header = _rect(align._header);
       if (header != null) {
-        final delta = header.top - viewport.top;
+        final delta = header.top - (viewport.top + kAccordionGutter);
         final position = widget.controller.position;
         final desired = position.pixels + (widget.reverse ? -delta : delta);
         final shortage = widget.reverse

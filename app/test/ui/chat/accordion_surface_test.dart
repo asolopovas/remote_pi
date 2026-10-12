@@ -131,7 +131,7 @@ void main() {
       await tester.tap(find.byKey(const Key('tool-disclosure')));
       await tester.pumpAndSettle();
       expect(find.text('Output'), findsOneWidget);
-      expect(find.text('Wrap'), findsOneWidget);
+      expect(find.byTooltip('Wrap code'), findsOneWidget);
     },
   );
 

@@ -39,7 +39,12 @@ void main() {
                             ),
                           ),
                           body: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            padding: const EdgeInsets.fromLTRB(
+                              8,
+                              0,
+                              8,
+                              kAccordionGutter,
+                            ),
                             child: Column(
                               children: List.generate(short ? 1 : 20, (i) {
                                 return SizedBox(
@@ -61,6 +66,9 @@ void main() {
                           child: ListView(
                             controller: controller,
                             reverse: reverse,
+                            padding: const EdgeInsets.symmetric(
+                              vertical: kAccordionGutter,
+                            ),
                             children: reverse
                                 ? [const AccordionEdgeSpace(), card]
                                 : [
@@ -80,13 +88,22 @@ void main() {
           await tester.tap(find.byKey(headerKey));
           await tester.pumpAndSettle();
           final top = tester.getRect(find.byKey(viewportKey)).top;
-          expect(tester.getRect(find.byKey(headerKey)).top, closeTo(top, 0.5));
+          expect(
+            tester.getRect(find.byKey(headerKey)).top,
+            closeTo(top + kAccordionGutter, 0.5),
+          );
           expect(find.byKey(headerKey), findsOneWidget);
           expect(
             find.byKey(const Key('accordion-pinned-heading')),
             findsNothing,
           );
           expect(find.byType(Visibility), findsNothing);
+          final anchor = find.byType(AccordionAnchor);
+          final lastBody = find.byKey(ValueKey('body-${short ? 0 : 19}'));
+          expect(
+            tester.getRect(anchor).bottom - tester.getRect(lastBody).bottom,
+            kAccordionGutter,
+          );
           final aligned = controller.offset;
           if (short) {
             final space = tester
@@ -102,7 +119,7 @@ void main() {
             // former 60px heading slot must reach the body, not a clip/overlay.
             expect(
               tester.getRect(find.byKey(const ValueKey('body-2'))).top,
-              closeTo(top, 0.5),
+              closeTo(top + kAccordionGutter, 0.5),
             );
             await tester.tapAt(
               Offset(
@@ -142,7 +159,10 @@ void main() {
           // A fresh explicit expansion is allowed to align again.
           await tester.tap(find.byKey(headerKey));
           await tester.pumpAndSettle();
-          expect(tester.getRect(find.byKey(headerKey)).top, closeTo(top, 0.5));
+          expect(
+            tester.getRect(find.byKey(headerKey)).top,
+            closeTo(top + kAccordionGutter, 0.5),
+          );
           await tester.pumpWidget(const SizedBox());
           await tester.pumpAndSettle();
           expect(tester.takeException(), isNull);

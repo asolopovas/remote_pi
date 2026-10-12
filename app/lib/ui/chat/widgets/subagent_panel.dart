@@ -158,7 +158,10 @@ class _SubagentPanelState extends State<SubagentPanel> {
           key: const PageStorageKey('subagent-panel'),
           primary: false,
           shrinkWrap: false,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+          padding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: kAccordionGutter,
+          ),
           itemCount: invocations.length + 2,
           separatorBuilder: (_, _) => Divider(height: 1, color: colors.border),
           itemBuilder: (context, index) {
@@ -173,16 +176,15 @@ class _SubagentPanelState extends State<SubagentPanel> {
                       'Subagents · ${invocations.length}',
                       style: context.typo.monoSmall.copyWith(
                         color: colors.muted2,
-                        fontSize: 10,
                       ),
                     ),
                   ),
                   TextButton(
                     onPressed: () => onCollapsedChanged(!collapsed),
                     style: TextButton.styleFrom(
-                      textStyle: context.typo.monoSmall.copyWith(fontSize: 10),
+                      textStyle: context.typo.monoSmall,
                       foregroundColor: colors.muted2,
-                      minimumSize: const Size(0, 30),
+                      minimumSize: const Size(48, 48),
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       padding: const EdgeInsets.symmetric(horizontal: 6),
                     ),
@@ -278,7 +280,7 @@ class _SubagentCardState extends State<_SubagentCard>
         },
       ),
       body: Padding(
-        padding: const EdgeInsets.fromLTRB(22, 0, 4, 12),
+        padding: const EdgeInsets.fromLTRB(16, 0, 4, kAccordionGutter),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
