@@ -6243,7 +6243,7 @@ describe("UUID-scoped room display producer", () => {
 
   test("legacy endpoint stop/session/native replacement during paired lookup drops late snapshots", async () => {
     const storage = await import("./pairing/storage.js");
-    for (const action of ["stop", "native", "session"] as const) {
+    for (const action of ["stop", "native", "session", "reconnect", "revoke"] as const) {
       pairOwner(); const relay = await boot();
       let finish!: (peers: StoredPeer[]) => void;
       vi.mocked(storage.listPeers).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
@@ -6251,6 +6251,8 @@ describe("UUID-scoped room display producer", () => {
       if (action === "stop") await captureHandler("remote-pi stop")("", makeMockCtx());
       if (action === "native") nativeId = B;
       if (action === "session") start({ type: "session_start" }, ctx());
+      if (action === "reconnect") { relay.emit("close"); await vi.advanceTimersByTimeAsync(1_000); expect(relayRef.current).not.toBe(relay); }
+      if (action === "revoke") await selfRevokeHarness.options.at(-1)!.onRevoke!(OWNER_STANDARD_FIXTURE, OWNER_STANDARD_FIXTURE);
       finish([..._knownPeers]); await vi.advanceTimersByTimeAsync(0);
       expect(relay.send).not.toHaveBeenCalled(); expect(_getActivePeerCountForTest()).toBe(0);
       await captureHandler("remote-pi stop")("", makeMockCtx()); nativeId = A;

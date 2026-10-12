@@ -1891,6 +1891,7 @@ function _installAutoListener(relay: RelayClient): () => void {
       const ownerGeneration = _displayOwnerGeneration;
       if (!adapter || !roomId || !sessionIsCurrent) return null;
       const isCurrent = () => hasListenerAuthority() && relay.isOpen() &&
+        _myRoomMeta?.display?.epoch === adapter.snapshot().epoch &&
         _displayAdapter === adapter && _myRoomId === roomId &&
         _displaySessionIsCurrent === sessionIsCurrent && sessionIsCurrent() &&
         _displayOwnerGeneration === ownerGeneration;

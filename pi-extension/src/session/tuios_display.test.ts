@@ -40,6 +40,27 @@ beforeEach(() => { vi.useFakeTimers(); exec.mockReset(); });
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 
 describe("TuiosDisplayAdapter exact display scope", () => {
+  test("endpoint distinguishes verified null reset from unavailable/inflight/stale scope and deactivation", async () => {
+    const source = metadataQuery(); source.rename(null);
+    const h = harness(source.query);
+    expect(h.adapter.endpointSnapshot()).toBeNull();
+    await drain();
+    expect(h.adapter.endpointSnapshot()).toEqual({ native_session_id: A, epoch: expect.any(String), revision: 0, name: null });
+    source.rename("Renamed"); await vi.advanceTimersByTimeAsync(DISPLAY_POLL_MS);
+    expect(h.adapter.endpointSnapshot()).toEqual({ ...h.adapter.snapshot(), revision: 1, name: "Renamed" });
+    source.setUuid(B); await vi.advanceTimersByTimeAsync(DISPLAY_POLL_MS);
+    expect(h.adapter.endpointSnapshot()).toBeNull();
+    source.setUuid(A); h.adapter.activate({ isCurrent: () => true, publish: () => {} });
+    expect(h.adapter.endpointSnapshot()).toBeNull(); await drain();
+    expect(h.adapter.endpointSnapshot()?.name).toBe("Renamed");
+    h.adapter.deactivate(); expect(h.adapter.endpointSnapshot()).toBeNull();
+    const missing = new TuiosDisplayAdapter({ nativeSessionId: A, query: source.query });
+    missing.activate({ isCurrent: () => true, publish: () => {} }); await drain();
+    expect(missing.endpointSnapshot()).toBeNull(); missing.deactivate();
+    const stale = harness(source.query); await drain(); stale.retire();
+    expect(stale.adapter.endpointSnapshot()).toBeNull(); stale.adapter.deactivate();
+  });
+
   test("constructor is inert, hello seeds null, rename/reset/dedup preserve epoch and bound polling", async () => {
     const source = metadataQuery();
     const adapter = new TuiosDisplayAdapter({ nativeSessionId: A, candidate, query: source.query, clock: injectedClock });

@@ -3,6 +3,7 @@ import { RoomDisplayEndpoint } from "./room_display_endpoint.js";
 import { PlainPeerChannel } from "./peer_channel.js";
 import { roomIdFor } from "../rooms.js";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import type { RelayClient, RoomDisplay } from "./relay_client.js";
 
 const OWNER = Buffer.alloc(32, 1).toString("base64");
@@ -92,6 +93,28 @@ describe("RoomDisplayEndpoint dedicated paired-owner metadata", () => {
     hung.endpoint.dispose();
   });
 
+  test("global rate and retained nonce ledger remain bounded until expiry", async () => {
+    const h = harness();
+    for (let tick = 0; tick < 8; tick++) {
+      for (let n = 0; n < 9; n++) { h.consume(request("routing-A", tick * 9 + n + 1), OWNER, `phone-${n}`); await flush(); }
+      expect(h.send).toHaveBeenCalledTimes((tick + 1) * 8);
+      await vi.advanceTimersByTimeAsync(1_001);
+    }
+    h.consume(request("routing-A", 100), OWNER, "phone-new"); await flush(); expect(h.send).toHaveBeenCalledTimes(64);
+    await vi.advanceTimersByTimeAsync(2_000);
+    h.consume(request("routing-A", 101), OWNER, "phone-new"); await flush(); expect(h.send).toHaveBeenCalledTimes(65);
+    h.endpoint.dispose(); h.consume(request("routing-A", 102), OWNER, "another"); await flush(); expect(h.send).toHaveBeenCalledTimes(65);
+  });
+
+  test("readable cross-component fixture has exact base64 bodies and authenticated response scopes", () => {
+    const fixture = JSON.parse(readFileSync(new URL("../../test/fixtures/81-room-display-endpoint.json", import.meta.url), "utf8"));
+    for (const frame of fixture.frames) {
+      expect(JSON.parse(Buffer.from(frame.wire.ct, "base64").toString())).toEqual(frame.inner);
+      if (frame.inner.type === "room_display_snapshot") { expect(frame.wire.peer).toBe(fixture.pc_peer); expect(frame.wire.room).toBe(frame.inner.room_id); }
+    }
+    expect(fixture.frames.map((frame: { label: string }) => frame.label)).toEqual(["request-delivered-to-extension", "verified-name", "verified-reset", "unavailable"]);
+  });
+
   test("rename, null reset and unavailable snapshots preserve native/epoch/revision distinction", async () => {
     const h = harness();
     const displays: (RoomDisplay | null)[] = [
@@ -117,12 +140,19 @@ describe("RoomDisplayEndpoint dedicated paired-owner metadata", () => {
     for (let n = 0; n < 2; n++) {
       const target = rooms[n];
       const client = JSON.stringify({ peer: PC, room: target, ct: encode(request(target, n + 1)) });
+      const destination = JSON.parse(client);
+      // Legacy registry selects the exact destination room before the sender
+      // rewrite. No control forwarding or broadcast to a different Pi room.
+      expect(destination.peer).toBe(PC);
+      const routed = endpoints[rooms.indexOf(destination.room)];
       const incoming = JSON.parse(legacyForward(client, OWNER, "phone-main"));
-      for (const h of endpoints) h.endpoint.consume(incoming, JSON.parse(Buffer.from(incoming.ct, "base64").toString()), Buffer.byteLength(JSON.stringify(incoming)));
+      routed.endpoint.consume(incoming, JSON.parse(Buffer.from(incoming.ct, "base64").toString()), Buffer.byteLength(JSON.stringify(incoming)));
     }
     await flush();
     for (let n = 0; n < 2; n++) {
       const h = endpoints[n]; expect(h.send).toHaveBeenCalledOnce();
+      const outbound = JSON.parse(h.send.mock.calls[0][0]);
+      expect(outbound.peer).toBe(OWNER); expect(outbound.room).toBe("phone-main");
       const response = JSON.parse(legacyForward(h.send.mock.calls[0][0], PC, rooms[n]));
       const inner = JSON.parse(Buffer.from(response.ct, "base64").toString());
       expect(response.peer).toBe(PC); expect(response.room).toBe(rooms[n]); expect(inner.room_id).toBe(response.room); expect(inner.in_reply_to).toBe(nonce(n + 1));
