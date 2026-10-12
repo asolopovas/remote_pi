@@ -57,7 +57,7 @@ The user reports **Add new pairing** outside the viewport. Current Settings puts
 
 - [x] Add new pairing fits the visible Settings safe area and remains tappable on phone/sheet in actual production widget tests. Existing settings/peer list scrolls independently; CTA is a fixed bottom SafeArea footer with >=48dp target. Minimal Relay Row→Wrap addresses the observed 320dp/2x test overflow.
 - [x] Focused widget checks and direct scoped parent review accepted. Worker `2f451b76-3b3d-440a-ab46-6b2d8f20bb2a`: 17 Settings tests, two-path analyzer clean. Parent reviewed production diff and phone/embedded/IME/last-peer/navigation assertions, verified exact two hashes/whitespace/logs. Active LSP: one confirmed clean, one test timed out; no all-path LSP claim.
-- [ ] Combined latest UI installed in-place.
+- [x] Combined latest UI installed in-place: code32 from committed source `9494c00aadcabb64044431414e54388f4a4c7930`, APK SHA256 `a2b45d77f6ab7f2334184dc24baa20c778d8f0ae8e6b69c35889f2bcc84c957d`, same package/activity/signer. Worker `2f451b76-3b3d-440a-ab46-6b2d8f20bb2a` released all ownership; 1m21s warmed offline incremental build, install-r Success, bounded cold-launch/current-process/crash smoke passed. Parent independently verified APK digest/signature, installed code32, exact Settings/test hashes and clean source HEAD. CTA visual behavior is production host phone/sheet/IME-tested, not live-device/TalkBack acceptance; no private pairing data inspected. No uninstall/data-clear/settings/pairing operation.
 
 ## Next plans
 
