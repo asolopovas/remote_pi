@@ -457,23 +457,42 @@ void main() {
         expect(find.text('r1'), findsOneWidget);
         expect(find.text('/synthetic/duplicate'), findsOneWidget);
         expect(find.text('Renamed <plain>'), findsNWidgets(2));
-        await h.cm.setRoomLocalName(data.peer.remoteEpk, 'r1', 'Local wins');
+        await h.cm.setRoomLocalName(
+          data.peer.remoteEpk,
+          'r1',
+          'Saved fallback',
+        );
         await tester.pumpAndSettle();
-        expect(find.text('Local wins'), findsNWidgets(2));
+        expect(find.text('Renamed <plain>'), findsNWidgets(2));
+        expect(h.room().localName, 'Saved fallback');
         await patch({
           'display': data.display(3, 'Desktop changed'),
-        }, 'Local wins');
-        await h.cm.setRoomLocalName(data.peer.remoteEpk, 'r1', null);
-        await tester.pumpAndSettle();
-        expect(find.text('Desktop changed'), findsNWidgets(2));
-        await patch({'display': data.display(4, null)}, 'duplicate');
+        }, 'Desktop changed');
+        expect(h.room().localName, 'Saved fallback');
+        expect(
+          h.storage.rooms.singleWhere((r) => r.roomId == 'r1').localName,
+          'Saved fallback',
+        );
+        await patch({'display': data.display(4, null)}, 'Saved fallback');
         await patch({
           'display': data.display(5, 'Verified again'),
         }, 'Verified again');
-        await patch({'display': null}, 'duplicate');
+        await patch({'display': null}, 'Saved fallback');
         await patch({
           'display': data.display(6, 'Unverified late'),
-        }, 'duplicate');
+        }, 'Saved fallback');
+        expect(h.room().localName, 'Saved fallback');
+        expect(
+          identical(tester.element(find.byType(AlertDialog)), mountedDialog),
+          isTrue,
+        );
+        expect(
+          h.storage.rooms.singleWhere((r) => r.roomId == 'r1').localName,
+          'Saved fallback',
+        );
+        await h.cm.setRoomLocalName(data.peer.remoteEpk, 'r1', null);
+        await tester.pumpAndSettle();
+        expect(find.text('duplicate'), findsNWidgets(2));
         final priorNotices = notices;
         await patch({'working': false}, 'duplicate');
         expect(notices, priorNotices + 1); // State emit must not double-notify.

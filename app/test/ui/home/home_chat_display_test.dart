@@ -304,12 +304,17 @@ void main() {
           aliasField.controller!.text,
           isEmpty,
         ); // routing name is NOT a saved override
+        expect(
+          find.text('Saved fallback when no desktop name is available'),
+          findsOneWidget,
+        );
         await tester.enterText(find.byType(TextField), 'Mobile <plain>');
         await tester.tap(find.text('Save'));
         await tester.pumpAndSettle();
         expect(h.room().localName, 'Mobile <plain>');
         expect(h.room().name, 'routing-agent');
-        expect(find.text('Mobile <plain>'), findsOneWidget);
+        expect(find.text('Pi · system'), findsNWidgets(2));
+        expect(find.text('Mobile <plain>'), findsNothing);
         await tester.longPress(tile('r1'));
         await tester.pumpAndSettle();
         await tester.tap(find.text('Mobile alias'));
@@ -408,23 +413,34 @@ void main() {
         expect(find.text('Renamed <plain>'), findsNWidgets(2));
         await tester.tap(find.text('Close'));
         await tester.pumpAndSettle();
-        await h.cm.setRoomLocalName(data.peer.remoteEpk, 'r1', 'Local wins');
+        await h.cm.setRoomLocalName(
+          data.peer.remoteEpk,
+          'r1',
+          'Saved fallback',
+        );
         await tester.pumpAndSettle();
-        expect(find.text('Local wins'), findsOneWidget);
+        expect(find.text('Renamed <plain>'), findsOneWidget);
+        expect(h.room().localName, 'Saved fallback');
         await patch({
           'display': data.display(3, 'Desktop changed'),
-        }, 'Local wins');
-        await h.cm.setRoomLocalName(data.peer.remoteEpk, 'r1', null);
-        await tester.pumpAndSettle();
-        expect(find.text('Desktop changed'), findsOneWidget);
-        await patch({'display': data.display(4, null)}, 'duplicate');
+        }, 'Desktop changed');
+        expect(h.room().localName, 'Saved fallback');
+        expect(
+          h.storage.rooms.singleWhere((r) => r.roomId == 'r1').localName,
+          'Saved fallback',
+        );
+        await patch({'display': data.display(4, null)}, 'Saved fallback');
         await patch({
           'display': data.display(5, 'Verified again'),
         }, 'Verified again');
-        await patch({'display': null}, 'duplicate');
+        await patch({'display': null}, 'Saved fallback');
         await patch({
           'display': data.display(6, 'Unverified late'),
-        }, 'duplicate');
+        }, 'Saved fallback');
+        expect(h.room().localName, 'Saved fallback');
+        await h.cm.setRoomLocalName(data.peer.remoteEpk, 'r1', null);
+        await tester.pumpAndSettle();
+        expect(find.text('duplicate'), findsOneWidget);
         final priorNotices = notices;
         await patch({'working': false}, 'duplicate');
         expect(notices, priorNotices + 1); // State emit must not double-notify.
@@ -483,11 +499,46 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(find.text('Home renamed'), findsOneWidget);
+        await h.cm.setRoomLocalName(data.peer.remoteEpk, 'r1', 'Home fallback');
+        await tester.runAsync(
+          () => h.push(
+            data.announced(
+              room: 'r2',
+              value: data.display(
+                1,
+                'Other desktop',
+                native: '11111111-1111-4111-8111-111111111111',
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(h.room().cwd, h.room('r2').cwd);
+        expect(find.text('Home renamed'), findsOneWidget);
+        expect(find.text('Other desktop'), findsOneWidget);
+        final checks = h.ch.checks.length;
+        final sends = h.ch.sends.length;
+        await tester.runAsync(
+          () => h.push(
+            data.patch({'display': data.display(3, 'Latest desktop')}),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Latest desktop'), findsOneWidget);
+        expect(find.text('Other desktop'), findsOneWidget);
+        expect(h.room().localName, 'Home fallback');
+        expect(h.ch.checks.length, checks);
+        expect(h.ch.sends.length, sends);
+        expect(
+          h.storage.rooms.singleWhere((r) => r.roomId == 'r1').localName,
+          'Home fallback',
+        );
         home.setFilter(HomeFilter.all);
         await h.cm.disconnect();
         await tester.pumpAndSettle();
+        expect(find.text('Home fallback'), findsOneWidget);
         expect(find.text('duplicate'), findsOneWidget);
-        expect(find.textContaining('Reconnecting'), findsOneWidget);
+        expect(find.textContaining('Reconnecting'), findsNWidgets(2));
         expect(h.room().display, isNull);
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());

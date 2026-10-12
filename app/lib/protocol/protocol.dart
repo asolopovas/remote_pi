@@ -94,6 +94,46 @@ sealed class ControlInbound {
   }
 }
 
+/// Dedicated peer metadata, constructed only from an authenticated envelope.
+/// Never parsed as a raw relay control or a chat/history message.
+class RoomDisplaySnapshot extends ControlInbound {
+  final String peer;
+  final String roomId;
+  final String inReplyTo;
+  final RoomDisplay? display;
+  const RoomDisplaySnapshot({
+    required this.peer,
+    required this.roomId,
+    required this.inReplyTo,
+    required this.display,
+  });
+
+  static RoomDisplaySnapshot? fromEnvelope(
+    String peer,
+    String? room,
+    Map<String, dynamic> inner,
+  ) {
+    if (room == null ||
+        room.isEmpty ||
+        inner.length != 4 ||
+        inner['type'] != 'room_display_snapshot' ||
+        inner['room_id'] != room ||
+        inner['in_reply_to'] is! String ||
+        !RoomDisplay._uuid.hasMatch(inner['in_reply_to'] as String) ||
+        !inner.containsKey('display')) {
+      return null;
+    }
+    final display = RoomDisplay.tryFromJson(inner['display']);
+    if (inner['display'] != null && display == null) return null;
+    return RoomDisplaySnapshot(
+      peer: peer,
+      roomId: room,
+      inReplyTo: inner['in_reply_to'] as String,
+      display: display,
+    );
+  }
+}
+
 class PeerOnline extends ControlInbound {
   final String peer;
   const PeerOnline({required this.peer});

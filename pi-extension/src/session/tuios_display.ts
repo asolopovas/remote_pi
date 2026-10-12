@@ -84,6 +84,7 @@ export interface TuiosDisplayOptions {
  */
 export class TuiosDisplayAdapter {
   private display: RoomDisplay;
+  private available = false;
   private readonly query: DisplayQuery;
   private readonly clock: DisplayClock;
   private generation = 0;
@@ -107,6 +108,11 @@ export class TuiosDisplayAdapter {
 
   snapshot(): RoomDisplay { return { ...this.display }; }
 
+  /** Endpoint null means unavailable; object name:null is a verified reset. */
+  endpointSnapshot(): RoomDisplay | null {
+    return this.available && this.scope?.isCurrent() ? this.snapshot() : null;
+  }
+
   activate(scope: DisplayScope): void {
     this.deactivate();
     this.scope = scope;
@@ -117,6 +123,7 @@ export class TuiosDisplayAdapter {
 
   /** Retain the exact identity/revision for reconnect, revoke async authority. */
   deactivate(): void {
+    this.available = false;
     this.generation += 1;
     this.scope = undefined;
     if (this.timer !== undefined) this.clock.clearTimeout(this.timer);
@@ -157,12 +164,14 @@ export class TuiosDisplayAdapter {
       if (this.controller === controller) this.controller = undefined;
     }
     if (!this.current(generation, scope)) return;
+    this.available = verified;
     if (name !== this.display.name) {
       // Never wrap or emit unsafe revisions. Reserve the final safe revision
       // for a truthful fallback, then stop this incarnation's polling.
       if (this.display.revision >= Number.MAX_SAFE_INTEGER - 1) {
         name = null;
         verified = false;
+        this.available = false;
       }
       if (this.display.revision < Number.MAX_SAFE_INTEGER && name !== this.display.name) {
         this.display = { ...this.display, revision: this.display.revision + 1, name };

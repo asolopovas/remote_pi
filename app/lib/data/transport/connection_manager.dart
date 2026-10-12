@@ -30,6 +30,8 @@
 //     to retrying without a leaky-bucket race.
 
 import 'dart:async';
+import 'dart:convert';
+import 'dart:math';
 
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/epk_encoding.dart';
@@ -123,6 +125,94 @@ class ConnectionManager extends Service {
   final Map<String, Map<String, RoomDisplayAuthority>> _displayAuthorities = {};
   int _socketGeneration = 0;
   bool _roomsRestored = false;
+  Timer? _displayPollTimer;
+  final _displayRequests =
+      <
+        String,
+        ({String id, DateTime expires, RoomDisplayAuthority authority})
+      >{};
+  static final _random = Random.secure();
+
+  static String _displayNonce() {
+    final bytes = List<int>.generate(16, (_) => _random.nextInt(256));
+    bytes[6] = (bytes[6] & 15) | 64;
+    bytes[8] = (bytes[8] & 63) | 128;
+    final h = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    return '${h.substring(0, 8)}-${h.substring(8, 12)}-'
+        '${h.substring(12, 16)}-${h.substring(16, 20)}-${h.substring(20)}';
+  }
+
+  void _pollDisplays() {
+    final link = _controlLink;
+    final active = _activePeer;
+    if (link == null || active == null) return;
+    final key = toStandardB64(active.remoteEpk);
+    if (!_subscribedEpks.contains(key)) return;
+    final live = _liveRoomIds[key] ?? const <String>{};
+    _displayRequests.removeWhere((room, _) => !live.contains(room));
+    final now = DateTime.now();
+    for (final room in live) {
+      final pending = _displayRequests[room];
+      if (pending != null && now.isBefore(pending.expires)) continue;
+      final id = _displayNonce();
+      _displayRequests[room] = (
+        id: id,
+        expires: now.add(const Duration(milliseconds: 1900)),
+        authority: _displayAuthority(key, room),
+      );
+      try {
+        link.sendControl({
+          'peer': key,
+          'room': room,
+          'ct': base64.encode(
+            utf8.encode(
+              jsonEncode({
+                'type': 'room_display_request',
+                'id': id,
+                'room_id': room,
+              }),
+            ),
+          ),
+        });
+      } catch (_) {
+        final ch = channel;
+        if (ch != null) _onChannelLost(active, ch, _socketGeneration);
+        return;
+      }
+    }
+  }
+
+  void _applyDisplaySnapshot(RoomDisplaySnapshot snapshot) {
+    final active = _activePeer;
+    if (active == null) return;
+    final key = toStandardB64(active.remoteEpk);
+    final pending = _displayRequests[snapshot.roomId];
+    if (snapshot.peer != key ||
+        !_subscribedEpks.contains(key) ||
+        !isRoomLive(key, snapshot.roomId) ||
+        pending == null ||
+        pending.id != snapshot.inReplyTo ||
+        !DateTime.now().isBefore(pending.expires) ||
+        !identical(
+          pending.authority,
+          _displayAuthorities[key]?[snapshot.roomId],
+        )) {
+      return;
+    }
+    // Keep the lane until its deadline to enforce cadence even after a reply.
+    _displayRequests[snapshot.roomId] = (
+      id: '',
+      expires: pending.expires,
+      authority: pending.authority,
+    );
+    final list = _roomsByPeer[key]!;
+    final idx = list.indexWhere((r) => r.roomId == snapshot.roomId);
+    if (idx < 0) return;
+    final display = pending.authority.snapshot(snapshot.display);
+    if (list[idx].display == display) return;
+    list[idx] = list[idx].copyWith(display: display);
+    _scheduleRoomsEmit();
+  }
 
   bool _hasDisplayPeerScope(String key) =>
       _subscribedEpks.contains(key) ||
@@ -131,7 +221,21 @@ class ConnectionManager extends Service {
   RoomDisplayAuthority _displayAuthority(String key, String roomId) =>
       (_displayAuthorities[key] ??= {})[roomId] ??= RoomDisplayAuthority();
 
+  void _cancelDisplayRequest(String roomId) {
+    final pending = _displayRequests[roomId];
+    if (pending != null) {
+      _displayRequests[roomId] = (
+        id: '',
+        expires: pending.expires,
+        authority: pending.authority,
+      );
+    }
+  }
+
   void _endDisplayRoom(String key, String roomId) {
+    if (key == toStandardB64(_activePeer?.remoteEpk ?? '')) {
+      _displayRequests.remove(roomId);
+    }
     _displayAuthorities[key]?.remove(roomId);
     final list = _roomsByPeer[key];
     if (list == null) return;
@@ -143,6 +247,9 @@ class ConnectionManager extends Service {
   }
 
   void _endDisplaySocket() {
+    _displayPollTimer?.cancel();
+    _displayPollTimer = null;
+    _displayRequests.clear();
     _socketGeneration++;
     _displayAuthorities.clear();
     _liveRoomIds.clear();
@@ -604,6 +711,10 @@ class ConnectionManager extends Service {
       _controlSub = null;
       return;
     }
+    _displayPollTimer?.cancel();
+    _displayPollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      _pollDisplays();
+    });
     final generation = _socketGeneration;
     _controlSub = (ch as IControlLink).controlFrames.listen((frame) {
       if (generation == _socketGeneration && identical(channel, ch)) {
@@ -630,6 +741,8 @@ class ConnectionManager extends Service {
     var presenceDirty = false;
     var roomsDirty = false;
     switch (c) {
+      case RoomDisplaySnapshot():
+        _applyDisplaySnapshot(c);
       case PeerOnline(:final peer):
         final key = toStandardB64(peer);
         final prev = _presence[key];
@@ -685,6 +798,11 @@ class ConnectionManager extends Service {
         // forcing the room back to idle.
         var preservedWorking = false;
         final existingIdx = list.indexWhere((r) => r.roomId == roomId);
+        if (existingIdx >= 0 && list[existingIdx].startedAt != startedAt) {
+          _endDisplayRoom(key, roomId);
+        } else if (key == toStandardB64(_activePeer?.remoteEpk ?? '')) {
+          _cancelDisplayRequest(roomId);
+        }
         if (existingIdx >= 0) {
           preservedLocalName = list[existingIdx].localName;
           preservedThinking = list[existingIdx].thinking;
@@ -771,6 +889,9 @@ class ConnectionManager extends Service {
         // non-null sets it. This is what carries the relay's
         // turn_start/turn_end broadcast to the Home dot for EVERY room.
         final nextWorking = working ?? current.working;
+        if (hasDisplay && key == toStandardB64(_activePeer?.remoteEpk ?? '')) {
+          _cancelDisplayRequest(roomId);
+        }
         final authority = _displayAuthorities[key]?[roomId];
         final nextDisplay =
             hasDisplay && _hasDisplayPeerScope(key) && authority != null
@@ -800,6 +921,12 @@ class ConnectionManager extends Service {
         final existing = _roomsByPeer[key] ?? <RoomInfo>[];
         final byId = {for (final r in existing) r.roomId: r};
         for (final r in rooms) {
+          if (byId[r.roomId] != null &&
+              byId[r.roomId]!.startedAt != r.startedAt) {
+            _endDisplayRoom(key, r.roomId);
+          } else if (key == toStandardB64(_activePeer?.remoteEpk ?? '')) {
+            _cancelDisplayRequest(r.roomId);
+          }
           final preservedLocalName = byId[r.roomId]?.localName;
           final preservedModel = r.model ?? byId[r.roomId]?.model;
           // Plan/28 Wave D — same convention as model: keep the
@@ -824,6 +951,9 @@ class ConnectionManager extends Service {
         }
         final newLive = rooms.map((r) => r.roomId).toSet();
         for (final id in byId.keys.where((id) => !newLive.contains(id))) {
+          if (key == toStandardB64(_activePeer?.remoteEpk ?? '')) {
+            _displayRequests.remove(id);
+          }
           _displayAuthorities[key]?.remove(id);
           byId[id] = byId[id]!.copyWith(display: null);
         }
@@ -848,6 +978,7 @@ class ConnectionManager extends Service {
           _maybeAdoptLegacyRoom(key, rooms.first.roomId);
         }
     }
+    _pollDisplays();
     if (presenceDirty) _schedulePresenceEmit();
     if (roomsDirty) _scheduleRoomsEmit();
   }
@@ -1229,6 +1360,7 @@ class ConnectionManager extends Service {
       roomId: _activeRoomId,
     );
     live.remove(_activeRoomId);
+    _endDisplayRoom(key, _activeRoomId);
     if (live.isEmpty) _liveRoomIds.remove(key);
     if (!_roomsController.isClosed) {
       _roomsController.add(_roomsSnapshot());

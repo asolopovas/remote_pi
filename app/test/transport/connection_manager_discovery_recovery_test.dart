@@ -98,7 +98,7 @@ class _MeshSync extends ChangeNotifier implements MeshSyncService {
 }
 
 void _expectChecks(_Channel ch) {
-  expect(ch.checks, [
+  expect(ch.checks.where((frame) => frame.containsKey('type')).toList(), [
     {
       'type': 'presence_check',
       'peers': [_wireEpk],

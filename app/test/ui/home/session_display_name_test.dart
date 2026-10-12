@@ -31,7 +31,7 @@ RoomDisplay fixtureDisplay(String caseName) {
 
 void main() {
   test(
-    'shared precedence: local, verified desktop, reset, invalidation, cold fallbacks',
+    'shared precedence: verified desktop, saved alias, reset, invalidation, cold fallbacks',
     () {
       final room = RoomInfo(
         roomId: 'r1',
@@ -43,7 +43,7 @@ void main() {
       expect(sessionDisplayName(room, peer), 'Pi · system');
       expect(
         sessionDisplayName(room.copyWith(localName: 'Mobile <plain>'), peer),
-        'Mobile <plain>',
+        'Pi · system',
       );
       expect(
         sessionDisplayName(room.copyWith(localName: '  '), peer),
@@ -56,6 +56,15 @@ void main() {
         ),
         'duplicate',
       );
+      final aliased = room.copyWith(localName: 'Saved alias');
+      expect(
+        sessionDisplayName(
+          aliased.copyWith(display: fixtureDisplay('reset tombstone')),
+          peer,
+        ),
+        'Saved alias',
+      );
+      expect(aliased.localName, 'Saved alias');
       final offline = room.copyWith(display: null);
       expect(sessionDisplayName(offline, peer), 'duplicate');
       expect(

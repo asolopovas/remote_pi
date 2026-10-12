@@ -1,5 +1,6 @@
 import type { ClientMessage, ServerMessage } from "../protocol/types.js";
 import type { RelayClient } from "./relay_client.js";
+import { isRoomDisplayMessage } from "./room_display_endpoint.js";
 
 /** Sink for ServerMessage outbound to the remote app. */
 export interface PeerChannel {
@@ -122,6 +123,7 @@ export class PlainPeerChannel implements PeerChannel {
       return;
     }
 
+    if (isRoomDisplayMessage(msg)) return;
     this.onMessage(msg as ClientMessage);
   }
 }

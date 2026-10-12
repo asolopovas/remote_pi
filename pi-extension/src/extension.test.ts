@@ -6173,6 +6173,7 @@ describe("UUID-scoped room display producer", () => {
     vi.stubEnv("TUIOS_SESSION", "work");
     _defaultConnectImpl = async () => undefined;
     relayInstances.length = 0;
+    _knownPeers.length = 0;
     nativeId = A;
     name = "Pi · system";
     displayHarness.query.mockReset().mockImplementation(async args => JSON.stringify(
@@ -6198,6 +6199,76 @@ describe("UUID-scoped room display producer", () => {
     await vi.advanceTimersByTimeAsync(0);
     return relayRef.current!;
   }
+
+  const requestId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const roomOf = (relay: MockRelay) => (relay.connect.mock.calls[0][0] as { roomId: string }).roomId;
+  const queryDisplay = (relay: MockRelay, roomId = roomOf(relay), peer = OWNER_STANDARD_FIXTURE, id = requestId) => {
+    const ct = Buffer.from(JSON.stringify({ type: "room_display_request", id, room_id: roomId })).toString("base64");
+    relay.emit("message", JSON.stringify({ peer, room: "phone-main", ct }));
+  };
+  const pairOwner = () => _knownPeers.push({ name: "Known phone", remote_epk: OWNER_STANDARD_FIXTURE, paired_at: "synthetic" });
+  const snapshots = (relay: MockRelay) => relay.send.mock.calls.map(([line]) => decodeSentCt(line)).filter(frame => frame.inner.type === "room_display_snapshot");
+
+  test("legacy endpoint paired nonactive query leaves owner counts, history, queues, SDK and routing untouched", async () => {
+    pairOwner(); const relay = await boot(); const calls = displayHarness.query.mock.calls.length;
+    const before = _getMessageBufferForTest(); const controls = relay.sendControl.mock.calls.length;
+    const { pi } = makeMockPi(); const work = vi.fn(); pi.sendUserMessage = work; _setPiForTest(pi);
+    queryDisplay(relay); await vi.advanceTimersByTimeAsync(0);
+    expect(snapshots(relay)).toHaveLength(1);
+    expect(snapshots(relay)[0].inner).toEqual({ type: "room_display_snapshot", in_reply_to: requestId, room_id: roomOf(relay), display: displayFrames(relay).at(-1)!.meta.display });
+    expect(relay.send.mock.calls).toHaveLength(1);
+    expect(_getActivePeerCountForTest()).toBe(0); expect(_getState()).toBe("started");
+    expect(_getMessageBufferForTest()).toEqual(before); expect(work).not.toHaveBeenCalled();
+    expect(displayHarness.query).toHaveBeenCalledTimes(calls); expect(relay.sendControl).toHaveBeenCalledTimes(controls);
+    expect(relayInstances).toHaveLength(1); expect(relay.close).not.toHaveBeenCalled();
+  });
+
+  test("legacy endpoint active owner handled once without channel reattach or queue/history replay", async () => {
+    pairOwner(); const relay = await boot();
+    relay.emit("message", makeInnerLine(OWNER_STANDARD_FIXTURE, { type: "ping", id: "normal-chat-attach" }));
+    await vi.advanceTimersByTimeAsync(0); expect(_getActivePeerCountForTest()).toBe(1);
+    const listeners = relay.listenerCount("message"); relay.send.mockClear();
+    queryDisplay(relay); await vi.advanceTimersByTimeAsync(0);
+    expect(snapshots(relay)).toHaveLength(1); expect(relay.send.mock.calls).toHaveLength(1);
+    expect(relay.listenerCount("message")).toBe(listeners); expect(_getActivePeerCountForTest()).toBe(1);
+  });
+
+  test("legacy endpoint unpaired, wrong scope, malformed and stale SDK ID never attach or reply", async () => {
+    const relay = await boot(); queryDisplay(relay); await vi.advanceTimersByTimeAsync(0);
+    pairOwner(); queryDisplay(relay, "not-the-registered-room");
+    queryDisplay(relay, roomOf(relay), OWNER_STANDARD_FIXTURE, "malformed-id");
+    await vi.advanceTimersByTimeAsync(1_001); nativeId = B; queryDisplay(relay);
+    await vi.advanceTimersByTimeAsync(0); expect(relay.send).not.toHaveBeenCalled(); expect(_getActivePeerCountForTest()).toBe(0);
+  });
+
+  test("legacy endpoint stop/session/native replacement during paired lookup drops late snapshots", async () => {
+    const storage = await import("./pairing/storage.js");
+    for (const action of ["stop", "native", "session"] as const) {
+      pairOwner(); const relay = await boot();
+      let finish!: (peers: StoredPeer[]) => void;
+      vi.mocked(storage.listPeers).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+      queryDisplay(relay); expect(finish).toBeTypeOf("function");
+      if (action === "stop") await captureHandler("remote-pi stop")("", makeMockCtx());
+      if (action === "native") nativeId = B;
+      if (action === "session") start({ type: "session_start" }, ctx());
+      finish([..._knownPeers]); await vi.advanceTimersByTimeAsync(0);
+      expect(relay.send).not.toHaveBeenCalled(); expect(_getActivePeerCountForTest()).toBe(0);
+      await captureHandler("remote-pi stop")("", makeMockCtx()); nativeId = A;
+    }
+  });
+
+  test("legacy endpoint snapshots rename/reset revisions and unavailable native window without querying on request", async () => {
+    pairOwner(); const relay = await boot(); const displays: unknown[] = [];
+    queryDisplay(relay); await vi.advanceTimersByTimeAsync(0); displays.push(snapshots(relay).at(-1)!.inner.display);
+    name = "Mobile sees desktop"; await vi.advanceTimersByTimeAsync(2_000);
+    queryDisplay(relay, roomOf(relay), OWNER_STANDARD_FIXTURE, B); await vi.advanceTimersByTimeAsync(0); displays.push(snapshots(relay).at(-1)!.inner.display);
+    name = null; await vi.advanceTimersByTimeAsync(2_000);
+    queryDisplay(relay, roomOf(relay), OWNER_STANDARD_FIXTURE, W); await vi.advanceTimersByTimeAsync(0); displays.push(snapshots(relay).at(-1)!.inner.display);
+    expect(displays).toEqual([1, 2, 3].map((revision, i) => ({ native_session_id: A, epoch: expect.any(String), revision, name: ["Pi · system", "Mobile sees desktop", null][i] })));
+    displayHarness.query.mockRejectedValue(new Error("unavailable")); await vi.advanceTimersByTimeAsync(2_000);
+    queryDisplay(relay, roomOf(relay), OWNER_STANDARD_FIXTURE, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"); await vi.advanceTimersByTimeAsync(0);
+    expect(snapshots(relay).at(-1)!.inner.display).toBeNull(); expect(_getActivePeerCountForTest()).toBe(0);
+  });
 
   test("hello advertises initial null identity; rename/reset only patch display, stable routing and presence", async () => {
     const relay = await boot();

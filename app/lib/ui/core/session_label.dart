@@ -8,10 +8,10 @@ String sessionDisplayName(
   PeerRecord? peer, {
   String fallback = 'Session',
 }) {
-  final local = room?.localName;
-  if (local != null && local.trim().isNotEmpty) return local;
   final desktop = room?.display?.name;
   if (desktop != null && desktop.trim().isNotEmpty) return desktop;
+  final local = room?.localName;
+  if (local != null && local.trim().isNotEmpty) return local;
   final project = sessionProjectName(room?.cwd);
   if (project != null) return project;
   return sessionFallbackName(room, peer, fallback: fallback);

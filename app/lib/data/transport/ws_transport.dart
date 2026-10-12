@@ -102,6 +102,25 @@ class WsTransport implements PeerTransport, IControlLink {
             }
             final bytes = _b64Decode(frame['ct'] as String);
             final senderRoom = frame['room'] as String?;
+            // Metadata is independent of chat selection, but still belongs
+            // to this authenticated paired sender and exact routing room.
+            final inner = jsonDecode(utf8.decode(bytes));
+            if (inner is Map<String, dynamic> &&
+                (inner['type'] == 'room_display_snapshot' ||
+                    inner['type'] == 'room_display_request')) {
+              if (bytes.length <= 4096) {
+                final snapshot = RoomDisplaySnapshot.fromEnvelope(
+                  transport._peerPubkey,
+                  senderRoom,
+                  inner,
+                );
+                if (snapshot != null &&
+                    !transport._controlController.isClosed) {
+                  transport._controlController.add(snapshot);
+                }
+              }
+              return;
+            }
             // Plan-18 follow-up — DEMUX inbound by sender room.
             // SessionRepository is singleton; without this guard,
             // AgentChunks for a chat the user just left bleed into

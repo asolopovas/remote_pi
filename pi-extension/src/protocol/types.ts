@@ -1,3 +1,18 @@
+import type { RoomDisplay } from "../transport/relay_client.js";
+
+/** Dedicated display-only envelopes; intentionally outside chat message unions. */
+export interface RoomDisplayRequest {
+  type: "room_display_request";
+  id: string;
+  room_id: string;
+}
+export interface RoomDisplaySnapshot {
+  type: "room_display_snapshot";
+  in_reply_to: string;
+  room_id: string;
+  display: RoomDisplay | null;
+}
+
 export type PairErrorCode =
   | "token_expired"
   | "token_consumed"

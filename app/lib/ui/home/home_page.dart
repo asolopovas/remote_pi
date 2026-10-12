@@ -453,7 +453,10 @@ class HomePage extends StatelessWidget {
             autofocus: true,
             style: TextStyle(color: colors.text, fontFamily: kMonoFamily),
             decoration: InputDecoration(
-              hintText: 'Empty uses desktop name or project',
+              hintText: 'Empty uses project fallback',
+              helperText: 'Saved fallback when no desktop name is available',
+              helperMaxLines: 3,
+              helperStyle: TextStyle(color: colors.muted),
               hintStyle: TextStyle(color: colors.muted),
               enabledBorder: OutlineInputBorder(
                 borderSide: BorderSide(color: colors.border),

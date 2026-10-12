@@ -71,6 +71,7 @@ import type {
 import { RelayClient, RoomAlreadyOpenError, type RoomMeta } from "./transport/relay_client.js";
 import { ownTuiosWindow, TuiosDisplayAdapter } from "./session/tuios_display.js";
 import { PlainPeerChannel } from "./transport/peer_channel.js";
+import { RoomDisplayEndpoint, isRoomDisplayMessage } from "./transport/room_display_endpoint.js";
 import {
   createExtensionUiBridge,
   type ExtensionUiBridge,
@@ -229,6 +230,7 @@ let _myRoomId: string | null = null;   // this Pi's room id (derived from cwd)
 let _myRoomMeta: RoomMeta | null = null;
 let _displayAdapter: TuiosDisplayAdapter | null = null;
 let _displaySessionIsCurrent: (() => boolean) | null = null;
+let _displayOwnerGeneration = 0;
 
 /** Start only after hello has advertised this incarnation, never in factory. */
 function _activateRoomDisplay(relay: RelayClient, roomId: string): void {
@@ -1381,6 +1383,7 @@ function _reportRevocationByFingerprint(canonicalOwnerPubkey: string): void {
 }
 
 function _revokeActiveOwnerRuntime(canonicalOwnerPubkey: string): void {
+  _displayOwnerGeneration += 1;
   if (!_activePeers.has(canonicalOwnerPubkey)) return;
   _refreshPairingsCache();
   _detachPeerChannel(canonicalOwnerPubkey);
@@ -1878,17 +1881,32 @@ function _installAutoListener(relay: RelayClient): () => void {
     _state === "started" &&
     _relay === relay &&
     _relayLifecycleGeneration === listenerGeneration;
+  const displayEndpoint = new RoomDisplayEndpoint({
+    findKnownPeer: async peer => (await _findKnownPeer(peer)) !== null,
+    send: line => relay.send(line),
+    captureScope: () => {
+      const adapter = _displayAdapter;
+      const roomId = _myRoomId;
+      const sessionIsCurrent = _displaySessionIsCurrent;
+      const ownerGeneration = _displayOwnerGeneration;
+      if (!adapter || !roomId || !sessionIsCurrent) return null;
+      const isCurrent = () => hasListenerAuthority() && relay.isOpen() &&
+        _displayAdapter === adapter && _myRoomId === roomId &&
+        _displaySessionIsCurrent === sessionIsCurrent && sessionIsCurrent() &&
+        _displayOwnerGeneration === ownerGeneration;
+      return { roomId, isCurrent, snapshot: () => adapter.endpointSnapshot() };
+    },
+  });
   const onMsg = async (line: string) => {
-    let outer: { peer?: string; ct?: string };
-    try { outer = JSON.parse(line) as { peer?: string; ct?: string }; }
+    let outer: { peer?: string; room?: string; ct?: string };
+    try { outer = JSON.parse(line) as typeof outer; }
     catch { return; }
 
-    if (!outer.peer || !outer.ct) return;
-
+    if (!outer || typeof outer.peer !== "string" || typeof outer.ct !== "string" || !outer.peer || !outer.ct) return;
     if (!hasListenerAuthority()) return;
-    // Already-attached owners: their PlainPeerChannel handles routing.
-    if (_activePeers.has(outer.peer)) return;
 
+    // Decode before the active-owner skip: display requests never attach chat
+    // channels, and PlainPeerChannel excludes these same reserved types.
     // Decode inner envelope (base64 JSON)
     let inner: ClientMessage;
     try {
@@ -1902,6 +1920,9 @@ function _installAutoListener(relay: RelayClient): () => void {
       inner = parsed as ClientMessage;
     } catch { return; }
 
+    if (displayEndpoint.consume(outer, inner, Buffer.byteLength(line))) return;
+    // Already-attached owners: their PlainPeerChannel handles normal routing.
+    if (_activePeers.has(outer.peer)) return;
     const appPeerId = outer.peer;
 
     if (inner.type === "pair_request") {
@@ -1938,7 +1959,10 @@ function _installAutoListener(relay: RelayClient): () => void {
   };
 
   relay.on("message", onMsg);
-  return () => relay.off("message", onMsg);
+  return () => {
+    displayEndpoint.dispose();
+    relay.off("message", onMsg);
+  };
 }
 
 /**
@@ -3108,6 +3132,7 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
         ) {
           return;
         }
+        _displayOwnerGeneration += 1;
         const presentOwners = new Set(canonicalOwnerPubkeys);
         let effectFailed = false;
         for (const canonicalOwnerPubkey of [..._activePeers.keys()]) {
@@ -3364,6 +3389,7 @@ async function _cmdRevoke(arg: string, ctx: Pick<ExtensionContext, "ui" | "cwd">
   }
 
   const peer = matches[0]!;
+  _displayOwnerGeneration += 1;
   await removePeer(peer.rawHandle);
   _refreshPairingsCache();
 
@@ -4441,6 +4467,7 @@ export function _routeClientMessageFrom(
   msg: ClientMessage,
   ctx: Pick<ExtensionContext, "abort">,
 ): void {
+  if (isRoomDisplayMessage(msg)) return;
   // session_sync has its own internal guards — handle before the strict
   // pi-binding guard so a missing _pi doesn't drop the reply.
   if (msg.type === "session_sync") {
