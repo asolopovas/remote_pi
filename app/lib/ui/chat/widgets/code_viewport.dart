@@ -20,11 +20,13 @@ class CodeViewport extends StatefulWidget {
     this.headerExpanded = false,
     this.copyTooltip = 'Copy code',
     this.bodyWrapWidth,
+    this.onCollapse,
   }) : assert(
          bodyWrapWidth == null ||
              (bodyWrapWidth > 0 && bodyWrapWidth < double.infinity),
        );
 
+  final VoidCallback? onCollapse;
   final Widget child;
   final String text;
   final String label;
@@ -185,6 +187,15 @@ class _CodeViewportState extends State<CodeViewport>
       decoration: standalone ? frame : null,
       child: AccordionAnchor(
         expanded: standalone ? _expanded : widget.headerExpanded,
+        onCollapse: standalone
+            ? () {
+                setState(() {
+                  _expanded = false;
+                  _touched = true;
+                });
+                updateKeepAlive();
+              }
+            : widget.onCollapse,
         header: header,
         body: widget.showContent && (_expanded || !widget.collapsible)
             ? content

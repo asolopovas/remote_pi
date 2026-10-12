@@ -9,6 +9,7 @@ import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/widgets/code_viewport.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 // Inline tool execution card that appears in the chat flow.
 //
@@ -126,6 +127,20 @@ class _ToolRequestCardState extends State<ToolRequestCard>
         updateKeepAlive();
       },
       status: statusLabel,
+      statusAction: tool.result == null
+          ? null
+          : IconButton(
+              tooltip: 'Copy output',
+              constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+              onPressed: () => Clipboard.setData(
+                ClipboardData(
+                  text:
+                      readableToolOutput(_toolName(tool.tool), tool.result) ??
+                      _fullText(tool.result),
+                ),
+              ),
+              icon: Icon(Icons.copy, color: context.colors.muted2),
+            ),
       color: color,
       icon: switch (tool.status) {
         ToolEventStatus.pending || ToolEventStatus.allowed => Icons.sync,
@@ -174,6 +189,13 @@ class _ToolRequestCardState extends State<ToolRequestCard>
       children: [
         CodeViewport(
           key: ValueKey('tool-code-${tool.id}'),
+          onCollapse: () {
+            setState(() {
+              _expanded = false;
+              _touched = true;
+            });
+            updateKeepAlive();
+          },
           bodyWrapWidth: embedded.isNotEmpty ? nestedFrameWidth : null,
           headerBuilder: (context, controls) =>
               _buildHeader(context, color, controls),

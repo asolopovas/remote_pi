@@ -28,6 +28,7 @@ void main() {
                         update = setState;
                         final card = AccordionAnchor(
                           expanded: expanded,
+                          onCollapse: () => setState(() => expanded = false),
                           header: SizedBox(
                             height: 60,
                             child: TextButton(
@@ -37,17 +38,20 @@ void main() {
                               child: const Text('Heading'),
                             ),
                           ),
-                          body: Column(
-                            children: List.generate(short ? 1 : 20, (i) {
-                              return SizedBox(
-                                height: 80,
-                                child: TextButton(
-                                  key: ValueKey('body-$i'),
-                                  onPressed: () => bodyTaps++,
-                                  child: Text('Body $i revision $revision'),
-                                ),
-                              );
-                            }),
+                          body: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            child: Column(
+                              children: List.generate(short ? 1 : 20, (i) {
+                                return SizedBox(
+                                  height: 80,
+                                  child: TextButton(
+                                    key: ValueKey('body-$i'),
+                                    onPressed: () => bodyTaps++,
+                                    child: Text('Body $i revision $revision'),
+                                  ),
+                                );
+                              }),
+                            ),
                           ),
                         );
                         return AccordionViewport(
@@ -106,8 +110,9 @@ void main() {
                 top + 20,
               ),
             );
-            await tester.pump();
+            await tester.pump(const Duration(milliseconds: 350));
             expect(bodyTaps, 1);
+            expect(expanded, isTrue);
           }
           final reading = controller.offset;
           update(() => revision++);
@@ -115,7 +120,18 @@ void main() {
           expect(controller.offset, closeTo(reading, 0.5));
           controller.jumpTo(aligned);
           await tester.pumpAndSettle();
-          await tester.tap(find.byKey(headerKey));
+          final surface = Offset(
+            tester.getRect(find.byKey(viewportKey)).left + 3,
+            tester.getRect(find.byKey(headerKey)).bottom + 20,
+          );
+          await tester.dragFrom(surface, const Offset(0, -30));
+          await tester.pumpAndSettle();
+          expect(expanded, isTrue);
+          controller.jumpTo(aligned);
+          await tester.pumpAndSettle();
+          await tester.tapAt(surface);
+          await tester.pump(const Duration(milliseconds: 80));
+          await tester.tapAt(surface);
           await tester.pumpAndSettle();
           expect(expanded, isFalse);
           expect(controller.position.maxScrollExtent, 0);

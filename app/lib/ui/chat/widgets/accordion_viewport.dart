@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/rendering.dart';
 
 /// Aligns the original disclosure heading once per expansion in this viewport.
 class AccordionViewport extends StatefulWidget {
@@ -158,10 +160,12 @@ class AccordionAnchor extends StatefulWidget {
     required this.expanded,
     required this.header,
     required this.body,
+    this.onCollapse,
   });
   final bool expanded;
   final Widget header;
   final Widget body;
+  final VoidCallback? onCollapse;
   @override
   State<AccordionAnchor> createState() => _AccordionAnchorState();
 }
@@ -206,9 +210,57 @@ class _AccordionAnchorState extends State<AccordionAnchor> {
       key: _card,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SizedBox(key: _header, child: widget.header),
-        if (widget.expanded) widget.body,
+        SizedBox(
+          key: _header,
+          // A nested heading/control must not double-tap its ancestor closed.
+          child: MetaData(
+            metaData: _AccordionHeaderMarker(),
+            behavior: HitTestBehavior.translucent,
+            child: widget.header,
+          ),
+        ),
+        if (widget.expanded)
+          RawGestureDetector(
+            behavior: HitTestBehavior.opaque,
+            gestures: {
+              _SurfaceDoubleTapRecognizer:
+                  GestureRecognizerFactoryWithHandlers<
+                    _SurfaceDoubleTapRecognizer
+                  >(
+                    _SurfaceDoubleTapRecognizer.new,
+                    (recognizer) => recognizer.onDoubleTap = widget.onCollapse,
+                  ),
+            },
+            child: widget.body,
+          ),
       ],
     );
+  }
+}
+
+// Text and headers (including nested copy/wrap controls) are not collapse
+// surfaces. SelectableText counts repeated taps itself; merely competing in
+// its arena can steal word selection. Filter before entering that arena.
+class _AccordionHeaderMarker {}
+
+class _SurfaceDoubleTapRecognizer extends DoubleTapGestureRecognizer {
+  @override
+  bool isPointerAllowed(PointerDownEvent event) {
+    final hit = HitTestResult();
+    WidgetsBinding.instance.hitTestInView(hit, event.position, event.viewId);
+    if (hit.path.any(
+      (entry) =>
+          entry.target is RenderParagraph || entry.target is RenderEditable,
+    )) {
+      return false;
+    }
+    if (hit.path.any(
+      (entry) =>
+          entry.target is RenderMetaData &&
+          (entry.target as RenderMetaData).metaData is _AccordionHeaderMarker,
+    )) {
+      return false;
+    }
+    return super.isPointerAllowed(event);
   }
 }

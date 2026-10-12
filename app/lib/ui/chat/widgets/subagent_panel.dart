@@ -254,6 +254,10 @@ class _SubagentCardState extends State<_SubagentCard>
     final color = invocation.statusColor(colors);
     return AccordionAnchor(
       expanded: expanded,
+      onCollapse: () {
+        setState(() => _expanded = false);
+        updateKeepAlive();
+      },
       header: CompactOutputHeader(
         title:
             '${invocation.name} · ${invocation.task.replaceAll(RegExp(r'\s+'), ' ').trim()}',

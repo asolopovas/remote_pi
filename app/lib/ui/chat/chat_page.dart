@@ -121,51 +121,6 @@ class _ChatPageState extends State<ChatPage> {
         child: Column(
           children: [
             _buildTopBar(context, state),
-            Row(
-              children: [
-                for (final tab in ['Main', 'Sub-agents'])
-                  Expanded(
-                    child: Builder(
-                      builder: (context) {
-                        final selected = _subagents == (tab == 'Sub-agents');
-                        final colors = context.colors;
-                        return Semantics(
-                          key: ValueKey('session-tab-$tab'),
-                          selected: selected,
-                          child: TextButton(
-                            style: TextButton.styleFrom(
-                              minimumSize: const Size.fromHeight(48),
-                              foregroundColor: selected
-                                  ? colors.accent
-                                  : colors.muted,
-                              backgroundColor: selected
-                                  ? colors.surface
-                                  : colors.bg,
-                              shape: const RoundedRectangleBorder(
-                                borderRadius: BorderRadius.zero,
-                              ),
-                            ),
-                            onPressed: () => setState(
-                              () => _subagents = tab == 'Sub-agents',
-                            ),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(tab),
-                                const SizedBox(height: 3),
-                                Container(
-                                  height: 2,
-                                  color: selected ? colors.accent : colors.bg,
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-              ],
-            ),
             // Pairing revocation is the only banner kept — it's a hard
             // failure (can't proceed without re-pairing), red, with an
             // explicit action. Plain offline / Pi-gone / presence-off
@@ -174,7 +129,30 @@ class _ChatPageState extends State<ChatPage> {
             if (state is ChatReady && state.pairingRevoked)
               _RevokedBanner(onRePair: () => context.go('/pair')),
             Expanded(child: _buildBody(context, state, vm)),
-            if (!_subagents) _buildInput(context, state, vm),
+            Offstage(
+              offstage: _subagents,
+              child: _buildInput(context, state, vm),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+              child: SizedBox(
+                width: double.infinity,
+                child: TextButton(
+                  key: const Key('thread-toggle'),
+                  style: TextButton.styleFrom(
+                    minimumSize: const Size.fromHeight(48),
+                    foregroundColor: context.colors.accent,
+                    backgroundColor: context.colors.surface,
+                    textStyle: context.typo.mono,
+                  ),
+                  onPressed: () {
+                    FocusManager.instance.primaryFocus?.unfocus();
+                    setState(() => _subagents = !_subagents);
+                  },
+                  child: Text(_subagents ? 'Main-Thread' : 'Sub-Agents'),
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -242,6 +220,7 @@ class _ChatPageState extends State<ChatPage> {
     final peerLabel = _peerDisplayName(peer, initialDevice);
 
     return Container(
+      key: const Key('chat-toolbar'),
       constraints: const BoxConstraints(minHeight: 48),
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
       decoration: BoxDecoration(
@@ -603,6 +582,7 @@ class _ChatPageState extends State<ChatPage> {
     return InputBar(
       key: ValueKey((vm.activePeer?.remoteEpk, vm.activePeer?.roomId)),
       disabled:
+          _subagents ||
           !isReady ||
           isOffline ||
           isRevoked ||
@@ -787,61 +767,71 @@ class _MessageListState extends State<_MessageList> {
     return AccordionViewport(
       controller: _scroll,
       reverse: true,
-      child: Stack(
-        children: [
-          ListView.separated(
-            controller: _scroll,
-            reverse: true,
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-            itemCount: messages.length + offset,
-            separatorBuilder: (context, idx) => const SizedBox(height: 8),
-            // This callback takes item indices; ListView handles separators.
-            findItemIndexCallback: (key) => indices[key],
-            itemBuilder: (_, i) {
-              if (i == 0) return const AccordionEdgeSpace();
-              if (streaming != null && i == 1) {
+      child: NotificationListener<ScrollMetricsNotification>(
+        onNotification: (_) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _onScroll();
+          });
+          return false;
+        },
+        child: Stack(
+          children: [
+            ListView.separated(
+              controller: _scroll,
+              reverse: true,
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+              itemCount: messages.length + offset,
+              separatorBuilder: (context, idx) => const SizedBox(height: 8),
+              // This callback takes item indices; ListView handles separators.
+              findItemIndexCallback: (key) => indices[key],
+              itemBuilder: (_, i) {
+                if (i == 0) return const AccordionEdgeSpace();
+                if (streaming != null && i == 1) {
+                  return KeyedSubtree(
+                    key: streamingKey,
+                    child: StreamingBubble(streaming),
+                  );
+                }
+                final messageIndex = messages.length - 1 - (i - offset);
+                final msg = messages[messageIndex];
                 return KeyedSubtree(
-                  key: streamingKey,
-                  child: StreamingBubble(streaming),
+                  key: keys[messageIndex],
+                  child: switch (msg) {
+                    UserMsg() => UserBubble(msg),
+                    AssistantMsg() => AssistantBubble(msg),
+                    ToolEvent() => ToolRequestCard(
+                      tool: msg,
+                      onDecide: widget.onDecide,
+                    ),
+                    CompactionMsg() => CompactionBubble(msg),
+                  },
                 );
-              }
-              final messageIndex = messages.length - 1 - (i - offset);
-              final msg = messages[messageIndex];
-              return KeyedSubtree(
-                key: keys[messageIndex],
-                child: switch (msg) {
-                  UserMsg() => UserBubble(msg),
-                  AssistantMsg() => AssistantBubble(msg),
-                  ToolEvent() => ToolRequestCard(
-                    tool: msg,
-                    onDecide: widget.onDecide,
+              },
+            ),
+            if (_awayFromBottom && _scroll.hasClients && _scroll.offset > 120)
+              Positioned(
+                bottom: 8,
+                right: 16,
+                child: FilledButton.icon(
+                  onPressed: () => _scroll.animateTo(
+                    0,
+                    duration: const Duration(milliseconds: 200),
+                    curve: Curves.easeOut,
                   ),
-                  CompactionMsg() => CompactionBubble(msg),
-                },
-              );
-            },
-          ),
-          if (_awayFromBottom)
-            Positioned(
-              bottom: 8,
-              right: 16,
-              child: FilledButton.icon(
-                onPressed: () => _scroll.animateTo(
-                  0,
-                  duration: const Duration(milliseconds: 200),
-                  curve: Curves.easeOut,
-                ),
-                icon: const Icon(LucideIcons.arrowDown, size: 14),
-                label: const Text('Latest'),
-                style: FilledButton.styleFrom(
-                  textStyle: context.typo.monoSmall.copyWith(fontSize: 10),
-                  minimumSize: const Size(0, 30),
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  icon: const Icon(LucideIcons.arrowDown, size: 24),
+                  label: const Text('Latest'),
+                  style: FilledButton.styleFrom(
+                    textStyle: context.typo.mono.copyWith(fontSize: 16),
+                    minimumSize: const Size(0, 56),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                  ),
                 ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }

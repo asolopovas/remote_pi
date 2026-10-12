@@ -13,6 +13,7 @@ class CompactOutputHeader extends StatelessWidget {
     this.color,
     this.icon,
     this.controls,
+    this.statusAction,
   });
   final String title;
   final bool expanded;
@@ -22,6 +23,7 @@ class CompactOutputHeader extends StatelessWidget {
   final Color? color;
   final IconData? icon;
   final Widget? controls;
+  final Widget? statusAction;
 
   @override
   Widget build(BuildContext context) {
@@ -50,7 +52,7 @@ class CompactOutputHeader extends StatelessWidget {
                     style: context.typo.monoSmall,
                   ),
                 ),
-                if (status != null) ...[
+                if (status != null && statusAction == null) ...[
                   const SizedBox(width: 8),
                   Icon(icon, size: 14, color: color),
                   const SizedBox(width: 4),
@@ -87,6 +89,26 @@ class CompactOutputHeader extends StatelessWidget {
           )
         else
           disclosure,
+        if (statusAction != null)
+          Wrap(
+            alignment: WrapAlignment.end,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              if (status != null)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(icon, size: 18, color: color),
+                    const SizedBox(width: 4),
+                    Text(
+                      status!,
+                      style: context.typo.monoSmall.copyWith(color: color),
+                    ),
+                    statusAction!,
+                  ],
+                ),
+            ],
+          ),
         if (expanded && controls != null)
           Align(alignment: Alignment.centerRight, child: controls),
       ],
