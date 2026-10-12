@@ -130,10 +130,21 @@ class SpeechToTextService implements SpeechService {
             // BEFORE its first/final result. Only a real final ends the wait.
             if (status == 'notListening' || status == 'done') _end();
           },
-          onError: () {
+          onError: (error) {
             if (_completion == null || _disposed) return;
-            _onError?.call();
-            _complete();
+            // Android marks every native error permanent, including silence.
+            // Only these documented no-speech outcomes are normal capture ends;
+            // never suppress client/audio/network/unknown failures after words
+            // or merely because stop was requested.
+            final noSpeech =
+                error.code == 'error_no_match' ||
+                error.code == 'error_speech_timeout';
+            if (!noSpeech) {
+              _onError?.call();
+              _complete();
+            }
+            // For silence/no-match keep the bounded final wait: a queued final
+            // can still improve the latest partial after this terminal event.
             _end();
           },
         );
@@ -350,6 +361,16 @@ class SoundLevelScale {
 // Plugin seam
 // ---------------------------------------------------------------------------
 
+/// Plugin error identity, kept internal rather than exposing vendor types.
+final class SttError {
+  const SttError(this.code, {required this.permanent});
+
+  final String code;
+  final bool permanent;
+}
+
+typedef SttErrorCallback = void Function(SttError error);
+
 typedef SttResultCallback = void Function(String words, bool isFinal);
 typedef SttLevelCallback = void Function(double level);
 
@@ -360,7 +381,7 @@ abstract class SttPlugin {
   /// first call). Returns false if unavailable or permission denied.
   Future<bool> initialize({
     void Function(String status)? onStatus,
-    void Function()? onError,
+    SttErrorCallback? onError,
   });
 
   Future<bool> hasPermission();
@@ -393,13 +414,14 @@ class SttPluginImpl implements SttPlugin {
   @override
   Future<bool> initialize({
     void Function(String status)? onStatus,
-    void Function()? onError,
+    SttErrorCallback? onError,
   }) => _stt.initialize(
     onStatus: (status) {
       if (status == 'notListening' || status == 'done') _nativeEnded = true;
       onStatus?.call(status);
     },
-    onError: (SpeechRecognitionError _) => onError?.call(),
+    onError: (SpeechRecognitionError error) =>
+        onError?.call(SttError(error.errorMsg, permanent: error.permanent)),
     // Disable plugin partial-as-final synthesis; service owns fallback timing.
     finalTimeout: Duration.zero,
   );

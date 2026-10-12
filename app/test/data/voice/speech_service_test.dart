@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:fake_async/fake_async.dart';
 
 // Plan 29 — SpeechToTextService locale resolution + transcript / cancel /
@@ -27,7 +28,7 @@ class _FakeSttPlugin implements SttPlugin {
   @override
   Future<bool> initialize({
     void Function(String status)? onStatus,
-    void Function()? onError,
+    SttErrorCallback? onError,
   }) async {
     status = onStatus;
     error = onError;
@@ -35,7 +36,7 @@ class _FakeSttPlugin implements SttPlugin {
   }
 
   void Function(String)? status;
-  void Function()? error;
+  SttErrorCallback? error;
 
   @override
   Future<bool> hasPermission() async => permission;
@@ -147,6 +148,74 @@ void main() {
   });
 
   group('capture lifecycle', () {
+    for (final code in ['error_no_match', 'error_speech_timeout']) {
+      test(
+        '$code retains partial at bound and ignores terminal events after release',
+        () {
+          fakeAsync((clock) {
+            final plugin = _FakeSttPlugin();
+            final service = SpeechToTextService(plugin);
+            var errors = 0;
+            var ends = 0;
+            String? text;
+            unawaited(service.init());
+            clock.flushMicrotasks();
+            unawaited(
+              service.start(
+                localeId: 'en_US',
+                maxDuration: const Duration(seconds: 60),
+                onError: () => errors++,
+                onEnded: () => ends++,
+              ),
+            );
+            clock.flushMicrotasks();
+            plugin.emitResult('synthetic partial');
+            plugin.error!(SttError(code, permanent: true));
+            service.stop().then((value) => text = value);
+            clock.flushMicrotasks();
+            expect(errors, 0);
+            expect(ends, 1);
+            expect(text, isNull);
+            clock.elapse(service.finalWait);
+            expect(text, 'synthetic partial');
+            plugin.error!(const SttError('error_audio_error', permanent: true));
+            plugin.status!('done');
+            expect(errors, 0);
+            expect(ends, 1);
+            service.dispose();
+            clock.flushMicrotasks();
+          });
+        },
+      );
+    }
+
+    test(
+      'error and status callbacks after cancel/dispose have no owner',
+      () async {
+        for (final dispose in [false, true]) {
+          final plugin = _FakeSttPlugin();
+          final service = SpeechToTextService(plugin);
+          await service.init();
+          var notifications = 0;
+          await service.start(
+            localeId: 'en_US',
+            maxDuration: const Duration(seconds: 60),
+            onError: () => notifications++,
+            onEnded: () => notifications++,
+          );
+          if (dispose) {
+            service.dispose();
+          } else {
+            await service.cancel();
+          }
+          plugin.error!(const SttError('error_permission', permanent: true));
+          plugin.status!('done');
+          expect(notifications, 0);
+          if (!dispose) service.dispose();
+        }
+      },
+    );
+
     test(
       'live hypotheses are cumulative replacements, empty corrections ignored',
       () async {
@@ -242,7 +311,7 @@ void main() {
         );
         plugin.emitResult('partial');
         plugin.status!('notListening');
-        plugin.error!();
+        plugin.error!(const SttError('error_unknown (99)', permanent: false));
         plugin.status!('done');
         expect(ends, 1);
         expect(errors, 1);
@@ -442,10 +511,14 @@ void main() {
   });
 
   group('SoundLevelScale', () {
-    test('forPlatform picks the darwin scale on macOS test host', () {
-      // The unit-test host is macOS, so the platform factory must resolve to
-      // the dBFS scale — guarding the iOS waveform regression directly.
-      expect(SoundLevelScale.forPlatform(), SoundLevelScale.darwin);
+    test('forPlatform picks the host platform scale', () {
+      // Keep this assertion portable across Linux and macOS test hosts.
+      expect(
+        SoundLevelScale.forPlatform(),
+        Platform.isIOS || Platform.isMacOS
+            ? SoundLevelScale.darwin
+            : SoundLevelScale.android,
+      );
     });
 
     test('normalize clamps NaN and ±infinity to the endpoints', () {

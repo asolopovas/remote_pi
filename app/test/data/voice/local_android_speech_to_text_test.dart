@@ -84,6 +84,108 @@ void main() {
         .setMockMethodCallHandler(_channel, null);
   });
 
+  for (final code in ['error_no_match', 'error_speech_timeout']) {
+    for (final ending in ['natural', 'manual', 'final']) {
+      test('$code after $ending retains words without VoiceFailed', () async {
+        final service = SpeechToTextService(
+          SttPluginImpl(speech),
+          null,
+          const Duration(milliseconds: 40),
+        );
+        final vm = VoiceInputViewModel(service);
+        final texts = <String>[];
+        vm.transcripts.listen(texts.add);
+        await vm.startRecording();
+        await event('textRecognition', _words('synthetic partial'));
+        Future<String>? stopping;
+        if (ending == 'manual') stopping = vm.stopAndTranscribe();
+        if (ending == 'natural') {
+          await event('notifyStatus', 'notListening');
+        }
+        if (ending == 'final') {
+          await event(
+            'textRecognition',
+            _words('synthetic final', finalResult: true),
+          );
+        }
+        await event(
+          'notifyError',
+          jsonEncode({'errorMsg': code, 'permanent': true}),
+        );
+        if (ending != 'final') {
+          // A benign terminal callback must not fence a queued real final.
+          await event(
+            'textRecognition',
+            _words('synthetic final', finalResult: true),
+          );
+        }
+        await stopping;
+        await Future<void>.delayed(const Duration(milliseconds: 60));
+        expect(vm.state, isA<VoiceIdle>());
+        expect(texts.last, 'synthetic final');
+        vm.dispose();
+        service.dispose();
+      });
+    }
+    test('$code with no speech ends idle with no transcript', () async {
+      final service = SpeechToTextService(
+        SttPluginImpl(speech),
+        null,
+        const Duration(milliseconds: 20),
+      );
+      final vm = VoiceInputViewModel(service);
+      final texts = <String>[];
+      vm.transcripts.listen(texts.add);
+      await vm.startRecording();
+      await event(
+        'notifyError',
+        jsonEncode({'errorMsg': code, 'permanent': true}),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      expect(vm.state, isA<VoiceIdle>());
+      expect(texts, isEmpty);
+      expect(calls.last, 'cancel');
+      vm.dispose();
+      service.dispose();
+    });
+  }
+
+  for (final code in [
+    'error_audio_error',
+    'error_client',
+    'error_permission',
+    'error_network',
+    'error_network_timeout',
+    'error_busy',
+    'error_server',
+    'error_language_not_supported',
+    'error_language_unavailable',
+    'error_server_disconnected',
+    'error_too_many_requests',
+    'error_unknown (99)',
+    'unrecognized_error',
+  ]) {
+    test('$code remains a failure even with words and after stop', () async {
+      final service = SpeechToTextService(SttPluginImpl(speech));
+      final vm = VoiceInputViewModel(service);
+      final texts = <String>[];
+      vm.transcripts.listen(texts.add);
+      await vm.startRecording();
+      await event('textRecognition', _words('synthetic retained'));
+      final stopping = vm.stopAndTranscribe();
+      await Future<void>.delayed(Duration.zero);
+      await event(
+        'notifyError',
+        jsonEncode({'errorMsg': code, 'permanent': false}),
+      );
+      expect(await stopping, 'synthetic retained');
+      expect(vm.state, isA<VoiceFailed>());
+      expect(texts.last, 'synthetic retained');
+      vm.dispose();
+      service.dispose();
+    });
+  }
+
   test(
     'actual vendor adapter accepts final after stop, fences queued old IDs',
     () async {
@@ -149,13 +251,13 @@ void main() {
     () async {
       var oldStatuses = 0;
       var newStatuses = 0;
-      var errors = 0;
+      final errors = <SttError>[];
       final oldOwner = SttPluginImpl(speech);
       await oldOwner.initialize(onStatus: (_) => oldStatuses++);
       final newOwner = SttPluginImpl(speech);
       await newOwner.initialize(
         onStatus: (_) => newStatuses++,
-        onError: () => errors++,
+        onError: errors.add,
       );
       await newOwner.listen(
         localeId: 'en_US',
@@ -170,7 +272,8 @@ void main() {
       );
       expect(oldStatuses, 0);
       expect(newStatuses, 2);
-      expect(errors, 1);
+      expect(errors.single.code, 'error_client');
+      expect(errors.single.permanent, isTrue);
     },
   );
 

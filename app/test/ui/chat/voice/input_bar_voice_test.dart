@@ -18,6 +18,7 @@ class _FakeSpeechService implements SpeechService {
   Completer<String>? stopGate;
   void Function(String)? live;
   void Function()? ended;
+  void Function()? error;
   int startCalls = 0;
   int cancelCalls = 0;
   int stopCalls = 0;
@@ -41,6 +42,7 @@ class _FakeSpeechService implements SpeechService {
     startCalls++;
     live = onTranscript;
     ended = onEnded;
+    error = onError;
   }
 
   @override
@@ -106,6 +108,27 @@ void main() {
 
   String text(WidgetTester tester) =>
       tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+  for (final failed in [false, true]) {
+    testWidgets('terminal failure=$failed retains draft and never sends', (
+      tester,
+    ) async {
+      svc.transcript = 'synthetic retained words';
+      await pumpBar(tester);
+      await tapMic(tester);
+      svc.live!('synthetic partial');
+      if (failed) svc.error!();
+      svc.ended!();
+      await tester.pump();
+      expect(text(tester), 'synthetic retained words');
+      expect(sent, isEmpty);
+      expect(
+        find.text('Dictation ended with an error. Review recognized text.'),
+        failed ? findsOneWidget : findsNothing,
+      );
+      expect(vm.state, failed ? isA<VoiceFailed>() : isA<VoiceIdle>());
+    });
+  }
 
   testWidgets('tap immediately starts dictation without a hold hint', (
     tester,
