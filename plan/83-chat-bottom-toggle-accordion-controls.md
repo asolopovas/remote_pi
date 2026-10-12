@@ -31,7 +31,7 @@ A single tightly coupled App chat UI seam: ChatPage chrome/footer/list Latest, s
 - [x] Double-tap surface collapse preserves nested gestures and text selection/control actions.
 - [x] Copy output beside status is exact, independent, accessible and responsive.
 - [x] Focused actual-widget checks/format/analyzer and scoped independent review accepted.
-- [ ] New real-main APK reviewed and delivery status reported; code27 preserved.
+- [x] New real-main APK reviewed and verified download ready; code27 preserved.
 
 ## Accepted source milestone
 
@@ -46,6 +46,14 @@ Next delivery is a new production real-main **1.2.0/code28**, same fork package/
 Retained builder `bfb386e1-2048-4307-a820-8efa2eb739c2` completed one151s fresh real-main build and released BUILD/STAGING/DOCS. New `app/build/83-chat/code28/code28.apk`:45,688,346 bytes,0444, SHA256 **`8b54043cbd45479163e7803f6867bc3e4b3d66aaf1cc58da1072a8617207f48c`**; checksum verifies. Actual fork1.2.0/code28/min34/ARM64 App+engine, same44dc580c signer. Current444-input manifest **`5924b1b76a08b51dd97c674fa5f1fd60399a68e19e43e946827ae265804f74c2`**, newly computed126 manifested main closure/2337 unique compiler hashes includes all6 accepted UI sources; fresh AOT `7747f16b5b51db0ea2dd98c5c7d97a21699e9785ef6b8152363838dddc4f8e27` differs27. Actual sole DEX legitimately unchanged, fresh mapped12-plugin/local2/generic0 proof retained. Immutable27 artifacts/evidence/source preserved, no new build/verifier failures or test reruns.
 
 Only builder original delta is approved post-build non-AOT README5aea2955→1b153005d72d7e622d37fd1d9ff0c35abeb814248a1bbc44605f60bdff973886. Parent independently rehashed actual APK/size/444 frozen inputs (sole README delta)/DEX/AOT, checked `apksigner` and actual `aapt` package/version/minSDK. Final read-only saved artifact/docs reviewer `2dc3133b-4b1d-467e-b048-d54d6e6420ee` found no issues, **publication OK after parent remote/upload checks**. Initial readonly SSH-ref query timed out after local gates; subsequent GitHub API verified loginasolopovas, branch1078e237, published27 intact and code28 tag absent (HTTP404). Secret/generated-file scan of12 Git-visible paths passes; no new signing keys or binary staging. Publication remains next, not yet claimed.
+
+## Published delivery
+
+Source commit **`c75c25d9369c04cbcf285b1c9c02704470cc49e4`** pushed to fork `readable-android-fonts`; new release tag **`readable-android-code28`** resolves to that exact commit. Parent verified435 committed manifested entries (9 generated/local support inputs are not Git files), no source mismatch. SSH agent refused RSA signing on first push; commit succeeded but SSH push failed. Parent explicitly reported it, verified existingasolopovas GitHub login/push authority, and successfully pushed via transient HTTPS credential helper to the same fork. No keys/remotes/global credential settings changed, no forced push or upstream action.
+
+APK: <https://github.com/asolopovas/remote_pi/releases/download/readable-android-code28/code28.apk>; checksum: <https://github.com/asolopovas/remote_pi/releases/download/readable-android-code28/code28.apk.sha256>. Fork prerelease: <https://github.com/asolopovas/remote_pi/releases/tag/readable-android-code28>. Both assets uploaded,45,688,346/77 bytes. Parent downloaded both direct public HTTPS links, independently hashed APK against **8b54043cbd45479163e7803f6867bc3e4b3d66aaf1cc58da1072a8617207f48c**, compared checksum bytes, matched GitHub server digest and exact remote tag commit. Published27 server hash/size remain unchanged. Not a planned-URL/API-only success claim.
+
+Final README/plan publication status follow-up is documentation only; release tag/source commit stay immutable. Builder's explicit5aea→1b153 non-AOT README delta is historical before-publication metadata; coordinator's final publication-status markdown is also non-AOT. Compiled source/tests/native/vendor/config/actual APK unchanged. Human device gestures, text/font platform fidelity, real chat/voice/model/microphone/TalkBack/security acceptance and producer/owned Relay rollout remain separate; no extra installs, environment inspection or offline dependency downloads.
 
 ## Ownership and next plans
 
