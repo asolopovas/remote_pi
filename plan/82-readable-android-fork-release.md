@@ -36,9 +36,17 @@ Builder released BUILD/STAGING/DOCS ownership; no active original writers. Indep
 - [x] Exact reviewed source integrated and actual-App focused gates accepted.
 - [x] Fresh production code27 APK and independent delivery provenance accepted.
 - [x] Requested component build outcomes truthfully recorded.
-- [ ] Intended source/tests/vendor/licenses/docs/plans committed and pushed to fork.
-- [ ] Exact verified APK/checksum published on new fork release.
-- [ ] Download link returned to operator.
+- [x] Intended source/tests/vendor/licenses/docs/plans committed and pushed to fork.
+- [x] Exact verified APK/checksum published on new fork release.
+- [x] Direct download link independently verified and ready for operator.
+
+## Published delivery
+
+Source commit **`e5c6edf777f682b69954973363e4565633fdd211`** pushed to origin `readable-android-fonts`; new immutable release tag **`readable-android-code27`** points to that exact commit. Parent checked432 Git-committed manifest entries;9 normal generated/local metadata/support entries are not Git files. No source mismatch, branch force push or upstream change.
+
+Fork prerelease: <https://github.com/asolopovas/remote_pi/releases/tag/readable-android-code27>. APK: <https://github.com/asolopovas/remote_pi/releases/download/readable-android-code27/code27.apk>; checksum: <https://github.com/asolopovas/remote_pi/releases/download/readable-android-code27/code27.apk.sha256>. Both assets are uploaded, sizes45,688,278/77 bytes. GitHub server digest matches `ce5e6afb2091961a559bf1874b47336415c41fa5f29dd752929e459255eb146b`. Parent fetched both direct public HTTPS download links, independently hashed downloaded APK and compared downloaded checksum bytes; exact match. Not only an API/planned-URL claim.
+
+Final coordinator documentation-only follow-up updates the App README publication line and this plan; release tag/source commit remain unchanged. Compiled source/native/vendor/fonts/config/tests/APK are unchanged. Builder's non-AOT README delta remains historical pre-publication evidence; final publication-status markdown is another explicitly non-AOT delta, not compiled bytes. No device installation or all-components build claim added.
 
 ## Limits and next plans
 
