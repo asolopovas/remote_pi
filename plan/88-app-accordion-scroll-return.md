@@ -22,6 +22,12 @@ One App source/test owner. Inspect the shared `app/lib/ui/chat/widgets/accordion
 - [x] Nested/repeated/viewport-replacement lifecycle and focused regression checks pass: 16 focused tests, all nine new regressions fail on baseline. Changed-path analyzer and format clean. Full analyzer reports an existing generated build-file naming info only. Parent matched all four reported source hashes and inspected final test log/diff. Active LSP confirms one path clean; two timed out/inconclusive.
 - [x] Root reviewed actual diff, final test log and exact source hashes. Independent reviewer `837ff547-bd2d-4f3d-936c-66c2f26d5f41` inspected production caller/session scoping and all new regressions: no findings, ready for source acceptance. Parent rechecked all four hashes and diff whitespace after review; unchanged. Build/install remains a separate delivery gate, not inferred from source acceptance.
 
+## Authorized device delivery
+
+User explicitly requests installation on their ADB device after commit/push. Dedicated worker `3a74e826-116f-459a-9dc2-9214dc2c30e8` owns BUILD/ARTIFACT/DEVICE only, from accepted committed HEAD `9c06e736711a0c53ddcd5adf8917dc029e914ab1`. Physical Samsung `R5CXB2PGC2H` is currently code33; emulator is excluded. Reuse the warmed offline build lane for a real-main ARM64 release with strictly higher versionCode and unchanged package/activity/signer, preserving source and app data.
+
+- [x] Fresh accepted-source code34 APK built in 90 seconds and installed in-place on Samsung `R5CXB2PGC2H` with targeted `adb install -r` (Success). Same package/activity/signer; APK SHA256 `a56feeb6a2acb549ba903b84e4f46acbdc83006f06933423b586009ba010d90f`. Worker verified 450 tracked App inputs, 2,337 compiler hashes and fresh packaged AOT, then released BUILD/ARTIFACT/DEVICE. Parent independently matched APK/source digest and certificate, installed 1.2.0/code34/ARM64 and live process. Bounded launch/current-process crash smoke passed; this is not accordion UX device acceptance. No data clear, uninstall, private transcript/pairing inspection or remote prompts; emulator untouched. Tracked App source/config unchanged.
+
 ## Next plans
 
 No unrelated UI, transport, settings or dependency work. Existing packaging/in-place update contract applies if delivery is authorized. Cockpit/cmux CLI and an App mesh peer are unavailable; user authorized autonomous startup, so the coordinator launched a native App worker in `app/`. No parent App code edits or root build/test commands.
