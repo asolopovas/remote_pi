@@ -126,9 +126,40 @@ void main() {
         find.text('Dictation ended with an error. Review recognized text.'),
         failed ? findsOneWidget : findsNothing,
       );
-      expect(vm.state, failed ? isA<VoiceFailed>() : isA<VoiceIdle>());
+      expect(vm.state, failed ? isA<VoiceFailed>() : isA<VoiceReconnecting>());
     });
   }
+
+  testWidgets(
+    'composer spans native segments and Stop during reconnect never sends',
+    (tester) async {
+      await pumpBar(tester);
+      await tapMic(tester);
+      svc.live!('synthetic first');
+      svc.transcript = 'synthetic first final';
+      svc.ended!();
+      await tester.pump();
+      expect(text(tester), 'synthetic first final');
+      expect(find.textContaining('Reconnecting dictation'), findsOneWidget);
+      expect(find.textContaining('Listening'), findsNothing);
+      expect(find.bySemanticsLabel('Stop dictation'), findsOneWidget);
+      await tester.pump(vm.restartDelay);
+      svc.live!('synthetic second');
+      await tester.pump();
+      expect(text(tester), 'synthetic first final synthetic second');
+      svc.transcript = 'synthetic second final';
+      svc.ended!();
+      await tester.pump();
+      await tapMic(tester);
+      await tester.pump(const Duration(seconds: 5));
+      expect(svc.startCalls, 2);
+      expect(vm.state, isA<VoiceIdle>());
+      expect(text(tester), 'synthetic first final synthetic second final');
+      expect(sent, isEmpty);
+      await tester.tap(find.byKey(const Key('input-bar-action')));
+      expect(sent, ['synthetic first final synthetic second final']);
+    },
+  );
 
   testWidgets('tap immediately starts dictation without a hold hint', (
     tester,

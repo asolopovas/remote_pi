@@ -54,6 +54,47 @@ class _FakeSecureStorage implements FlutterSecureStorage {
 
 void main() {
   group('Preferences', () {
+    for (final raw in [null, 'true', 'false', 'malformed', 'TRUE', '']) {
+      test('wrap default hydrates $raw and only notifies on change', () async {
+        final store = _FakeSecureStorage();
+        if (raw != null) {
+          await store.write(key: 'prefs.wrap_text_by_default', value: raw);
+        }
+        final prefs = Preferences(store);
+        expect(prefs.wrapTextByDefault, isTrue);
+        var notifications = 0;
+        prefs.addListener(() => notifications++);
+        await prefs.load();
+        expect(prefs.wrapTextByDefault, raw != 'false');
+        expect(notifications, raw == 'false' ? 1 : 0);
+        await prefs.load();
+        expect(notifications, raw == 'false' ? 1 : 0);
+        prefs.dispose();
+      });
+    }
+
+    test(
+      'wrap true/false persist, reload and notify only actual changes',
+      () async {
+        final store = _FakeSecureStorage();
+        final prefs = Preferences(store);
+        var notifications = 0;
+        prefs.addListener(() => notifications++);
+        for (final value in [false, true]) {
+          await prefs.setWrapTextByDefault(value);
+          expect(await store.read(key: 'prefs.wrap_text_by_default'), '$value');
+          expect(prefs.wrapTextByDefault, value);
+          final restored = Preferences(store);
+          await restored.load();
+          expect(restored.wrapTextByDefault, value);
+          restored.dispose();
+          await prefs.setWrapTextByDefault(value);
+        }
+        expect(notifications, 2);
+        prefs.dispose();
+      },
+    );
+
     test(
       'subagents collapse by default and explicit expanded preference persists',
       () async {

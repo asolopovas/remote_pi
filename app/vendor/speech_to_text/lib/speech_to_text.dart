@@ -718,7 +718,10 @@ class SpeechToText {
   Future<void> _onNotifyError(String errorJson) async {
     if (isNotListening &&
         _userEnded &&
-        SpeechToTextPlatform.instance is! LocalAndroidSpeechToText) {
+        SpeechToTextPlatform.instance is! LocalAndroidSpeechToText &&
+        (kIsWeb ||
+            (defaultTargetPlatform != TargetPlatform.iOS &&
+                defaultTargetPlatform != TargetPlatform.macOS))) {
       return;
     }
     Map<String, dynamic> errorMap = jsonDecode(errorJson);

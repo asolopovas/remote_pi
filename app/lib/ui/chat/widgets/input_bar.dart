@@ -287,7 +287,8 @@ class _InputBarState extends State<InputBar> with WidgetsBindingObserver {
     final recording = voiceState is VoiceRecording;
     final transcribing = voiceState is VoiceTranscribing;
     final starting = voiceState is VoiceStarting;
-    final voiceActive = recording || transcribing || starting;
+    final reconnecting = voiceState is VoiceReconnecting;
+    final voiceActive = recording || transcribing || starting || reconnecting;
     final voiceUnsupported =
         voiceState is VoiceUnavailable &&
         voiceState.reason == VoiceUnavailableReason.unsupported;
@@ -445,6 +446,8 @@ class _InputBarState extends State<InputBar> with WidgetsBindingObserver {
                     ? 'Starting dictation…'
                     : transcribing
                     ? 'Finishing dictation…'
+                    : reconnecting
+                    ? 'Reconnecting dictation… · Tap mic to stop'
                     : recording
                     ? 'Listening · ${voiceState.elapsed.inSeconds}s · Tap mic to stop'
                     : voiceUnsupported

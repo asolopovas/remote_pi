@@ -27,6 +27,7 @@ void main() {
   late stt.SpeechToText speech;
   late int id;
   late List<String> calls;
+  late List<Map> listenOptions;
   bool earlyFinal = false;
 
   Future<void> event(String method, Object payload, {int? captureId}) =>
@@ -41,6 +42,7 @@ void main() {
     speech = stt.SpeechToText.withMethodChannel();
     id = 0;
     calls = [];
+    listenOptions = [];
     earlyFinal = false;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_channel, (call) async {
@@ -54,8 +56,7 @@ void main() {
             case 'listen':
               final args = call.arguments as Map;
               id = args['captureId'] as int;
-              expect(args['onDevice'], isTrue);
-              expect(args['listenMode'], stt.ListenMode.dictation.index);
+              listenOptions.add(args);
               if (earlyFinal) {
                 await event('notifyStatus', 'notListening');
                 await event(
@@ -78,11 +79,78 @@ void main() {
   });
 
   tearDown(() async {
+    expect(listenOptions, everyElement(containsPair('onDevice', true)));
+    expect(
+      listenOptions,
+      everyElement(containsPair('listenMode', stt.ListenMode.dictation.index)),
+    );
     await speech.cancel();
     SpeechToTextPlatform.instance = previous;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_channel, null);
   });
+
+  testWidgets(
+    'vendor segments accumulate, fence stale IDs, and explicit Stop wins',
+    (tester) async {
+      final service = SpeechToTextService(SttPluginImpl(speech));
+      final vm = VoiceInputViewModel(service);
+      final texts = <String>[];
+      vm.transcripts.listen(texts.add);
+      await vm.startRecording();
+      final firstId = id;
+      await event('textRecognition', _words('synthetic one'));
+      await event('notifyStatus', 'notListening');
+      expect(vm.state, isA<VoiceReconnecting>());
+      await event(
+        'textRecognition',
+        _words('synthetic won final', finalResult: true),
+      );
+      await tester.pump();
+      expect(texts.last, 'synthetic won final');
+      await tester.pump(vm.restartDelay);
+      expect(vm.state, isA<VoiceRecording>());
+      expect(id, greaterThan(firstId));
+      await event(
+        'textRecognition',
+        _words('stale overwrite', finalResult: true),
+        captureId: firstId,
+      );
+      await event(
+        'notifyError',
+        jsonEncode({'errorMsg': 'error_client', 'permanent': true}),
+        captureId: firstId,
+      );
+      await event('notifyStatus', 'done', captureId: firstId);
+      await event('textRecognition', _words('second hypothesis'));
+      expect(texts.last, 'synthetic won final second hypothesis');
+      await event('textRecognition', _words('second final', finalResult: true));
+      await event('notifyStatus', 'done');
+      await tester.pump();
+      await tester.pump(vm.restartDelay);
+      expect(vm.state, isA<VoiceRecording>());
+      await event('textRecognition', _words('third partial'));
+      final stopping = vm.stopAndTranscribe();
+      await tester.pump();
+      // Status precedes the last final; a real error is still visible after Stop.
+      await event('notifyStatus', 'doneNoResult');
+      await event(
+        'notifyError',
+        jsonEncode({
+          'errorMsg': 'error_server_disconnected',
+          'permanent': false,
+        }),
+      );
+      await event('textRecognition', _words('third final', finalResult: true));
+      await tester.pump();
+      expect(await stopping, 'synthetic won final second final third final');
+      expect(vm.state, isA<VoiceFailed>());
+      await tester.pump(const Duration(seconds: 5));
+      expect(calls.where((call) => call == 'listen'), hasLength(3));
+      vm.dispose();
+      service.dispose();
+    },
+  );
 
   for (final code in ['error_no_match', 'error_speech_timeout']) {
     for (final ending in ['natural', 'manual', 'final']) {
@@ -121,13 +189,16 @@ void main() {
         }
         await stopping;
         await Future<void>.delayed(const Duration(milliseconds: 60));
-        expect(vm.state, isA<VoiceIdle>());
+        expect(
+          vm.state,
+          ending == 'manual' ? isA<VoiceIdle>() : isA<VoiceReconnecting>(),
+        );
         expect(texts.last, 'synthetic final');
         vm.dispose();
         service.dispose();
       });
     }
-    test('$code with no speech ends idle with no transcript', () async {
+    test('$code with no speech reconnects with no transcript', () async {
       final service = SpeechToTextService(
         SttPluginImpl(speech),
         null,
@@ -142,7 +213,7 @@ void main() {
         jsonEncode({'errorMsg': code, 'permanent': true}),
       );
       await Future<void>.delayed(const Duration(milliseconds: 40));
-      expect(vm.state, isA<VoiceIdle>());
+      expect(vm.state, isA<VoiceReconnecting>());
       expect(texts, isEmpty);
       expect(calls.last, 'cancel');
       vm.dispose();
@@ -289,7 +360,7 @@ void main() {
       final sub = vm.transcripts.listen(texts.add);
       await vm.startRecording();
       await Future<void>.delayed(Duration.zero);
-      expect(vm.state, isA<VoiceIdle>());
+      expect(vm.state, isA<VoiceReconnecting>());
       expect(states.whereType<VoiceRecording>(), isEmpty);
       expect(texts, everyElement('early final'));
       await sub.cancel();

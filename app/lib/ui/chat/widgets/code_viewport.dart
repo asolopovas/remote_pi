@@ -3,7 +3,9 @@ import 'dart:async';
 import 'compact_output_header.dart';
 import 'accordion_viewport.dart';
 
+import 'package:app/data/preferences/preferences.dart';
 import 'package:app/ui/core/themes/themes.dart';
+import 'package:provider/provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -48,7 +50,8 @@ class _CodeViewportState extends State<CodeViewport>
     with AutomaticKeepAliveClientMixin {
   final _scroll = ScrollController();
   bool _expanded = false;
-  bool _wrap = true;
+  // Disclosure/copy do not pin the default; only Wrap/Scroll sets this.
+  bool? _wrapOverride;
   bool _copied = false;
   // Retain explicit choices, not every default collapsed row in the lazy list.
   bool _touched = false;
@@ -57,12 +60,12 @@ class _CodeViewportState extends State<CodeViewport>
   @override
   bool get wantKeepAlive => _touched;
 
-  void _toggleWrap() {
-    if (!_wrap && widget.bodyWrapWidth != null && _scroll.hasClients) {
+  void _toggleWrap(bool wrap) {
+    if (!wrap && widget.bodyWrapWidth != null && _scroll.hasClients) {
       _scroll.jumpTo(0);
     }
     setState(() {
-      _wrap = !_wrap;
+      _wrapOverride = !wrap;
       _touched = true;
     });
     updateKeepAlive();
@@ -88,6 +91,10 @@ class _CodeViewportState extends State<CodeViewport>
   @override
   Widget build(BuildContext context) {
     super.build(context);
+    // Nullable lookup supports standalone viewports without masking provider errors.
+    final wrap =
+        _wrapOverride ??
+        (context.watch<Preferences?>()?.wrapTextByDefault ?? true);
     final colors = context.colors;
     final standalone = widget.headerBuilder == null;
     final frame = BoxDecoration(
@@ -99,13 +106,13 @@ class _CodeViewportState extends State<CodeViewport>
       if (_expanded || !widget.collapsible)
         IconButton(
           key: const Key('code-wrap'),
-          tooltip: _wrap ? 'Scroll horizontally' : 'Wrap code',
-          onPressed: _toggleWrap,
+          tooltip: wrap ? 'Scroll horizontally' : 'Wrap code',
+          onPressed: () => _toggleWrap(wrap),
           iconSize: 18,
           constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
           padding: const EdgeInsets.all(4),
           icon: Icon(
-            _wrap ? LucideIcons.moveHorizontal : LucideIcons.wrapText,
+            wrap ? LucideIcons.moveHorizontal : LucideIcons.wrapText,
             color: colors.muted2,
           ),
         ),
@@ -144,22 +151,22 @@ class _CodeViewportState extends State<CodeViewport>
     final content = widget.bodyWrapWidth != null
         ? Scrollbar(
             controller: _scroll,
-            thumbVisibility: !_wrap,
+            thumbVisibility: !wrap,
             scrollbarOrientation: ScrollbarOrientation.bottom,
             child: SingleChildScrollView(
               controller: _scroll,
               scrollDirection: Axis.horizontal,
-              physics: _wrap ? const NeverScrollableScrollPhysics() : null,
+              physics: wrap ? const NeverScrollableScrollPhysics() : null,
               padding: padding,
               child: ConstrainedBox(
                 constraints: BoxConstraints(
-                  maxWidth: _wrap ? widget.bodyWrapWidth! : double.infinity,
+                  maxWidth: wrap ? widget.bodyWrapWidth! : double.infinity,
                 ),
                 child: widget.child,
               ),
             ),
           )
-        : _wrap
+        : wrap
         ? Padding(padding: padding, child: widget.child)
         : Scrollbar(
             controller: _scroll,

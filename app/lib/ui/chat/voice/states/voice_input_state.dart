@@ -1,4 +1,4 @@
-/// Tap dictation: starting → recording → finalizing → idle/error.
+/// Tap dictation: starting → recording ↔ reconnecting → finalizing → idle/error.
 sealed class VoiceInputState {
   const VoiceInputState();
 }
@@ -83,4 +83,14 @@ final class VoiceFailed extends VoiceInputState {
   bool operator ==(Object other) => other is VoiceFailed;
   @override
   int get hashCode => (VoiceFailed).hashCode;
+}
+
+/// The native segment ended; finalizing it or starting the next local segment.
+/// The user session remains active and Stop remains available.
+final class VoiceReconnecting extends VoiceInputState {
+  const VoiceReconnecting();
+  @override
+  bool operator ==(Object other) => other is VoiceReconnecting;
+  @override
+  int get hashCode => (VoiceReconnecting).hashCode;
 }

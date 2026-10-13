@@ -239,6 +239,27 @@ void main() {
     );
 
     test(
+      'first native final is committed once, late partials cannot rewrite it',
+      () async {
+        final plugin = _FakeSttPlugin();
+        final service = SpeechToTextService(plugin);
+        await service.init();
+        final live = <String>[];
+        await service.start(
+          localeId: 'en_US',
+          maxDuration: const Duration(seconds: 60),
+          onTranscript: live.add,
+        );
+        plugin.emitResult('synthetic final', isFinal: true);
+        plugin.emitResult('late partial');
+        plugin.emitResult('duplicate final', isFinal: true);
+        expect(await service.stop(), 'synthetic final');
+        expect(live, ['synthetic final']);
+        service.dispose();
+      },
+    );
+
+    test(
       'done from native stop does not discard first final delivered later',
       () async {
         final plugin = _FakeSttPlugin();
@@ -317,6 +338,50 @@ void main() {
         expect(errors, 1);
         expect(await service.stop(), 'partial');
         expect(plugin.stopCalls, 1);
+        service.dispose();
+      },
+    );
+
+    test(
+      'Stop before queued listen acquires native seam revokes microphone intent',
+      () async {
+        final plugin = _FakeSttPlugin();
+        final service = SpeechToTextService(plugin);
+        await service.init();
+        final starting = service.start(
+          localeId: 'en_US',
+          maxDuration: const Duration(seconds: 60),
+        );
+        final stopping = service.stop();
+        await starting;
+        expect(await stopping, isEmpty);
+        expect(plugin.calls, ['cancel']);
+        service.dispose();
+      },
+    );
+
+    test(
+      'Stop during pending native listen waits for release and fences late results',
+      () async {
+        final plugin = _FakeSttPlugin()..listenGate = Completer<void>();
+        final service = SpeechToTextService(plugin);
+        await service.init();
+        final live = <String>[];
+        final starting = service.start(
+          localeId: 'en_US',
+          maxDuration: const Duration(seconds: 60),
+          onTranscript: live.add,
+        );
+        await Future<void>.delayed(Duration.zero);
+        final stopping = service.stop();
+        plugin.afterStop = () =>
+            plugin.emitResult('synthetic startup final', isFinal: true);
+        plugin.listenGate!.complete();
+        await starting;
+        expect(await stopping, 'synthetic startup final');
+        expect(plugin.calls, ['listen', 'stop', 'cancel']);
+        plugin.emitResult('late overwrite');
+        expect(live, ['synthetic startup final']);
         service.dispose();
       },
     );

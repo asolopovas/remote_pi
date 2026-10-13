@@ -325,6 +325,23 @@ class _DisplaySection extends StatelessWidget {
           contentPadding: const EdgeInsets.symmetric(horizontal: 18),
           activeThumbColor: colors.accent,
           title: Text(
+            'Wrap text by default',
+            style: context.typo.sansBody.copyWith(color: colors.text),
+          ),
+          subtitle: Text(
+            'Code and tool output. Each block can override with Wrap/Scroll.',
+            style: context.typo.sansBody.copyWith(
+              color: colors.muted,
+              fontSize: 12,
+            ),
+          ),
+          value: prefs.wrapTextByDefault,
+          onChanged: (v) => prefs.setWrapTextByDefault(v),
+        ),
+        SwitchListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 18),
+          activeThumbColor: colors.accent,
+          title: Text(
             'Hide tool calls in chat',
             style: context.typo.sansBody.copyWith(color: colors.text),
           ),

@@ -1,3 +1,5 @@
+import 'dart:ui' show Tristate;
+
 import 'package:app/config/dependencies.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/connection_manager.dart';
@@ -27,6 +29,7 @@ class _PairingStorage extends PairingStorage {
 }
 
 class _SecureStorage implements FlutterSecureStorage {
+  final values = <String, String>{};
   @override
   Future<String?> read({
     required String key,
@@ -36,7 +39,25 @@ class _SecureStorage implements FlutterSecureStorage {
     WebOptions? webOptions,
     MacOsOptions? mOptions,
     WindowsOptions? wOptions,
-  }) async => null;
+  }) async => values[key];
+
+  @override
+  Future<void> write({
+    required String key,
+    required String? value,
+    IOSOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    MacOsOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async {
+    if (value == null) {
+      values.remove(key);
+    } else {
+      values[key] = value;
+    }
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -51,6 +72,91 @@ void main() {
       );
     await font.load();
   });
+
+  for (final initial in [true, false]) {
+    testWidgets(
+      'Settings wrap switch reflects saved $initial and persists at 320px/2x',
+      (tester) async {
+        tester.view.physicalSize = const Size(320, 800);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final semantics = tester.ensureSemantics();
+        try {
+          final store = _SecureStorage()
+            ..values['prefs.wrap_text_by_default'] = '$initial';
+          final prefs = Preferences(store);
+          await prefs.load();
+          final storage = _PairingStorage();
+          final conn = ConnectionManager(
+            storage: storage,
+            factory: (_, _) async =>
+                throw StateError('No transport in fixture'),
+          );
+          final vm = SettingsViewModel(storage, prefs, conn);
+          addTearDown(vm.dispose);
+          addTearDown(prefs.dispose);
+          Widget page(Preferences value) => MultiProvider(
+            providers: [
+              ChangeNotifierProvider<Preferences>.value(value: value),
+              ChangeNotifierProvider<SettingsViewModel>.value(value: vm),
+            ],
+            child: MaterialApp(
+              theme: buildDarkTheme(),
+              home: const SettingsPage(),
+              builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(
+                  context,
+                ).copyWith(textScaler: const TextScaler.linear(2)),
+                child: child!,
+              ),
+            ),
+          );
+          await tester.pumpWidget(page(prefs));
+          await tester.pumpAndSettle();
+          final tile = find.widgetWithText(
+            SwitchListTile,
+            'Wrap text by default',
+          );
+          await tester.scrollUntilVisible(
+            tile,
+            180,
+            scrollable: find.byType(Scrollable).last,
+          );
+          await tester.pumpAndSettle();
+          expect(tester.widget<SwitchListTile>(tile).value, initial);
+          await tester.ensureVisible(tile);
+          await tester.pumpAndSettle();
+          final node = tester.getSemantics(tile);
+          expect(node.label, contains('Wrap text by default'));
+          final flags = node.getSemanticsData().flagsCollection;
+          expect(flags.isToggled, initial ? Tristate.isTrue : Tristate.isFalse);
+          await tester.tap(tile);
+          await tester.pumpAndSettle();
+          expect(tester.widget<SwitchListTile>(tile).value, !initial);
+          expect(store.values['prefs.wrap_text_by_default'], '${!initial}');
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox());
+          final restored = Preferences(store);
+          await restored.load();
+          addTearDown(restored.dispose);
+          await tester.pumpWidget(page(restored));
+          await tester.pumpAndSettle();
+          await tester.scrollUntilVisible(
+            tile,
+            180,
+            scrollable: find.byType(Scrollable).last,
+          );
+          expect(tester.widget<SwitchListTile>(tile).value, !initial);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox());
+          conn.dispose();
+        } finally {
+          semantics.dispose();
+        }
+      },
+    );
+  }
 
   for (final (embedded, scale, keyboard) in [
     (false, 1.0, 0.0),

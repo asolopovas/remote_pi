@@ -14,6 +14,7 @@ class Preferences extends ChangeNotifier {
   final FlutterSecureStorage _store;
   bool _hideToolCalls = false;
   bool _collapseSubagents = true;
+  bool _wrapTextByDefault = true;
   String? _selectedPeerEpk;
   String? _relayUrl;
   bool _onboardingCompleted = false;
@@ -21,10 +22,11 @@ class Preferences extends ChangeNotifier {
   AppFontScale _fontScale = AppFontScale.standard;
 
   Preferences([FlutterSecureStorage? store])
-      : _store = store ?? const FlutterSecureStorage();
+    : _store = store ?? const FlutterSecureStorage();
 
   static const _kHideToolCallsKey = 'prefs.hide_tool_calls';
   static const _kCollapseSubagentsKey = 'prefs.collapse_subagents';
+  static const _kWrapTextByDefaultKey = 'prefs.wrap_text_by_default';
   static const _kSelectedPeerEpkKey = 'prefs.selected_peer_epk';
   static const _kRelayUrlKey = 'prefs.relay_url';
   static const _kOnboardingCompletedKey = 'prefs.onboarding_completed';
@@ -35,6 +37,9 @@ class Preferences extends ChangeNotifier {
   bool get hideToolCalls => _hideToolCalls;
 
   bool get collapseSubagents => _collapseSubagents;
+
+  /// Default for code/tool output; individual blocks can override it.
+  bool get wrapTextByDefault => _wrapTextByDefault;
 
   /// Epoch of the peer the user last picked from Home — the one
   /// `/chat` will connect to when it mounts. Null = no peer selected yet
@@ -106,6 +111,13 @@ class Preferences extends ChangeNotifier {
       changed = true;
     }
 
+    final wrap = await _store.read(key: _kWrapTextByDefaultKey);
+    final nextWrap = wrap != 'false';
+    if (nextWrap != _wrapTextByDefault) {
+      _wrapTextByDefault = nextWrap;
+      changed = true;
+    }
+
     final selected = await _store.read(key: _kSelectedPeerEpkKey);
     final cleaned = (selected != null && selected.isNotEmpty) ? selected : null;
     if (cleaned != _selectedPeerEpk) {
@@ -146,10 +158,7 @@ class Preferences extends ChangeNotifier {
   Future<void> setHideToolCalls(bool value) async {
     if (_hideToolCalls == value) return;
     _hideToolCalls = value;
-    await _store.write(
-      key: _kHideToolCallsKey,
-      value: value.toString(),
-    );
+    await _store.write(key: _kHideToolCallsKey, value: value.toString());
     notifyListeners();
   }
 
@@ -157,6 +166,13 @@ class Preferences extends ChangeNotifier {
     if (_collapseSubagents == value) return;
     _collapseSubagents = value;
     await _store.write(key: _kCollapseSubagentsKey, value: value.toString());
+    notifyListeners();
+  }
+
+  Future<void> setWrapTextByDefault(bool value) async {
+    if (_wrapTextByDefault == value) return;
+    _wrapTextByDefault = value;
+    await _store.write(key: _kWrapTextByDefaultKey, value: value.toString());
     notifyListeners();
   }
 
@@ -179,9 +195,7 @@ class Preferences extends ChangeNotifier {
     if (epk == null || epk.isEmpty) {
       return setSelectedPeerEpk(null);
     }
-    final composite = (roomId == null || roomId.isEmpty)
-        ? epk
-        : '$epk:$roomId';
+    final composite = (roomId == null || roomId.isEmpty) ? epk : '$epk:$roomId';
     return setSelectedPeerEpk(composite);
   }
 
@@ -203,10 +217,7 @@ class Preferences extends ChangeNotifier {
   Future<void> setOnboardingCompleted(bool value) async {
     if (_onboardingCompleted == value) return;
     _onboardingCompleted = value;
-    await _store.write(
-      key: _kOnboardingCompletedKey,
-      value: value.toString(),
-    );
+    await _store.write(key: _kOnboardingCompletedKey, value: value.toString());
     notifyListeners();
   }
 

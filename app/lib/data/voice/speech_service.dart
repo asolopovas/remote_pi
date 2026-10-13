@@ -19,7 +19,8 @@ abstract class SpeechService extends Service {
   /// envelope, **not** an FFT spectrum (Risk 4).
   Stream<double> get soundLevel;
 
-  /// Begin on-device capture for [localeId], hard-capped at [maxDuration].
+  /// Begin one on-device native segment, capped at [maxDuration].
+  /// [onEnded] marks a segment end, not the end of user dictation intent.
   Future<void> start({
     required String localeId,
     required Duration maxDuration,
@@ -109,6 +110,7 @@ class SpeechToTextService implements SpeechService {
   int _generation = 0;
   bool _disposed = false;
   bool _ended = false;
+  bool _finalReceived = false;
   Completer<void>? _completion;
   Future<String>? _stopping;
   void Function()? _onEnded;
@@ -141,10 +143,10 @@ class SpeechToTextService implements SpeechService {
                 error.code == 'error_speech_timeout';
             if (!noSpeech) {
               _onError?.call();
-              _complete();
             }
-            // For silence/no-match keep the bounded final wait: a queued final
-            // can still improve the latest partial after this terminal event.
+            // Keep the bounded final wait even on failure: a queued native final
+            // can still improve the last partial. The owner suppresses restart
+            // on genuine errors; status/error alone is not a final transcript.
             _end();
           },
         );
@@ -180,6 +182,7 @@ class SpeechToTextService implements SpeechService {
       if (generation != _generation || _disposed) return;
       _transcript = '';
       _ended = false;
+      _finalReceived = false;
       _completion = Completer<void>();
       _onEnded = onEnded;
       _onError = onError;
@@ -187,7 +190,8 @@ class SpeechToTextService implements SpeechService {
         localeId: localeId,
         listenFor: maxDuration,
         onResult: (words, isFinal) {
-          if (generation != _generation || _disposed) return;
+          if (generation != _generation || _disposed || _finalReceived) return;
+          if (isFinal) _finalReceived = true;
           if (words.trim().isNotEmpty) {
             _transcript = words.trim();
             onTranscript?.call(_transcript);
@@ -234,7 +238,13 @@ class SpeechToTextService implements SpeechService {
   Future<String> _finish() async {
     final generation = _generation;
     final completion = _completion;
-    if (completion == null) return '';
+    if (completion == null) {
+      // Stop can arrive before a queued listen has acquired the native seam.
+      // Revoke that intent synchronously, then release in queue order.
+      ++_generation;
+      await _serialize(_plugin.cancel);
+      return '';
+    }
     // Native stop acknowledges the request, NOT final recognition. Wait for a
     // real final/done/error callback, with a bounded last-valid-partial fallback.
     try {
