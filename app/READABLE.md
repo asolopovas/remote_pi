@@ -153,3 +153,16 @@ Wrap actions are now icon-only, with “Scroll horizontally” / “Wrap code”
 tooltips. Focused host evidence and three updated font-loaded production
 ChatPage captures are under `build/86-compact-chat/followup/`; prior evidence and
 code30 artifacts remain untouched. No updated APK/device acceptance is claimed.
+
+### Plan88 accordion reading-position return (source review pending)
+
+Explicit collapse now restores the surviving heading's pre-expansion viewport
+displacement, even after reading farther into the result. Bookmarks belong to
+individual disclosures and their ScrollPosition; nested collapse does not consume
+its parent's return location, and reopening captures a fresh location. Lazy rows
+are laid out near the saved position before content-anchor correction, after
+short-edge extent cleanup. Expansion still aligns once to the original heading
+with the 8dp gutter; no sticky header or streaming-follow behavior was added.
+Focused production CodeViewport tests cover normal/reverse lists, header/body
+collapse, content growth, repeated cycles, nested return and viewport replacement.
+Host tests are not APK/device acceptance.

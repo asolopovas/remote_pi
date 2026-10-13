@@ -85,6 +85,7 @@ void main() {
               ),
             ),
           );
+          final originalTop = tester.getRect(find.byKey(headerKey)).top;
           await tester.tap(find.byKey(headerKey));
           await tester.pumpAndSettle();
           final top = tester.getRect(find.byKey(viewportKey)).top;
@@ -151,6 +152,10 @@ void main() {
           await tester.tapAt(surface);
           await tester.pumpAndSettle();
           expect(expanded, isFalse);
+          expect(
+            tester.getRect(find.byKey(headerKey)).top,
+            closeTo(originalTop, 0.5),
+          );
           expect(controller.position.maxScrollExtent, 0);
           for (final edge in find.byType(AccordionEdgeSpace).evaluate()) {
             expect(tester.getSize(find.byWidget(edge.widget)).height, 0);

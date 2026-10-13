@@ -28,6 +28,38 @@ class _AccordionViewportState extends State<AccordionViewport> {
   bool _scheduled = false;
   double _extent = 0;
   _AccordionAnchorState? _edgeOwner;
+  _AccordionAnchorState? _return;
+
+  @override
+  void didUpdateWidget(AccordionViewport oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller ||
+        oldWidget.reverse != widget.reverse) {
+      oldWidget.controller.removeListener(_schedule);
+      widget.controller.addListener(_schedule);
+      _align = _return = _edgeOwner = null;
+      _extent = 0;
+      for (final entry in _entries) {
+        entry._bookmark = null;
+      }
+    }
+  }
+
+  void _capture(_AccordionAnchorState entry) {
+    _return = null;
+    _align = entry;
+    final viewport = _rect(_bounds);
+    final header = _rect(entry._header);
+    if (viewport == null || header == null || !widget.controller.hasClients) {
+      entry._bookmark = null;
+      return;
+    }
+    entry._bookmark = _AccordionBookmark(
+      widget.controller.position,
+      header.top - viewport.top,
+      widget.controller.position.pixels,
+    );
+  }
 
   @override
   void initState() {
@@ -81,6 +113,43 @@ class _AccordionViewportState extends State<AccordionViewport> {
       }
       _schedule();
       return;
+    }
+    final returning = _return;
+    if (returning != null) {
+      final bookmark = returning._bookmark;
+      if (returning.mounted &&
+          !returning.widget.expanded &&
+          bookmark != null &&
+          identical(bookmark.position, widget.controller.position)) {
+        if (!bookmark.materialized) {
+          // A lazy reverse list may still have the expanded heading in its
+          // keep-alive bucket. First lay out the collapsed row near its saved
+          // position; only then use its current content displacement.
+          setState(() => bookmark.materialized = true);
+          bookmark.position.jumpTo(
+            bookmark.pixels.clamp(
+              bookmark.position.minScrollExtent,
+              bookmark.position.maxScrollExtent,
+            ),
+          );
+          _schedule();
+          return;
+        }
+        final header = _rect(returning._header);
+        if (header != null) {
+          // The surviving heading is a content anchor: reverse-list insertions
+          // and growth before it must not change the saved reading location.
+          final delta = header.top - viewport.top - bookmark.displacement;
+          final position = bookmark.position;
+          final target = (position.pixels + (widget.reverse ? -delta : delta))
+              .clamp(position.minScrollExtent, position.maxScrollExtent);
+          if ((target - position.pixels).abs() > 0.5) {
+            position.jumpTo(target);
+          }
+        }
+      }
+      _return = null;
+      returning._bookmark = null;
     }
     final align = _align;
     if (align != null && expanded.contains(align)) {
@@ -173,10 +242,19 @@ class AccordionAnchor extends StatefulWidget {
   State<AccordionAnchor> createState() => _AccordionAnchorState();
 }
 
+class _AccordionBookmark {
+  _AccordionBookmark(this.position, this.displacement, this.pixels);
+  final ScrollPosition position;
+  final double displacement;
+  final double pixels;
+  bool materialized = false;
+}
+
 class _AccordionAnchorState extends State<AccordionAnchor> {
   final _card = GlobalKey();
   final _header = GlobalKey();
   _AccordionViewportState? _owner;
+  _AccordionBookmark? _bookmark;
 
   @override
   void didChangeDependencies() {
@@ -186,6 +264,7 @@ class _AccordionAnchorState extends State<AccordionAnchor> {
         ?.owner;
     if (_owner != owner) {
       _owner?._entries.remove(this);
+      _bookmark = null;
       _owner = owner;
       owner?._entries.add(this);
     }
@@ -195,7 +274,13 @@ class _AccordionAnchorState extends State<AccordionAnchor> {
   @override
   void didUpdateWidget(AccordionAnchor oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!oldWidget.expanded && widget.expanded) _owner?._align = this;
+    if (!oldWidget.expanded && widget.expanded) {
+      // didUpdateWidget still sees the collapsed render tree, before the new
+      // body changes layout or the one-time expansion alignment runs.
+      _owner?._capture(this);
+    } else if (oldWidget.expanded && !widget.expanded && _bookmark != null) {
+      _owner?._return = this;
+    }
     _owner?._schedule();
   }
 
