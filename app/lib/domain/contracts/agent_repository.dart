@@ -29,8 +29,9 @@ class AgentAvailability {
 }
 
 class AgentFailure implements Exception {
-  const AgentFailure(this.message);
+  const AgentFailure(this.message, {this.outcomeUnknown = false});
   final String message;
+  final bool outcomeUnknown;
 }
 
 abstract class AgentRepository extends Repository {

@@ -26,13 +26,13 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
     await _run(() async {
       await _repo.bind(peer, room);
       return _repo.list();
-    });
+    }, reconciles: true);
   }
 
   Future<void> refresh() async {
     if (state.busy || state.invalid) return;
     _repo.refreshDiscovery();
-    await _run(_repo.list);
+    await _run(_repo.list, reconciles: true);
   }
 
   Future<void> launch(
@@ -43,6 +43,7 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
     if (!confirmed ||
         state.busy ||
         state.invalid ||
+        state.needsReconciliation ||
         state.availability?.available != true) {
       return;
     }
@@ -99,17 +100,37 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
   Future<void> _run(
     Future<AgentAvailability> Function() operation, {
     String? message,
+    bool reconciles = false,
   }) async {
+    final wasUncertain = state.needsReconciliation;
     final previous = state.availability;
-    emit(AgentsViewState(busy: true, availability: previous));
+    emit(
+      AgentsViewState(
+        busy: true,
+        availability: previous,
+        needsReconciliation: wasUncertain,
+      ),
+    );
     try {
       final result = await operation();
       if (!_disposed && !state.invalid) {
-        emit(AgentsViewState(availability: result, message: message));
+        emit(
+          AgentsViewState(
+            availability: result,
+            message: message,
+            needsReconciliation: reconciles ? false : wasUncertain,
+          ),
+        );
       }
     } on AgentFailure catch (error) {
       if (!_disposed && !state.invalid) {
-        emit(AgentsViewState(availability: previous, message: error.message));
+        emit(
+          AgentsViewState(
+            availability: previous,
+            message: error.message,
+            needsReconciliation: wasUncertain || error.outcomeUnknown,
+          ),
+        );
       }
     }
   }

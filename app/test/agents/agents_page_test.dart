@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:app/domain/contracts/agent_repository.dart';
 import 'package:app/ui/agents/agents_page.dart';
 import 'package:app/ui/agents/viewmodels/agents_viewmodel.dart';
@@ -8,6 +9,67 @@ import 'package:provider/provider.dart';
 import 'agents_viewmodel_test.dart' show Repo;
 
 void main() {
+  testWidgets('unknown outcome disables Start until list refresh succeeds', (
+    tester,
+  ) async {
+    final repo = Repo();
+    final vm = AgentsViewModel(repo);
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: vm,
+        child: MaterialApp(
+          theme: buildDarkTheme(),
+          home: const AgentsPage(
+            target: AgentsTarget('peer', 'room', 'Laptop', 'Project'),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    repo.pending = Completer<ManagedAgent>();
+    final launch = vm.launch('/p', null, confirmed: true);
+    repo.pending!.completeError(
+      const AgentFailure(
+        'Timed out; refresh before retry',
+        outcomeUnknown: true,
+      ),
+    );
+    await launch;
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Start agent'),
+          )
+          .onPressed,
+      null,
+    );
+    repo.listFails = true;
+    await vm.refresh();
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Start agent'),
+          )
+          .onPressed,
+      null,
+    );
+    repo.listFails = false;
+    await vm.refresh();
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Start agent'),
+          )
+          .onPressed,
+      isNotNull,
+    );
+    await tester.pumpWidget(const SizedBox());
+    vm.dispose();
+  });
+
   testWidgets(
     'explicit host, default directory, trust/lifetime confirmation and cancel',
     (tester) async {

@@ -135,6 +135,7 @@ class AgentRepositoryImpl extends AgentRepository {
           type == 'agent_list_result'
               ? 'No capability reply. Update the host Remote Pi extension and try again.'
               : 'Host response timed out. Refresh before retrying; the operation may have completed.',
+          outcomeUnknown: type != 'agent_list_result',
         ),
       );
     });
@@ -146,7 +147,10 @@ class AgentRepositoryImpl extends AgentRepository {
         if (p != null) {
           p.timer.cancel();
           p.completer.completeError(
-            const AgentFailure('Could not send to selected host.'),
+            AgentFailure(
+              'Could not send to selected host. Refresh before retrying.',
+              outcomeUnknown: type != 'agent_list_result',
+            ),
           );
         }
       }),

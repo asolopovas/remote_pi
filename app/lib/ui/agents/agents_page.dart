@@ -124,7 +124,10 @@ class _AgentsPageState extends State<AgentsPage> {
           ),
           const SizedBox(height: 12),
           FilledButton(
-            onPressed: disabled || availability?.available != true
+            onPressed:
+                disabled ||
+                    state.needsReconciliation ||
+                    availability?.available != true
                 ? null
                 : () => _confirm(),
             child: const Text('Start agent'),

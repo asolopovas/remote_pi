@@ -19,6 +19,7 @@ class Repo extends AgentRepository {
     agents: [agent],
   );
   int launches = 0, stops = 0;
+  bool listFails = false;
   final invalid = StreamController<void>.broadcast();
   Completer<ManagedAgent>? pending;
   @override
@@ -26,7 +27,11 @@ class Repo extends AgentRepository {
   @override
   Future<void> bind(String peer, String room) async {}
   @override
-  Future<AgentAvailability> list() async => availability;
+  Future<AgentAvailability> list() async {
+    if (listFails) throw const AgentFailure('List failed');
+    return availability;
+  }
+
   @override
   Future<ManagedAgent> launch(String cwd, String? name) async {
     launches++;
@@ -48,6 +53,38 @@ class Repo extends AgentRepository {
 }
 
 void main() {
+  test(
+    'unknown launch outcome requires successful list before a new request',
+    () async {
+      final repo = Repo();
+      final subject = AgentsViewModel(repo);
+      await subject.initialize('peer', 'room');
+      repo.pending = Completer<ManagedAgent>();
+      final start = subject.launch('/p', null, confirmed: true);
+      repo.pending!.completeError(
+        const AgentFailure('Timed out', outcomeUnknown: true),
+      );
+      await start;
+      expect(subject.state.needsReconciliation, true);
+      await subject.launch('/p', null, confirmed: true);
+      expect(repo.launches, 1);
+      await subject.stop('managed', confirmed: true);
+      expect(subject.state.needsReconciliation, true);
+      repo.listFails = true;
+      await subject.refresh();
+      expect(subject.state.needsReconciliation, true);
+      await subject.launch('/p', null, confirmed: true);
+      expect(repo.launches, 1);
+      repo.listFails = false;
+      await subject.refresh();
+      expect(subject.state.needsReconciliation, false);
+      repo.pending = null;
+      await subject.launch('/p', null, confirmed: true);
+      expect(repo.launches, 2);
+      subject.dispose();
+    },
+  );
+
   test('confirmation, duplicate suppression and managed-only stop', () async {
     final repo = Repo();
     final subject = AgentsViewModel(repo);

@@ -166,6 +166,21 @@ void main() {
         ),
       );
     });
+    test(
+      'launch timeout marks outcome unknown for mandatory reconciliation',
+      () async {
+        await expectLater(
+          repo.launch('/p', null),
+          throwsA(
+            isA<AgentFailure>().having(
+              (e) => e.outcomeUnknown,
+              'unknown outcome',
+              true,
+            ),
+          ),
+        );
+      },
+    );
     test('correlated error is human readable', () async {
       final pending = repo.list();
       channel.messages.add(
