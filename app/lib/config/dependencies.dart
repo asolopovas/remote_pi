@@ -1,3 +1,5 @@
+import 'package:app/data/agents/agent_repository_impl.dart';
+import 'package:app/ui/agents/viewmodels/agents_viewmodel.dart';
 import 'dart:async';
 import 'dart:io' show Platform;
 
@@ -128,7 +130,18 @@ Future<void> setupDependencies() async {
     () => ActionsRepository(_injector.get<ConnectionManager>()),
   );
 
+  _injector.addOther<AgentMutationJournal>(AgentMutationJournal.new);
+
   // ViewModels
+  _injector.addViewModel<AgentsViewModel>(
+    () => AgentsViewModel(
+      AgentRepositoryImpl(
+        _injector.get<ConnectionManager>(),
+        _injector.get<PairingStorage>(),
+        _injector.get<AgentMutationJournal>(),
+      ),
+    ),
+  );
   _injector.addViewModel<ChatViewModel>(
     () => ChatViewModel(
       _injector.get<SessionReadRepository>(),

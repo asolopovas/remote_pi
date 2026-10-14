@@ -83,6 +83,56 @@ class _LocalRelay {
 
 void main() {
   test(
+    'agent replies and correlated errors require exact authenticated room',
+    () async {
+      final relay = await _LocalRelay.start();
+      final ch = PlainPeerChannel(transport: await relay.connect());
+      final messages = <ServerMessage>[];
+      final sub = ch.serverMessages.listen(messages.add);
+      Map<String, dynamic> envelope(
+        Map<String, dynamic> inner, {
+        String? room,
+      }) => {
+        'peer': _peer,
+        'room': ?room,
+        'ct': base64.encode(utf8.encode(jsonEncode(inner))),
+      };
+      final result = {
+        'type': 'agent_list_result',
+        'in_reply_to': 'list',
+        'available': true,
+        'cwd': '/p',
+        'max_agents': 4,
+        'agents': [],
+      };
+      final error = {
+        'type': 'error',
+        'in_reply_to': 'list',
+        'code': 'invalid_message',
+        'message': 'bad',
+      };
+      try {
+        await ch.send(AgentList('list'));
+        final sentinel = ch.serverMessages.firstWhere(
+          (m) => m is Pong && m.inReplyTo == 'done',
+        );
+        relay.send(envelope(result));
+        relay.send(envelope(error));
+        relay.send(envelope(result, room: 'other'));
+        relay.send(envelope(result, room: 'project'));
+        relay.send(_pong(_peer, 'done'));
+        await sentinel;
+        expect(messages.whereType<AgentListResult>().length, 1);
+        expect(messages.whereType<ErrorMessage>(), isEmpty);
+      } finally {
+        await sub.cancel();
+        await ch.close();
+        await relay.close();
+      }
+    },
+  );
+
+  test(
     'WsTransport accepts expected standard/url-safe sender and scopes outgoing probe',
     () async {
       final relay = await _LocalRelay.start();

@@ -187,7 +187,27 @@ export type ExtensionUiResponseWire =
       ask: AskResponseEnrichmentWire;
     };
 
+export interface ManagedAgent {
+  agent_id: string;
+  name: string;
+  cwd: string;
+  room_id: string;
+  state: "starting" | "running" | "stopped" | "failed";
+  error?: string;
+}
+
+export type AgentRequest =
+  | { type: "agent_list"; id: string }
+  | { type: "agent_launch"; id: string; launcher_id: string; cwd: string; name?: string }
+  | { type: "agent_stop"; id: string; agent_id: string };
+
+export type AgentResult =
+  | { type: "agent_list_result"; in_reply_to: string; available: boolean; launcher_id?: string; reason?: string; cwd: string; max_agents: number; agents: ManagedAgent[] }
+  | { type: "agent_launch_result"; in_reply_to: string; agent: ManagedAgent }
+  | { type: "agent_stop_result"; in_reply_to: string; agent: ManagedAgent };
+
 export type ClientMessage =
+  | AgentRequest
   | { type: "pair_request"; id: string; token: string; device_name: string }
   // Plan/30: optional `images` carry inline base64 attachments (one today).
   // Omitted entirely on text-only messages — the no-image path is unchanged.
@@ -276,6 +296,7 @@ export type SessionHistoryEvent =
   | { ts: number; type: "compaction"; summary: string; tokens_before: number };
 
 export type ServerMessage =
+  | AgentResult
   | {
       type: "pair_ok";
       in_reply_to: string;

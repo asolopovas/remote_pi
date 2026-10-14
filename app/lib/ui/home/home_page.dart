@@ -1,3 +1,4 @@
+import 'package:app/ui/agents/agents_page.dart';
 import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart' show RoomInfo;
@@ -97,6 +98,11 @@ class HomePage extends StatelessWidget {
       automaticallyImplyLeading: false,
       actions: [
         IconButton(
+          tooltip: 'Start agent',
+          icon: Icon(LucideIcons.plus, color: colors.accent),
+          onPressed: () => _chooseLauncher(context, vm, state),
+        ),
+        IconButton(
           tooltip: 'Settings',
           icon: Icon(LucideIcons.settings, color: colors.muted2),
           // Tablet → bottom sheet (keeps the chat in context); phone →
@@ -153,7 +159,7 @@ class HomePage extends StatelessWidget {
               // Compact title — fades IN as we collapse.
               Positioned(
                 left: 20,
-                right: 64, // leave space for the actions icon
+                right: 112, // reserve both Start agent and Settings actions
                 top: 0,
                 height: 56,
                 child: IgnorePointer(
@@ -378,6 +384,57 @@ class HomePage extends StatelessWidget {
   // ---------------------------------------------------------------------------
   // Long-press menu (preserved from prior plan-17 wiring)
   // ---------------------------------------------------------------------------
+
+  void _chooseLauncher(
+    BuildContext context,
+    HomeViewModel vm,
+    HomeState state,
+  ) {
+    final online = state is HomeList
+        ? state
+              .items(normalizeEpk: toStandardB64)
+              .where(
+                (item) => vm.isRoomLive(item.peer.remoteEpk, item.room.roomId),
+              )
+              .toList()
+        : <HomeItem>[];
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheet) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(
+              title: Text('Start agent · choose an online paired session'),
+            ),
+            if (online.isEmpty)
+              const ListTile(
+                title: Text('No online paired sessions available.'),
+              ),
+            for (final item in online)
+              ListTile(
+                title: Text(_deviceFor(item.peer)),
+                subtitle: Text(
+                  '${_titleFor(item.peer, item.room)} · ${item.room.roomId}',
+                ),
+                onTap: () {
+                  Navigator.of(sheet).pop();
+                  context.push(
+                    '/agents',
+                    extra: AgentsTarget(
+                      item.peer.remoteEpk,
+                      item.room.roomId,
+                      _deviceFor(item.peer),
+                      _titleFor(item.peer, item.room),
+                    ),
+                  );
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 
   void _showSessionMenu(
     BuildContext context,

@@ -1,3 +1,4 @@
+import 'package:app/domain/contracts/agent_repository.dart';
 import 'dart:convert';
 
 // ignore_for_file: lines_longer_than_80_chars
@@ -924,6 +925,9 @@ sealed class ServerMessage {
   factory ServerMessage.fromJson(Map<String, dynamic> json) {
     final type = json['type'] as String?;
     return switch (type) {
+      'agent_list_result' => AgentListResult.fromJson(json),
+      'agent_launch_result' ||
+      'agent_stop_result' => AgentMutationResult.fromJson(json),
       'agent_chunk' => AgentChunk.fromJson(json),
       'agent_done' => AgentDone.fromJson(json),
       'tool_request' => ToolRequest.fromJson(json),
@@ -1817,4 +1821,84 @@ class ExtensionUiResponse extends ClientMessage {
     if (ask != null) m['ask'] = ask!.toJson();
     return m;
   }
+}
+
+class AgentList extends ClientMessage {
+  AgentList(this.id);
+  final String id;
+  @override
+  Map<String, dynamic> toJson() => {'type': 'agent_list', 'id': id};
+}
+
+class AgentLaunch extends ClientMessage {
+  AgentLaunch(this.id, this.cwd, this.name, this.launcherId);
+  final String id, cwd, launcherId;
+  final String? name;
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'agent_launch',
+    'id': id,
+    'launcher_id': launcherId,
+    'cwd': cwd,
+    if (name != null) 'name': name,
+  };
+}
+
+class AgentStop extends ClientMessage {
+  AgentStop(this.id, this.agentId);
+  final String id, agentId;
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'agent_stop',
+    'id': id,
+    'agent_id': agentId,
+  };
+}
+
+ManagedAgent _managedAgent(Map<String, dynamic> j) {
+  final state = j['state'] as String;
+  if (!const ['starting', 'running', 'stopped', 'failed'].contains(state)) {
+    throw const FormatException('Invalid managed agent state');
+  }
+  return ManagedAgent(
+    agentId: j['agent_id'] as String,
+    name: j['name'] as String,
+    cwd: j['cwd'] as String,
+    roomId: j['room_id'] as String,
+    state: state,
+    error: j['error'] as String?,
+  );
+}
+
+class AgentListResult extends ServerMessage {
+  AgentListResult(this.inReplyTo, this.availability);
+  final String inReplyTo;
+  final AgentAvailability availability;
+  factory AgentListResult.fromJson(Map<String, dynamic> j) => AgentListResult(
+    j['in_reply_to'] as String,
+    AgentAvailability(
+      available: j['available'] as bool,
+      launcherId: j['launcher_id'] as String?,
+      reason: j['reason'] as String?,
+      cwd: j['cwd'] as String,
+      maxAgents: j['max_agents'] as int,
+      agents: List.unmodifiable(
+        (j['agents'] as List).map(
+          (a) => _managedAgent(a as Map<String, dynamic>),
+        ),
+      ),
+    ),
+  );
+}
+
+class AgentMutationResult extends ServerMessage {
+  AgentMutationResult(this.type, this.inReplyTo, this.agent);
+  final String type, inReplyTo;
+  final ManagedAgent agent;
+  factory AgentMutationResult.fromJson(Map<String, dynamic> j) =>
+      AgentMutationResult(
+        j['type'] as String,
+        j['in_reply_to'] as String,
+        _managedAgent(j['agent'] as Map<String, dynamic>),
+      );
 }

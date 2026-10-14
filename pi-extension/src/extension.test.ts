@@ -6368,3 +6368,144 @@ describe("UUID-scoped room display producer", () => {
     expect(displayHarness.query).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── plan/94: paired channel launch authorization and routing ────────────────
+describe("phone agent request routing", () => {
+  let handleSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(async () => {
+    _setDisposedForTest(false);
+    _knownPeers.length = 0;
+    const stop = captureHandler("remote-pi stop"); await stop("", makeMockCtx());
+    const { ManagedAgents } = await import("./session/managed_agents.js");
+    handleSpy = vi.spyOn(ManagedAgents.prototype, "handle").mockImplementation(async (_owner, request) => ({
+      type: "agent_list_result", in_reply_to: request.id, available: true, cwd: "/fixture", max_agents: 4, agents: [],
+    }));
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx());
+    _knownPeers.push({ name: "phone-label-not-identity", remote_epk: OWNER_URL_SAFE_FIXTURE, paired_at: "2026-01-01" });
+  });
+  afterEach(async () => {
+    await captureEventHandler("session_shutdown")({ type: "session_shutdown" });
+    _setDisposedForTest(false);
+    handleSpy.mockRestore(); vi.unstubAllEnvs();
+    _knownPeers.length = 0;
+  });
+  const replies = () => relayRef.current!.send.mock.calls.map(c => decodeSentCt(c[0] as string));
+  const send = (message: object, peer = OWNER_STANDARD_FIXTURE) => relayRef.current!.emit("message", makeInnerLine(peer,
+    "type" in message && message.type === "agent_launch" ? { launcher_id: "fixture-launcher", ...message } : message));
+
+  test("known paired canonical Owner routes launch/list/stop only to the sender", async () => {
+    send({ type: "agent_list", id: "list" });
+    await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ peer: OWNER_STANDARD_FIXTURE, inner: expect.objectContaining({ in_reply_to: "list" }) })));
+    expect(handleSpy).toHaveBeenLastCalledWith(OWNER_STANDARD_FIXTURE, { type: "agent_list", id: "list" }, expect.any(Function));
+    send({ type: "agent_launch", id: "launch", cwd: "/fixture", name: "reviewer" });
+    send({ type: "agent_stop", id: "stop", agent_id: "server-owned" });
+    await vi.waitFor(() => expect(handleSpy).toHaveBeenCalledTimes(3));
+    expect(replies().filter(r => ["launch", "stop"].includes(String(r.inner.in_reply_to))).every(r => r.peer === OWNER_STANDARD_FIXTURE)).toBe(true);
+  });
+  test("unpaired peer cannot launch or discover capability", async () => {
+    send({ type: "agent_launch", id: "unpaired", cwd: "/fixture" }, OTHER_OWNER_STANDARD_FIXTURE);
+    await new Promise(r => setTimeout(r, 30));
+    expect(handleSpy).not.toHaveBeenCalled(); expect(replies().some(r => r.inner.in_reply_to === "unpaired")).toBe(false);
+  });
+  test("rechecks the current peer store after attachment; cannot launch after revocation", async () => {
+    send({ type: "agent_list", id: "attach" }); await vi.waitFor(() => expect(handleSpy).toHaveBeenCalledTimes(1));
+    _knownPeers.length = 0;
+    send({ type: "agent_launch", id: "revoked", cwd: "/fixture" });
+    await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ inner: expect.objectContaining({ type: "error", in_reply_to: "revoked", code: "invalid_message" }) })));
+    expect(handleSpy).toHaveBeenCalledTimes(1);
+  });
+  test("rejects malformed launch fields and payload identity aliases before launch", async () => {
+    send({ type: "agent_launch", id: "alias", cwd: "/fixture", owner: OWNER_STANDARD_FIXTURE });
+    await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ inner: expect.objectContaining({ type: "error", in_reply_to: "alias", code: "invalid_message" }) })));
+    expect(handleSpy).not.toHaveBeenCalled();
+    send({ type: "agent_launch", id: "bad", cwd: ["/fixture"] });
+    await vi.waitFor(() => expect(replies().some(r => r.inner.in_reply_to === "bad" && r.inner.type === "error")).toBe(true));
+    expect(handleSpy).not.toHaveBeenCalled();
+  });
+  test("managed children advertise unavailable and reject recursive launch/stop", async () => {
+    vi.stubEnv("REMOTE_PI_MANAGED_CHILD", "1");
+    send({ type: "agent_list", id: "list-child" });
+    await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ inner: expect.objectContaining({ type: "agent_list_result", available: false, in_reply_to: "list-child", agents: [] }) })));
+    send({ type: "agent_launch", id: "recursive", cwd: "/fixture" });
+    send({ type: "agent_stop", id: "recursive-stop", agent_id: "any" });
+    await vi.waitFor(() => expect(replies().filter(r => r.inner.code === "unsupported_type")).toHaveLength(2));
+    expect(handleSpy).not.toHaveBeenCalled();
+  });
+  test("phone disconnect does not revoke an accepted launch; stale channel receives no completed reply", async () => {
+    const pending = deferred<import("./protocol/types.js").ServerMessage>();
+    let authorize: (() => Promise<boolean>) | undefined;
+    handleSpy.mockImplementationOnce((_owner, _request, authorized) => { authorize = authorized; return pending.promise; });
+    send({ type: "agent_launch", id: "disconnecting", cwd: "/fixture" });
+    await vi.waitFor(() => expect(authorize).toBeDefined());
+    _onPeerDisconnect(OWNER_STANDARD_FIXTURE);
+    expect(await authorize!()).toBe(true);
+    pending.resolve({ type: "agent_list_result", in_reply_to: "disconnecting", available: true, cwd: "/fixture", max_agents: 4, agents: [] });
+    await new Promise(r => setTimeout(r, 20));
+    expect(replies().some(r => r.inner.in_reply_to === "disconnecting")).toBe(false);
+  });
+  test("session shutdown awaits the session-owned child manager", async () => {
+    send({ type: "agent_list", id: "list" }); await vi.waitFor(() => expect(handleSpy).toHaveBeenCalledTimes(1));
+    const { ManagedAgents } = await import("./session/managed_agents.js");
+    const shutdown = vi.spyOn(ManagedAgents.prototype, "shutdown");
+    await captureEventHandler("session_shutdown")({ type: "session_shutdown" });
+    expect(shutdown).toHaveBeenCalledTimes(1); shutdown.mockRestore();
+  });
+});
+
+describe("managed phone child startup and orphan guard", () => {
+  test("IPC readiness requires independent identity, local admission and an open published relay room", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "managed-ready-"));
+    const savedSend = process.send; const savedConnected = process.connected;
+    const send = vi.fn(); process.send = send; process.connected = true;
+    vi.stubEnv("REMOTE_PI_MANAGED_CHILD", "1"); vi.stubEnv("REMOTE_PI_DAEMON", "1");
+    vi.stubEnv("PI_SUBAGENT_CHILD", undefined);
+    vi.stubEnv("REMOTE_PI_DIRECT_CONFIG", JSON.stringify({ agent_name: "phone-agent-unique", auto_start_relay: true }));
+    const globals = await import("./session/global_config.js");
+    const ensure = vi.spyOn(globals, "ensureGlobalDirs").mockImplementation(() => {});
+    const skills = vi.spyOn(globals, "skillsDir").mockReturnValue(join(cwd, "skills"));
+    const { MeshNode } = await import("./session/mesh_node.js");
+    const connect = vi.spyOn(MeshNode.prototype, "connect").mockResolvedValue(undefined);
+    try {
+      _setDisposedForTest(false); _resetCwdLockForTest();
+      await captureHandler("remote-pi stop")("", makeMockCtx());
+      await captureHandler("remote-pi")("", makeMockCtx(cwd));
+      const { roomIdFor } = await import("./rooms.js");
+      expect(send).toHaveBeenCalledWith({ type: "remote_pi_managed_ready", name: "phone-agent-unique", room_id: roomIdFor(cwd, "phone-agent-unique"), ok: true }, expect.any(Function));
+      expect(_getLockedNameForTest()).toBe("phone-agent-unique");
+      expect(_getState()).toBe("started");
+      // A second process with the same identity is rejected, not taken over or
+      // silently renamed. The parent must see failure, never false readiness.
+      await captureEventHandler("session_shutdown")({ type: "session_shutdown" });
+      _setDisposedForTest(false);
+      const lock = await acquireCwdLock(cwd, "phone-agent-unique");
+      expect(lock.ok).toBe(true);
+      try {
+        send.mockClear(); await captureHandler("remote-pi")("", makeMockCtx(cwd));
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: "remote_pi_managed_ready", ok: false }), expect.any(Function));
+      } finally { if (lock.ok) lock.release(); }
+    } finally {
+      await captureEventHandler("session_shutdown")({ type: "session_shutdown" });
+      process.send = savedSend; process.connected = savedConnected;
+      ensure.mockRestore(); skills.mockRestore(); connect.mockRestore();
+      vi.unstubAllEnvs(); _setDisposedForTest(false); _resetCwdLockForTest();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+  test("losing launcher IPC requests RPC SIGTERM shutdown and bounds orphan lifetime", async () => {
+    const savedSend = process.send;
+    const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+    process.send = vi.fn(); vi.stubEnv("REMOTE_PI_MANAGED_CHILD", "1"); vi.useFakeTimers();
+    const shutdown = captureEventHandler("session_shutdown");
+    try {
+      process.emit("disconnect");
+      expect(kill).toHaveBeenCalledWith(process.pid, "SIGTERM");
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(kill).toHaveBeenCalledWith(process.pid, "SIGKILL");
+    } finally {
+      await shutdown({ type: "session_shutdown" });
+      vi.clearAllTimers(); vi.useRealTimers(); kill.mockRestore(); process.send = savedSend;
+      vi.unstubAllEnvs(); _setDisposedForTest(false);
+    }
+  });
+});

@@ -278,6 +278,60 @@ O SDK `@mariozechner/pi-coding-agent` não expõe API genérica de invocação d
 
 Detalhes em `plan/28-pi-commands.md`.
 
+### Additional agents from the phone (plan/94)
+
+These requests use the **existing paired room channel**, not relay control frames
+or mesh `agent_send` envelopes. The selected online Pi is the launching host.
+They create additional fresh Pi processes; `session_new` still replaces the
+current conversation and is not a process-launch operation.
+
+| Request | Successful reply |
+|---|---|
+| `agent_list {id}` | `agent_list_result {in_reply_to, available, launcher_id?, reason?, cwd, max_agents, agents}` |
+| `agent_launch {id, launcher_id, cwd, name?}` | `agent_launch_result {in_reply_to, agent}` |
+| `agent_stop {id, agent_id}` | `agent_stop_result {in_reply_to, agent}` |
+
+A managed `agent` has `agent_id`, `name`, canonical `cwd`, `room_id`, `state`
+(`starting`, `running`, `stopped`, or `failed`), and optional `error`. Failures
+use the existing correlated `error {in_reply_to, code, message}` envelope.
+`agent_list` discovers support and supplies the launcher's default directory.
+Older extensions may ignore these messages: clients must time out rather than
+assume support. `available: false` includes an explanation.
+
+The launch form takes an existing directory and an optional display name—not a
+shell command, executable, environment, prompt, or arbitrary CLI flags. Starting
+explicitly authorizes loading trusted local project configuration/code, just as
+a local Pi launch does. The phone must explain this before submission.
+
+The launching Pi owns a bounded set of headless children. They survive phone
+network disconnects but are stopped when that Pi exits or its launching session
+is replaced/resumed/reloaded; this is not persistent daemon registration. Each starts a fresh conversation and unique
+identity, including in a directory already used by another agent. No existing
+session is resumed, replaced, or stopped. Managed children cannot recursively
+expose the launch facility. They appear through normal room discovery; process
+readiness does not imply that the phone has already discovered or connected to
+the new room.
+
+Ownership is derived from the authenticated paired channel, never a supplied
+owner field or human-readable peer alias. Listing/stopping is scoped to that
+owner, and stop accepts a managed agent ID, never an arbitrary PID. Launch IDs
+are idempotency keys within the launcher's bounded owner-scoped request history:
+replaying the same request must not create another child, and conflicting
+payloads with the same ID fail. Clients must retain the selected `(peer, room,
+channel)` across confirmation and dispatch, reject stale replies, and reconcile
+uncertain outcomes before starting another process. An empty list alone is not
+proof that a pending launch completed. Available launchers supply a fresh
+`launcher_id` for each host-session incarnation; every launch must echo it and
+the host rejects mismatches before spawning. The phone retains pending mutation
+IDs/payloads for its app-process lifetime, verifies the current incarnation, then
+replays the original request before refreshing the list. A changed incarnation
+never triggers automatic relaunch: it requires fresh Start confirmation.
+Read-only lists do not consume mutation-history capacity.
+
+This feature inherits the existing endpoint pairing and TLS trust boundary.
+It does **not** add E2E authentication against a malicious relay operator; see
+[Trust Model](#modelo-de-proteção-trust-model).
+
 ---
 
 ## Imagens (plan/30)
