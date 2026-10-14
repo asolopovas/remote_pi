@@ -27,6 +27,10 @@ Baseline source is `3ff9f636` on `readable-android-fonts`, fork remote `origin`.
 7. Install in place (`adb install -r`) on the named physical device. Inspect Home live presence at a shared metadata cutoff, foreground/reconnect behavior and fresh process logs. Verify ordinary primary visibility and automatic-child exclusion without foreign chat prompts or manufactured agents. Screenshots/processes alone are not proof of prevention.
 8. Integrate only accepted worker changes without overwriting existing work. Inspect staged exact-file diff for unintended files/secrets, commit and push current fork branch without force. Confirm remote commit and artifact/source correspondence. No GitHub release publication is required by this request.
 
+## Current roster checkpoint — 2026-10-14
+
+A fresh metadata cutoff for the user's repeated names/count request finds exactly two interactive primary Pi processes (mbot and remote-pi), matching TUIOS's two native-session-bound Pi windows. Physical phone code40 Home reports Online2 / Offline6 / All8. The current online count is correct; historical missing dotfiles roots and stale checkpoints must not be counted as current processes. No App arithmetic change is justified by this snapshot. Managed-child automatic Relay exclusion passes in the full Extension regression suite (938 passed / 3 skipped). Producer name-sync runtime delivery and idle-only reload status are recorded in plan81; this checkpoint does not retrospectively close all historical plan84 acceptance/publication gates.
+
 ## Definition of Done
 
 - [ ] Missing-primary cause established and bounded correction accepted.
