@@ -4545,7 +4545,7 @@ function _abortCurrentTurn(
 
 function _getSecureLauncher(cwd: string): SecureLauncher {
   if (_secureLauncher) return _secureLauncher;
-  const launcher = new SecureLauncher({ cwd, extensionPath: fileURLToPath(import.meta.url),
+  const launcher: SecureLauncher = new SecureLauncher({ cwd, extensionPath: fileURLToPath(import.meta.url),
     keypair: async () => { if (!_cachedEd25519) throw new Error("Host identity unavailable"); return _cachedEd25519; },
     paired: async owner => !!await _findKnownPeer(owner),
     current: () => !_disposed && _secureLauncher === launcher,

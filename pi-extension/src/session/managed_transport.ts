@@ -53,10 +53,11 @@ export class ManagedRoom {
   constructor(private readonly opts: Options) { this.relay = new RelayClient(opts.url, opts.keypair); }
   async connect(): Promise<void> {
     this.relay.on("message", this.receive);
+    this.relay.once("close", this.fail);
     this.opts.child.on("message", this.publish);
     this.opts.child.once("exit", this.close);
     try {
-      await this.relay.connect({ roomId: this.opts.agent.room_id, roomMeta: { name: this.opts.agent.name, cwd: this.opts.agent.cwd } });
+      await this.relay.connect({ managed: true, roomId: this.opts.agent.room_id, roomMeta: { name: this.opts.agent.name, cwd: this.opts.agent.cwd } });
       if (this.closed || !managedChildConnected(this.opts.child)) throw new Error("Child closed during publication");
       sendToManagedChild(this.opts.child, { type: "managed_init", owner: this.opts.owner, room_id: this.opts.agent.room_id, epoch: this.opts.currentEpoch() });
     } catch (error) { this.close(); throw error; }
@@ -76,7 +77,7 @@ export class ManagedRoom {
     void (async () => {
       try {
         if (!await this.opts.authorized(epoch) || this.closed || epoch !== this.opts.currentEpoch() || !managedChildConnected(this.opts.child)) {
-          if (!this.closed && await this.opts.paired()) this.relay.send(JSON.stringify({ peer: this.opts.owner, ct: Buffer.from(JSON.stringify({ type: "error", in_reply_to: message.id, code: "invalid_message", message: "Launcher locked, expired or unavailable; unlock the launching host" })).toString("base64") }));
+          if (!this.closed && await this.opts.paired()) this.send(JSON.stringify({ peer: this.opts.owner, ct: Buffer.from(JSON.stringify({ type: "error", in_reply_to: message.id, code: "invalid_message", message: "Launcher locked, expired or unavailable; unlock the launching host" })).toString("base64") }));
           return;
         }
         // Read-only snapshots/pings remain fresh; mutations never evict IDs.
@@ -102,9 +103,11 @@ export class ManagedRoom {
       try {
         if (!await this.opts.authorized(epoch) || this.closed || epoch !== this.opts.currentEpoch()) return;
         // Child cannot select Owner, room or arbitrary relay control frame.
-        this.relay.send(JSON.stringify({ peer: this.opts.owner, ct: Buffer.from(serialized).toString("base64") }));
+        this.send(JSON.stringify({ peer: this.opts.owner, ct: Buffer.from(serialized).toString("base64") }));
       } finally { this.outboundInflight--; }
     })().catch(() => {});
   };
-  close = (): void => { this.closed = true; this.opts.child.off("exit", this.close); this.relay.off("message", this.receive); this.opts.child.off("message", this.publish); this.relay.close(); }
+  private send(line: string): void { if (!this.closed) this.relay.sendManaged(line, this.fail); }
+  private fail = (): void => { if (this.closed) return; this.close(); this.opts.child.kill("SIGKILL"); };
+  close = (): void => { this.closed = true; this.opts.child.off("exit", this.close); this.relay.off("message", this.receive); this.relay.off("close", this.fail); this.opts.child.off("message", this.publish); this.relay.terminateManaged(); }
 }
