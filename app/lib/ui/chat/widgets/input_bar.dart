@@ -28,15 +28,13 @@ class InputBar extends StatefulWidget {
   final void Function(String text) onSend;
   final VoidCallback? onCancel;
   final VoidCallback? onOpenQuickActions;
-  final VoidCallback? onStartAudio;
 
   /// Pi-side queued follow-ups. Empty means no queued messages.
   final List<QueuedMsg> queuedMessages;
   final void Function(String text)? onSetQueued;
   final void Function(String id)? onClearQueued;
 
-  /// Tap-toggle voice-input ViewModel. When null the mic falls back to the
-  /// legacy [onStartAudio] tap (and existing tests pump InputBar without it).
+  /// Tap-toggle dictation ViewModel. Null hosts show unavailable feedback.
   final VoiceInputViewModel? voice;
 
   /// Surfaces a [VoiceHint] to the host page for a snackbar /
@@ -56,7 +54,6 @@ class InputBar extends StatefulWidget {
     required this.onSend,
     this.onCancel,
     this.onOpenQuickActions,
-    this.onStartAudio,
     this.queuedMessages = const [],
     this.onSetQueued,
     this.onClearQueued,
@@ -80,9 +77,11 @@ class _InputBarState extends State<InputBar> with WidgetsBindingObserver {
   // handling would consume Enter before an ancestor ever sees it.
   late final FocusNode _focusNode = FocusNode(onKeyEvent: _onComposerKey);
   bool _empty = true;
-  // Voice owns only the text it last wrote into an initially empty field.
+  // Voice owns only the text it last wrote, preserving the starting draft.
   // Any manual text/composition edit relinquishes ownership and stops capture.
   String? _voiceText;
+  String _voicePrefix = '';
+  bool _voiceUnavailable = false;
   bool _writingVoice = false;
   StreamSubscription<String>? _transcriptSub;
 
@@ -133,14 +132,19 @@ class _InputBarState extends State<InputBar> with WidgetsBindingObserver {
         (selection.isCollapsed &&
             selection.extentOffset == _controller.text.length);
     _writingVoice = true;
-    _voiceText = text;
+    final separator =
+        _voicePrefix.isEmpty || RegExp(r'\s$').hasMatch(_voicePrefix)
+        ? ''
+        : ' ';
+    final draft = '$_voicePrefix$separator$text';
+    _voiceText = draft;
     _controller.value = TextEditingValue(
-      text: text,
+      text: draft,
       selection: atEnd
-          ? TextSelection.collapsed(offset: text.length)
+          ? TextSelection.collapsed(offset: draft.length)
           : TextSelection(
-              baseOffset: selection.baseOffset.clamp(0, text.length),
-              extentOffset: selection.extentOffset.clamp(0, text.length),
+              baseOffset: selection.baseOffset.clamp(0, draft.length),
+              extentOffset: selection.extentOffset.clamp(0, draft.length),
             ),
     );
     _writingVoice = false;
@@ -248,13 +252,16 @@ class _InputBarState extends State<InputBar> with WidgetsBindingObserver {
 
   Future<void> _onVoiceTap() async {
     final voice = widget.voice;
-    if (voice == null) return;
+    if (voice == null) {
+      setState(() => _voiceUnavailable = true);
+      return;
+    }
     if (voice.active) {
       await voice.stopAndTranscribe();
       return;
     }
-    if (!_empty) return;
-    _voiceText = '';
+    _voicePrefix = _controller.text;
+    _voiceText = _controller.text;
     await voice.startRecording();
     if (!mounted || !identical(voice, widget.voice)) return;
     final state = voice.state;
@@ -289,9 +296,8 @@ class _InputBarState extends State<InputBar> with WidgetsBindingObserver {
     final starting = voiceState is VoiceStarting;
     final reconnecting = voiceState is VoiceReconnecting;
     final voiceActive = recording || transcribing || starting || reconnecting;
-    final voiceUnsupported =
-        voiceState is VoiceUnavailable &&
-        voiceState.reason == VoiceUnavailableReason.unsupported;
+    final voiceUnavailable =
+        voiceState is VoiceUnavailable || _voiceUnavailable;
 
     // Plan/30 — attachment.
     final hasImage = attachState is AttachmentAttached;
@@ -419,26 +425,28 @@ class _InputBarState extends State<InputBar> with WidgetsBindingObserver {
                 ),
               ),
               const SizedBox(width: 10),
-              _ComposerActionButton(
-                streaming: widget.streaming,
-                hasContent: hasContent,
+              _DictationButton(
+                active: voiceActive,
                 disabled: widget.disabled,
-                onSendText: _submit,
-                onCancel: widget.onCancel,
-                onStartAudio: widget.onStartAudio,
-                voiceEnabled: widget.voice != null,
-                voiceUnsupported: voiceUnsupported,
-                voiceActive: voiceActive,
-                voiceFinalizing: transcribing,
-                onVoiceTap: _onVoiceTap,
+                finalizing: transcribing,
+                onTap: _onVoiceTap,
               ),
+              if (!voiceActive && (hasContent || widget.streaming)) ...[
+                const SizedBox(width: 8),
+                _ComposerActionButton(
+                  cancel: widget.streaming && !hasContent,
+                  disabled: widget.disabled,
+                  onSendText: _submit,
+                  onCancel: widget.onCancel,
+                ),
+              ],
               if (showInlineStop) ...[
                 const SizedBox(width: 8),
                 _InlineStopButton(onTap: widget.onCancel!),
               ],
             ],
           ),
-          if (voiceActive || voiceState is VoiceFailed || voiceUnsupported)
+          if (voiceActive || voiceState is VoiceFailed || voiceUnavailable)
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
@@ -449,8 +457,12 @@ class _InputBarState extends State<InputBar> with WidgetsBindingObserver {
                     : reconnecting
                     ? 'Restarting local dictation… · Tap mic to stop'
                     : recording
-                    ? 'Listening · ${voiceState.elapsed.inSeconds}s · Tap mic to stop'
-                    : voiceUnsupported
+                    ? 'Listening · Tap mic to stop'
+                    : voiceState is VoiceUnavailable &&
+                          voiceState.reason ==
+                              VoiceUnavailableReason.permissionDenied
+                    ? 'Microphone or speech permission denied. Enable it in Settings.'
+                    : voiceUnavailable
                     ? 'Local dictation unavailable on this device'
                     : 'Dictation ended with an error. Review recognized text.',
                 key: const Key('dictation-feedback'),
@@ -771,127 +783,94 @@ class _QuickActionsButtonState extends State<_QuickActionsButton>
   }
 }
 
-enum _ComposerMode { sendAudio, sendText, cancel }
-
-class _ComposerActionButton extends StatelessWidget {
-  const _ComposerActionButton({
-    required this.streaming,
-    required this.hasContent,
+/// The only dictation control, independent of the manual Send/agent Stop.
+class _DictationButton extends StatelessWidget {
+  const _DictationButton({
+    required this.active,
     required this.disabled,
-    required this.onSendText,
-    required this.onCancel,
-    required this.onStartAudio,
-    required this.voiceEnabled,
-    required this.voiceUnsupported,
-    required this.voiceActive,
-    required this.voiceFinalizing,
-    required this.onVoiceTap,
+    required this.finalizing,
+    required this.onTap,
   });
 
-  final bool streaming;
-
-  /// Text typed OR an image attached → the button is "send" (decision #6).
-  final bool hasContent;
+  final bool active;
   final bool disabled;
-  final VoidCallback onSendText;
-  final VoidCallback? onCancel;
-  final VoidCallback? onStartAudio;
-
-  // Plan/29 voice wiring.
-  final bool voiceEnabled;
-  final bool voiceUnsupported;
-  final bool voiceActive;
-  final bool voiceFinalizing;
-  final VoidCallback onVoiceTap;
-
-  _ComposerMode get _mode {
-    if (streaming && !hasContent) return _ComposerMode.cancel;
-    if (hasContent) return _ComposerMode.sendText;
-    return _ComposerMode.sendAudio;
-  }
-
-  IconData get _icon {
-    switch (_mode) {
-      case _ComposerMode.cancel:
-        return LucideIcons.square600;
-      case _ComposerMode.sendText:
-        return LucideIcons.send600;
-      case _ComposerMode.sendAudio:
-        return LucideIcons.mic600;
-    }
-  }
-
-  VoidCallback? _resolveTap() {
-    switch (_mode) {
-      case _ComposerMode.cancel:
-        return onCancel;
-      case _ComposerMode.sendText:
-        return disabled ? null : onSendText;
-      case _ComposerMode.sendAudio:
-        return disabled ? null : onStartAudio;
-    }
-  }
+  final bool finalizing;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    // Decision #9 edge — no on-device recognition anywhere: hide the mic so
-    // the empty field shows just the attach placeholder (dictate via keyboard).
-    if (!voiceActive && _mode == _ComposerMode.sendAudio && voiceUnsupported) {
-      return const SizedBox.shrink();
-    }
-
-    if (voiceActive || (_mode == _ComposerMode.sendAudio && voiceEnabled)) {
-      return Semantics(
-        label: voiceActive ? 'Stop dictation' : 'Start dictation',
-        button: true,
-        child: GestureDetector(
-          key: const Key('input-bar-dictation'),
-          onTap: voiceFinalizing || (disabled && !voiceActive)
-              ? null
-              : onVoiceTap,
-          child: _button(context),
+    final colors = context.colors;
+    final enabled = active || !disabled;
+    return Semantics(
+      label: active ? 'Stop dictation' : 'Start dictation',
+      button: true,
+      enabled: enabled && !finalizing,
+      child: GestureDetector(
+        key: const Key('input-bar-dictation'),
+        onTap: enabled && !finalizing ? onTap : null,
+        child: Container(
+          width: 38,
+          height: 38,
+          decoration: BoxDecoration(
+            color: active
+                ? colors.error
+                : enabled
+                ? colors.accent
+                : colors.muted.withValues(alpha: 0.3),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            LucideIcons.mic600,
+            color: enabled ? colors.onAccent : colors.muted,
+            size: 20,
+          ),
         ),
-      );
-    }
-
-    return GestureDetector(
-      key: const Key('input-bar-action'),
-      onTap: _resolveTap(),
-      child: _button(context),
+      ),
     );
   }
+}
 
-  Widget _button(BuildContext context) {
+class _ComposerActionButton extends StatelessWidget {
+  const _ComposerActionButton({
+    required this.cancel,
+    required this.disabled,
+    required this.onSendText,
+    required this.onCancel,
+  });
+
+  final bool cancel;
+  final bool disabled;
+  final VoidCallback onSendText;
+  final VoidCallback? onCancel;
+
+  @override
+  Widget build(BuildContext context) {
     final colors = context.colors;
-    final visualEnabled = !disabled;
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      width: 38,
-      height: 38,
-      decoration: BoxDecoration(
-        color: visualEnabled
-            ? colors.accent
-            : colors.muted.withValues(alpha: 0.3),
-        borderRadius: BorderRadius.circular(19),
-        boxShadow: visualEnabled
-            ? [
-                BoxShadow(
-                  color: colors.accent.withValues(alpha: 0.33),
-                  blurRadius: 16,
-                ),
-              ]
-            : null,
-      ),
-      child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 180),
-        transitionBuilder: (child, anim) => FadeTransition(
-          opacity: anim,
-          child: ScaleTransition(scale: anim, child: child),
+    return GestureDetector(
+      key: const Key('input-bar-action'),
+      onTap: cancel
+          ? onCancel
+          : disabled
+          ? null
+          : onSendText,
+      child: Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(
+          color: disabled ? colors.muted.withValues(alpha: 0.3) : colors.accent,
+          shape: BoxShape.circle,
+          boxShadow: disabled
+              ? null
+              : [
+                  BoxShadow(
+                    color: colors.accent.withValues(alpha: 0.33),
+                    blurRadius: 16,
+                  ),
+                ],
         ),
         child: Icon(
-          voiceActive ? LucideIcons.mic600 : _icon,
-          key: ValueKey(voiceActive ? 'dictating' : _mode),
-          color: visualEnabled ? colors.onAccent : colors.muted,
+          cancel ? LucideIcons.square600 : LucideIcons.send600,
+          color: disabled ? colors.muted : colors.onAccent,
           size: 20,
         ),
       ),

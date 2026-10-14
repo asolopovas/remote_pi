@@ -192,7 +192,6 @@ void main() {
       test('$code after $ending retains words without VoiceFailed', () async {
         final service = SpeechToTextService(
           SttPluginImpl(speech),
-          null,
           const Duration(milliseconds: 40),
         );
         final vm = VoiceInputViewModel(service);
@@ -236,7 +235,6 @@ void main() {
     test('$code with no speech reconnects with no transcript', () async {
       final service = SpeechToTextService(
         SttPluginImpl(speech),
-        null,
         const Duration(milliseconds: 20),
       );
       final vm = VoiceInputViewModel(service);
@@ -369,7 +367,6 @@ void main() {
         localeId: 'en_US',
         listenFor: const Duration(seconds: 60),
         onResult: (_, _) {},
-        onLevel: (_) {},
       );
       await newOwner.stop();
       await event(

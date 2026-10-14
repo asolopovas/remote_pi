@@ -64,7 +64,6 @@ void main() {
             localeId: 'en_US',
             listenFor: const Duration(seconds: 60),
             onResult: (_, _) {},
-            onLevel: (_) {},
           );
           await plugin.stop();
           platform.error();

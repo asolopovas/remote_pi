@@ -129,8 +129,10 @@ class _ControllableChannel implements IChannel, IControlLink {
   Stream<ControlInbound> get controlFrames => _controlCtrl.stream;
   @override
   Future<void> send(ClientMessage msg) async {}
+  final sentControls = <Map<String, dynamic>>[];
+
   @override
-  void sendControl(Map<String, dynamic> json) {}
+  void sendControl(Map<String, dynamic> json) => sentControls.add(json);
   @override
   Future<void> close() async {
     await _serverCtrl.close();
@@ -149,6 +151,37 @@ ConnectionManager _conn({_FakeStorage? storage}) {
 
 void main() {
   group('HomeViewModel', () {
+    test(
+      'manual refresh requests discovery and preserves the active filter',
+      () async {
+        final ch = _ControllableChannel();
+        final storage = _FakeStorage([_peerA]);
+        final conn = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: storage,
+        );
+        final vm = HomeViewModel(
+          storage,
+          Preferences(_FakeSecureStorage()),
+          conn,
+        );
+        await conn.connectTo(_peerA);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        vm.setFilter(HomeFilter.all);
+        ch.sentControls.clear();
+        vm.refreshRelay();
+        expect(ch.sentControls.map((frame) => frame['type']), [
+          'presence_check',
+          'rooms_check',
+        ]);
+        expect((vm.state as HomeList).filter, HomeFilter.all);
+        vm.dispose();
+        ch.sentControls.clear();
+        vm.refreshRelay();
+        expect(ch.sentControls, isEmpty);
+        conn.dispose();
+      },
+    );
     test(
       'isRoomWorking follows the relay meta.working broadcast for ANY room — '
       'including one that is NOT the connected session, and clears when the '

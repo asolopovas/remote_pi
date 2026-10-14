@@ -53,6 +53,12 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// no fresh signal on any room.
   bool get isRelayConnected => _relayConnected;
 
+  /// Request fresh discovery without restarting the relay or changing selection.
+  void refreshRelay() {
+    if (_disposed) return;
+    _conn.refreshDiscovery();
+  }
+
   /// `true` when `(epk, roomId)`'s agent is currently mid-turn. Drives
   /// the blue "working" dot on the Home tile.
   ///

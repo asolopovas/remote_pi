@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io' show Platform;
 import 'dart:ui' show PlatformDispatcher;
 
 import 'package:app/domain/contracts/contracts.dart';
@@ -14,10 +13,6 @@ abstract class SpeechService extends Service {
   /// Resolve permission + on-device availability + the locale to use.
   /// [preferredLocaleId] defaults to the platform locale when null.
   Future<SpeechAvailability> init({String? preferredLocaleId});
-
-  /// Amplitude envelope in `0..1` for the waveform. This is a volume
-  /// envelope, **not** an FFT spectrum (Risk 4).
-  Stream<double> get soundLevel;
 
   /// Begin one on-device native segment, capped at [maxDuration].
   /// [onEnded] marks a segment end, not the end of user dictation intent.
@@ -36,8 +31,8 @@ abstract class SpeechService extends Service {
   /// Abort capture and discard any accumulated transcript.
   Future<void> cancel();
 
-  /// Release the sound-level stream. Owned by the app lifecycle (the service
-  /// is a singleton); ViewModels must NOT call this.
+  /// Release native capture. Owned by the app lifecycle (the service is a
+  /// singleton); ViewModels must NOT call this.
   @override
   void dispose();
 }
@@ -71,8 +66,8 @@ final class SpeechPermissionDenied extends SpeechAvailability {
   int get hashCode => (SpeechPermissionDenied).hashCode;
 }
 
-/// No on-device recognition available for any acceptable locale — the mic is
-/// hidden (decision #9, edge case).
+/// No on-device recognition available for any acceptable locale. The composer
+/// keeps its mic visible and explains this result after an explicit tap.
 final class SpeechUnsupported extends SpeechAvailability {
   const SpeechUnsupported();
 
@@ -94,15 +89,10 @@ final class SpeechUnsupported extends SpeechAvailability {
 class SpeechToTextService implements SpeechService {
   SpeechToTextService([
     SttPlugin? plugin,
-    SoundLevelScale? levelScale,
     this.finalWait = const Duration(seconds: 2),
-  ]) : _plugin = plugin ?? SttPluginImpl(),
-       _levelScale = levelScale ?? SoundLevelScale.forPlatform();
+  ]) : _plugin = plugin ?? SttPluginImpl();
 
   final SttPlugin _plugin;
-  final SoundLevelScale _levelScale;
-  final StreamController<double> _levelController =
-      StreamController<double>.broadcast();
 
   /// Latest recognized words (partial or final). Reset on each [start].
   String _transcript = '';
@@ -117,9 +107,6 @@ class SpeechToTextService implements SpeechService {
   void Function()? _onError;
   bool _initialized = false;
   Future<void> _nativeTail = Future<void>.value();
-
-  @override
-  Stream<double> get soundLevel => _levelController.stream;
 
   @override
   Future<SpeechAvailability> init({String? preferredLocaleId}) async {
@@ -201,11 +188,6 @@ class SpeechToTextService implements SpeechService {
             _end();
           }
         },
-        onLevel: (level) {
-          if (generation == _generation && !_levelController.isClosed) {
-            _levelController.add(_levelScale.normalize(level));
-          }
-        },
       );
     });
   }
@@ -283,7 +265,6 @@ class SpeechToTextService implements SpeechService {
   void dispose() {
     _disposed = true;
     unawaited(cancel());
-    if (!_levelController.isClosed) _levelController.close();
   }
 
   // -------------------------------------------------------------------------
@@ -327,46 +308,6 @@ class SpeechToTextService implements SpeechService {
   }
 }
 
-/// Maps the plugin's raw `onSoundLevelChange` value to the `0..1` envelope the
-/// waveform renders. The raw scale is **platform-specific** because each native
-/// side computes it differently (Risk 4 — heuristic, tune on a device):
-///
-/// - **Android** (`SpeechRecognizer.onRmsChanged`) reports an `rmsdB` envelope
-///   roughly in `[-2, 10]`.
-/// - **iOS / macOS** compute `20 * log10(rms)` over the PCM buffer — a *negative*
-///   dBFS value, roughly `[-50, -10]` for typical speech.
-///
-/// A single fixed range cannot serve both: the Android range clamps every iOS
-/// sample (all `< -2`) to `0`, flat-lining the waveform even though capture and
-/// transcription work fine. So the range is chosen per platform.
-class SoundLevelScale {
-  const SoundLevelScale({required this.min, required this.max});
-
-  /// Raw value mapped to `0`; anything at or below is silence.
-  final double min;
-
-  /// Raw value mapped to `1`; anything at or above is full amplitude.
-  final double max;
-
-  /// Android `rmsdB` envelope.
-  static const SoundLevelScale android = SoundLevelScale(min: -2, max: 10);
-
-  /// iOS / macOS dBFS envelope (`20 * log10(rms)`).
-  static const SoundLevelScale darwin = SoundLevelScale(min: -50, max: -10);
-
-  /// The scale matching the native plugin on the current platform.
-  factory SoundLevelScale.forPlatform() =>
-      (Platform.isIOS || Platform.isMacOS) ? darwin : android;
-
-  /// Clamp [level] into `[min, max]` and scale to `0..1`. Tolerates `±∞`/`NaN`
-  /// (a fully silent buffer yields `log10(0) = -∞`): both clamp to an endpoint.
-  double normalize(double level) {
-    if (level.isNaN) return 0;
-    final clamped = level.clamp(min, max);
-    return (clamped - min) / (max - min);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Plugin seam
 // ---------------------------------------------------------------------------
@@ -382,7 +323,6 @@ final class SttError {
 typedef SttErrorCallback = void Function(SttError error);
 
 typedef SttResultCallback = void Function(String words, bool isFinal);
-typedef SttLevelCallback = void Function(double level);
 
 /// Thin seam over the `speech_to_text` plugin so [SpeechToTextService]'s logic
 /// can be exercised with a fake in unit tests (no platform channel / device).
@@ -400,12 +340,11 @@ abstract class SttPlugin {
   Future<List<String>> locales();
 
   /// Start an on-device listen session. [onResult] fires for partial + final
-  /// results; [onLevel] feeds the sound-level envelope.
+  /// results; no waveform or audio feedback is requested.
   Future<void> listen({
     required String localeId,
     required Duration listenFor,
     required SttResultCallback onResult,
-    required SttLevelCallback onLevel,
   });
 
   Future<void> stop();
@@ -453,13 +392,11 @@ class SttPluginImpl implements SttPlugin {
     required String localeId,
     required Duration listenFor,
     required SttResultCallback onResult,
-    required SttLevelCallback onLevel,
   }) async {
     _nativeEnded = false;
     await _stt.listen(
       onResult: (SpeechRecognitionResult r) =>
           onResult(r.recognizedWords, r.finalResult),
-      onSoundLevelChange: onLevel,
       listenOptions: stt.SpeechListenOptions(
         // Decision #7 — local recognition only; audio never leaves the device.
         onDevice: true,

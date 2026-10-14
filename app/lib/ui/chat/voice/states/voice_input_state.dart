@@ -15,21 +15,14 @@ final class VoiceIdle extends VoiceInputState {
 }
 
 /// Native capture is active; composer remains visible.
-/// [elapsed] is the running time; [level] is the `0..1` amplitude envelope.
 final class VoiceRecording extends VoiceInputState {
-  const VoiceRecording({required this.elapsed, required this.level});
-
-  final Duration elapsed;
-  final double level;
+  const VoiceRecording();
 
   @override
-  bool operator ==(Object other) =>
-      other is VoiceRecording &&
-      other.elapsed == elapsed &&
-      other.level == level;
+  bool operator ==(Object other) => other is VoiceRecording;
 
   @override
-  int get hashCode => Object.hash(elapsed, level);
+  int get hashCode => (VoiceRecording).hashCode;
 }
 
 /// Capture ended; waiting for native final/done or bounded partial fallback.
@@ -49,8 +42,8 @@ enum VoiceUnavailableReason {
   /// guides to system Settings.
   permissionDenied,
 
-  /// No on-device recognition for any acceptable locale (decision #9, edge) —
-  /// the mic is hidden.
+  /// No on-device recognition for any acceptable locale. The mic stays visible
+  /// so an explicit tap can retry and explain availability.
   unsupported,
 }
 

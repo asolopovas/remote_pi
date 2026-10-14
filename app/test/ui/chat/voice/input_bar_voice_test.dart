@@ -4,6 +4,7 @@ import 'package:app/data/voice/speech_service.dart';
 import 'package:app/ui/chat/voice/states/voice_input_state.dart';
 import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
 import 'package:app/ui/chat/widgets/input_bar.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -13,7 +14,6 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 class _FakeSpeechService implements SpeechService {
   SpeechAvailability availability = const SpeechReady('en_US');
   String transcript = 'hello from voice';
-  final _level = StreamController<double>.broadcast();
   Completer<void>? initGate;
   Completer<String>? stopGate;
   void Function(String)? live;
@@ -29,8 +29,6 @@ class _FakeSpeechService implements SpeechService {
     return availability;
   }
 
-  @override
-  Stream<double> get soundLevel => _level.stream;
   @override
   Future<void> start({
     required String localeId,
@@ -57,7 +55,7 @@ class _FakeSpeechService implements SpeechService {
   }
 
   @override
-  void dispose() => _level.close();
+  void dispose() {}
 }
 
 void main() {
@@ -160,6 +158,92 @@ void main() {
       expect(sent, ['synthetic first final synthetic second final']);
     },
   );
+
+  for (final prefix in ['manual draft', 'manual draft\n']) {
+    testWidgets('idle mic with draft "$prefix" appends live corrections', (
+      tester,
+    ) async {
+      await pumpBar(tester);
+      await tester.enterText(find.byType(TextField), prefix);
+      await tester.pumpAndSettle();
+      expect(find.byIcon(LucideIcons.mic600), findsOneWidget);
+      expect(find.bySemanticsLabel('Start dictation'), findsOneWidget);
+      expect(find.byIcon(LucideIcons.send600), findsOneWidget);
+      await tapMic(tester);
+      svc.live!('partial');
+      final separator = prefix.endsWith('\n') ? '' : ' ';
+      expect(text(tester), '$prefix${separator}partial');
+      svc.live!('corrected words');
+      await tester.pump();
+      expect(text(tester), '$prefix${separator}corrected words');
+      svc.transcript = 'final words';
+      await tapMic(tester);
+      expect(text(tester), '$prefix${separator}final words');
+      expect(sent, isEmpty);
+      expect(find.bySemanticsLabel('Start dictation'), findsOneWidget);
+    });
+  }
+
+  testWidgets('one circular red mic throughout capture and silent restart', (
+    tester,
+  ) async {
+    svc.transcript = '';
+    await pumpBar(tester);
+    final mic = find.byKey(const Key('input-bar-dictation'));
+    BoxDecoration decoration() =>
+        tester
+                .widget<Container>(
+                  find.descendant(of: mic, matching: find.byType(Container)),
+                )
+                .decoration!
+            as BoxDecoration;
+    final colors = tester.element(mic).colors;
+    expect(decoration().color, colors.accent);
+    await tapMic(tester);
+    expect(decoration().color, colors.error);
+    expect(decoration().shape, BoxShape.circle);
+    expect(find.byIcon(LucideIcons.mic600), findsOneWidget);
+    expect(find.bySemanticsLabel('Stop dictation'), findsOneWidget);
+    expect(find.textContaining(RegExp(r'\d+s')), findsNothing);
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byKey(const Key('input-bar-action')), findsNothing);
+    expect(find.byIcon(LucideIcons.square600), findsNothing);
+    expect(find.byIcon(LucideIcons.x), findsNothing);
+    svc.ended!(); // A silence-only segment must not revoke intent.
+    await tester.pump();
+    expect(vm.state, isA<VoiceReconnecting>());
+    expect(decoration().color, colors.error);
+    await tester.pump(vm.restartDelay);
+    expect(svc.startCalls, 2);
+    expect(vm.state, isA<VoiceRecording>());
+    await tapMic(tester);
+    await tester.pump(const Duration(seconds: 5));
+    expect(vm.state, isA<VoiceIdle>());
+    expect(svc.startCalls, 2);
+    expect(decoration().color, colors.accent);
+    expect(sent, isEmpty);
+  });
+
+  testWidgets('unsupported mic stays actionable with an existing draft', (
+    tester,
+  ) async {
+    svc.availability = const SpeechUnsupported();
+    await pumpBar(tester);
+    await tester.enterText(find.byType(TextField), 'keep this draft');
+    await tapMic(tester);
+    expect(find.bySemanticsLabel('Start dictation'), findsOneWidget);
+    expect(
+      find.text('Local dictation unavailable on this device'),
+      findsOneWidget,
+    );
+    expect(text(tester), 'keep this draft');
+    svc.availability = const SpeechReady('en_US');
+    await tapMic(tester);
+    expect(svc.startCalls, 1);
+    svc.live!('more words');
+    expect(text(tester), 'keep this draft more words');
+  });
 
   testWidgets('tap immediately starts dictation without a hold hint', (
     tester,
@@ -283,10 +367,16 @@ void main() {
       await pumpBar(tester);
       await tapMic(tester);
       expect(hints, [VoiceHint.permissionDenied]);
+      expect(
+        find.text(
+          'Microphone or speech permission denied. Enable it in Settings.',
+        ),
+        findsOneWidget,
+      );
       expect(find.byIcon(LucideIcons.mic600), findsOneWidget);
       svc.availability = const SpeechUnsupported();
       await tapMic(tester);
-      expect(find.byIcon(LucideIcons.mic600), findsNothing);
+      expect(find.byIcon(LucideIcons.mic600), findsOneWidget);
       expect(
         find.text('Local dictation unavailable on this device'),
         findsOneWidget,

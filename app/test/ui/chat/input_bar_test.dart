@@ -30,6 +30,26 @@ void main() {
     );
   }
 
+  testWidgets('unwired mic stays visible with text and explains availability', (
+    tester,
+  ) async {
+    await pumpBar(tester, disabled: false, streaming: false);
+    await tester.enterText(find.byType(TextField), 'manual draft');
+    await tester.pumpAndSettle();
+    expect(find.byIcon(LucideIcons.mic600), findsOneWidget);
+    await tester.tap(find.byKey(const Key('input-bar-dictation')));
+    await tester.pump();
+    expect(
+      find.text('Local dictation unavailable on this device'),
+      findsOneWidget,
+    );
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'manual draft',
+    );
+    expect(find.byIcon(LucideIcons.send600), findsOneWidget);
+  });
+
   // Plan/28 — the quick-actions button is wrapped in a SizeTransition that
   // animates it in/out. When "hidden" the widget STAYS MOUNTED and only
   // collapses to zero width (it never leaves the tree), so `findsNothing` is
@@ -140,7 +160,7 @@ void main() {
     // (see _ComposerActionButton._icon) — match those, not the plain glyphs.
     expect(find.byIcon(LucideIcons.square600), findsOneWidget); // stop
     expect(find.byIcon(LucideIcons.send600), findsNothing);
-    expect(find.byIcon(LucideIcons.mic600), findsNothing);
+    expect(find.byIcon(LucideIcons.mic600), findsOneWidget);
   });
 
   testWidgets('streaming + text uses existing send button for steer', (

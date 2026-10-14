@@ -13,9 +13,7 @@ class VoiceInputViewModel extends ViewModel<VoiceInputState> {
     this._service, {
     this.maxDuration = const Duration(seconds: 60),
     this.restartDelay = const Duration(milliseconds: 300),
-    Duration tickInterval = const Duration(milliseconds: 200),
-  }) : _tickInterval = tickInterval,
-       super(const VoiceIdle());
+  }) : super(const VoiceIdle());
 
   final SpeechService _service;
 
@@ -24,10 +22,7 @@ class VoiceInputViewModel extends ViewModel<VoiceInputState> {
 
   /// A positive gap prevents synchronous terminal callbacks from busy-looping.
   final Duration restartDelay;
-  final Duration _tickInterval;
   SpeechAvailability? _availability;
-  StreamSubscription<double>? _levelSub;
-  Timer? _ticker;
   Timer? _restart;
   int _generation = 0;
   int _segment = 0;
@@ -38,8 +33,6 @@ class VoiceInputViewModel extends ViewModel<VoiceInputState> {
   bool _stopRequested = false;
   Future<void>? _start;
   Future<void>? _segmentFinish;
-  Duration _elapsed = Duration.zero;
-  double _level = 0;
   String _committed = '';
   String _segmentText = '';
 
@@ -77,8 +70,6 @@ class VoiceInputViewModel extends ViewModel<VoiceInputState> {
     _stopRequested = false;
     _committed = '';
     _segmentText = '';
-    _elapsed = Duration.zero;
-    _level = 0;
     emit(const VoiceStarting());
     return _start = _begin(generation);
   }
@@ -91,22 +82,10 @@ class VoiceInputViewModel extends ViewModel<VoiceInputState> {
     try {
       final availability = await ensureInit();
       if (!_current(generation) || availability is! SpeechReady) return;
-      _levelSub = _service.soundLevel.listen((level) {
-        if (!_current(generation) || state is! VoiceRecording) return;
-        _level = level;
-        emit(VoiceRecording(elapsed: _elapsed, level: _level));
-      });
-      _ticker = Timer.periodic(_tickInterval, (_) {
-        if (!_current(generation)) return;
-        _elapsed += _tickInterval;
-        if (state is VoiceRecording) {
-          emit(VoiceRecording(elapsed: _elapsed, level: _level));
-        }
-      });
       await _listenSegment(generation, availability.localeId);
     } on PlatformException {
       if (_current(generation)) {
-        _stopTimers();
+        _cancelRestart();
         emit(const VoiceFailed());
       }
     }
@@ -151,8 +130,7 @@ class VoiceInputViewModel extends ViewModel<VoiceInputState> {
           _stopRequested) {
         return;
       }
-      _level = 0;
-      emit(VoiceRecording(elapsed: _elapsed, level: _level));
+      emit(const VoiceRecording());
     } on stt.ListenFailedException {
       await _failSegment(generation, segment);
     } on stt.ListenNotStartedException {
@@ -205,7 +183,7 @@ class VoiceInputViewModel extends ViewModel<VoiceInputState> {
     _segmentText = '';
     ++_segment; // fence results/errors from the completed native segment
     if (_stopRequested || _captureFailed) {
-      _stopTimers();
+      _cancelRestart();
       emit(_captureFailed ? const VoiceFailed() : const VoiceIdle());
       return;
     }
@@ -239,7 +217,7 @@ class VoiceInputViewModel extends ViewModel<VoiceInputState> {
       emit(const VoiceTranscribing());
       await _endSegment(generation, _segment);
     } else {
-      _stopTimers();
+      _cancelRestart();
       emit(_captureFailed ? const VoiceFailed() : const VoiceIdle());
     }
     return _current(generation) ? _committed : '';
@@ -251,7 +229,7 @@ class VoiceInputViewModel extends ViewModel<VoiceInputState> {
     _cancelling = true;
     _stopRequested = true;
     final generation = ++_generation;
-    _stopTimers();
+    _cancelRestart();
     // Invalidate synchronously, but don't notify while a composer is unmounting.
     await Future<void>.value();
     if (_current(generation)) emit(const VoiceTranscribing());
@@ -264,20 +242,16 @@ class VoiceInputViewModel extends ViewModel<VoiceInputState> {
     if (_current(generation)) emit(const VoiceIdle());
   }
 
-  void _stopTimers() {
+  void _cancelRestart() {
     _restart?.cancel();
     _restart = null;
-    _ticker?.cancel();
-    _ticker = null;
-    unawaited(_levelSub?.cancel());
-    _levelSub = null;
   }
 
   @override
   void dispose() {
     _disposed = true;
     ++_generation;
-    _stopTimers();
+    _cancelRestart();
     if (_nativeStarted) {
       _nativeStarted = false;
       unawaited(_service.cancel());

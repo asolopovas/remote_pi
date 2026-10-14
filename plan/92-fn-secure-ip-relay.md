@@ -68,6 +68,17 @@ This is the secure **direct-IP, existing-client-compatible** choice, not a claim
 - Active all-server pi-lens checks confirm 15 supported deployment files clean, including the final three-file correction. Dockerfile has zero reported findings but its language server does not confirm coverage; successful pinned-image build is separate evidence, not an LSP-clean claim.
 - External IPv6 probing was unavailable; no IPv6 relay/proxy binding was configured. Off-host notification/encrypted backup transport is not enrolled. The first future scheduled production renewal has not yet elapsed. TLS is not E2E. These limits remain explicit; current live service health is verified.
 
+## Restoration after operator removal — 2026-10-14 17:28 UTC
+
+Operator authorized recreating the stopped/deleted deployment. Read-only preflight found no containers, images, volumes, deployment directory or matching systemd units; ports 80/443/3000 were unused. Restored only `/opt/remote-pi-relay`, its dedicated containers/networks/external data volume and two timers. No client endpoint/pairing or unrelated service was changed.
+
+- Rebuilt from current checkout `ac1067097e9096127d9fcd962edcc087f6627c4d`; every locked source input still matches the original `source.sha256`. New immutable image ID: `sha256:3d499f1d0906477ca1344ec51cf87d4a08313e15f24add2063da7ccf21b02f95`.
+- Fresh separate staging/production issuance; trusted production YE1 IP certificate expires **2026-10-21 08:24:11 UTC**. Renewal dry-run including deploy hook passes; persistent renewal/check timers enabled.
+- Saved image: `images/relay-ac10670.tar`, SHA-256 `bc63f8f5b4ac42e3c6b655afd1491bbefd77b7f5b6482fb248fdaa55b163dbaf`; current rollback config in `rollback-ac10670/`. Original image/rollback artifacts were deleted, not recovered.
+- All 18 local deployment/probe/renewal tests pass. Live probe passes trusted HTTPS/WSS/auth rejection, membership signatures/version checks, authorized routing/denial, heartbeat, restart/reconnect/persistence and isolated backup restore. First probe exposed missing `backups/` bootstrap directory; provisioned root-only directory, then the full probe passed. Synthetic Owner state was cleaned up.
+- Independently checked trusted health/exact production certificate, enabled timers, ACME-only HTTP health 404, unpublished Relay port, isolated backend-address recreation recovery, and a retained consistent SQLite backup.
+- Removed volume contents are not recoverable from this checkout. Fresh server storage was initialized; no old membership data restoration is claimed. Existing IPv6/off-host monitoring limits remain.
+
 ## Next plans
 
 Monitor the first scheduled production renewal and enroll off-host alerts/backups through the operator's existing infrastructure when that scope is selected. Keep client migration separate from deployment acceptance. Continue the queued App dictation/Working-indicator fixes and plan 93 design refinement.

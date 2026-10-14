@@ -1,9 +1,8 @@
 import 'dart:async';
-import 'dart:io' show Platform;
 import 'package:fake_async/fake_async.dart';
 
 // Plan 29 — SpeechToTextService locale resolution + transcript / cancel /
-// level behavior, exercised through the SttPlugin seam (no device).
+// behavior, exercised through the SttPlugin seam (no device).
 
 import 'package:app/data/voice/speech_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -23,7 +22,6 @@ class _FakeSttPlugin implements SttPlugin {
   Duration? listenedFor;
 
   SttResultCallback? _onResult;
-  SttLevelCallback? _onLevel;
 
   @override
   Future<bool> initialize({
@@ -49,14 +47,12 @@ class _FakeSttPlugin implements SttPlugin {
     required String localeId,
     required Duration listenFor,
     required SttResultCallback onResult,
-    required SttLevelCallback onLevel,
   }) async {
     calls.add('listen');
     resultCallbacks.add(onResult);
     listenedLocale = localeId;
     listenedFor = listenFor;
     _onResult = onResult;
-    _onLevel = onLevel;
     if (listenGate != null) await listenGate!.future;
   }
 
@@ -76,7 +72,6 @@ class _FakeSttPlugin implements SttPlugin {
   // Test drivers.
   void emitResult(String words, {bool isFinal = false}) =>
       _onResult?.call(words, isFinal);
-  void emitLevel(double level) => _onLevel?.call(level);
 }
 
 void main() {
@@ -116,7 +111,7 @@ void main() {
       expect(a, const SpeechReady('pt_br'));
     });
 
-    test('no acceptable locale → unsupported (mic hidden)', () async {
+    test('no acceptable locale → unsupported', () async {
       final plugin = _FakeSttPlugin()..localeList = ['fr_FR'];
       final service = SpeechToTextService(plugin);
       final a = await service.init(preferredLocaleId: 'de_DE');
@@ -514,82 +509,6 @@ void main() {
         maxDuration: const Duration(seconds: 60),
       );
       expect(await service.stop(), isEmpty);
-    });
-
-    test(
-      'sound level is normalized to 0..1 on the soundLevel stream (Android scale)',
-      () async {
-        final plugin = _FakeSttPlugin();
-        // Pin the Android rmsdB scale so the assertions don't depend on the
-        // host the test runs on (forPlatform() picks darwin on macOS).
-        final service = SpeechToTextService(plugin, SoundLevelScale.android);
-        await service.init(preferredLocaleId: 'en_US');
-
-        final levels = <double>[];
-        final sub = service.soundLevel.listen(levels.add);
-
-        await service.start(
-          localeId: 'en_US',
-          maxDuration: const Duration(seconds: 60),
-        );
-        plugin.emitLevel(-2.0); // min → 0
-        plugin.emitLevel(4.0); // midpoint → 0.5
-        plugin.emitLevel(10.0); // max → 1
-        plugin.emitLevel(99.0); // clamped → 1
-        await Future<void>.delayed(Duration.zero);
-
-        expect(levels, [0.0, 0.5, 1.0, 1.0]);
-        await sub.cancel();
-        service.dispose();
-      },
-    );
-
-    test(
-      'sound level uses the dBFS scale on iOS/macOS (negative avgPower)',
-      () async {
-        // Regression: iOS reports 20*log10(rms), a negative dBFS value. The
-        // Android range [-2, 10] clamps all of it to 0 → flat waveform. The
-        // darwin scale [-50, -10] must spread typical speech across 0..1.
-        final plugin = _FakeSttPlugin();
-        final service = SpeechToTextService(plugin, SoundLevelScale.darwin);
-        await service.init(preferredLocaleId: 'en_US');
-
-        final levels = <double>[];
-        final sub = service.soundLevel.listen(levels.add);
-
-        await service.start(
-          localeId: 'en_US',
-          maxDuration: const Duration(seconds: 60),
-        );
-        plugin.emitLevel(-50.0); // min → 0
-        plugin.emitLevel(-30.0); // midpoint → 0.5
-        plugin.emitLevel(-10.0); // max → 1
-        plugin.emitLevel(-60.0); // below floor → clamped → 0
-        plugin.emitLevel(double.negativeInfinity); // silent buffer → 0
-        await Future<void>.delayed(Duration.zero);
-
-        expect(levels, [0.0, 0.5, 1.0, 0.0, 0.0]);
-        await sub.cancel();
-        service.dispose();
-      },
-    );
-  });
-
-  group('SoundLevelScale', () {
-    test('forPlatform picks the host platform scale', () {
-      // Keep this assertion portable across Linux and macOS test hosts.
-      expect(
-        SoundLevelScale.forPlatform(),
-        Platform.isIOS || Platform.isMacOS
-            ? SoundLevelScale.darwin
-            : SoundLevelScale.android,
-      );
-    });
-
-    test('normalize clamps NaN and ±infinity to the endpoints', () {
-      expect(SoundLevelScale.darwin.normalize(double.nan), 0.0);
-      expect(SoundLevelScale.darwin.normalize(double.negativeInfinity), 0.0);
-      expect(SoundLevelScale.darwin.normalize(double.infinity), 1.0);
     });
   });
 }

@@ -22,7 +22,6 @@ class _FakeSpeechService implements SpeechService {
   void Function()? ended;
   void Function()? error;
 
-  final StreamController<double> _level = StreamController<double>.broadcast();
   int startCalls = 0;
   int stopCalls = 0;
   int cancelCalls = 0;
@@ -34,9 +33,6 @@ class _FakeSpeechService implements SpeechService {
     if (initGate != null) await initGate!.future;
     return availability;
   }
-
-  @override
-  Stream<double> get soundLevel => _level.stream;
 
   @override
   Future<void> start({
@@ -67,9 +63,7 @@ class _FakeSpeechService implements SpeechService {
   Future<void> cancel() async => cancelCalls++;
 
   @override
-  void dispose() => _level.close();
-
-  void emitLevel(double level) => _level.add(level);
+  void dispose() {}
 }
 
 void main() {
@@ -381,13 +375,15 @@ void main() {
       vm.dispose();
     });
 
-    test('sound level updates flow into VoiceRecording.level', () async {
+    test('recording stays stable without waveform-driven UI updates', () async {
       final svc = _FakeSpeechService();
       final vm = VoiceInputViewModel(svc);
       await vm.startRecording();
-      svc.emitLevel(0.7);
+      var updates = 0;
+      vm.addListener(() => updates++);
       await Future<void>.delayed(Duration.zero);
-      expect((vm.state as VoiceRecording).level, 0.7);
+      expect(vm.state, const VoiceRecording());
+      expect(updates, 0);
       vm.dispose();
     });
 
@@ -479,7 +475,6 @@ void main() {
         final vm = VoiceInputViewModel(
           svc,
           maxDuration: const Duration(milliseconds: 600),
-          tickInterval: const Duration(milliseconds: 200),
         );
         final got = <String>[];
         vm.transcripts.listen(got.add);
@@ -489,13 +484,10 @@ void main() {
         async.flushMicrotasks();
         expect(vm.state, isA<VoiceRecording>());
 
-        // Two ticks — still recording, elapsed advancing.
+        // Waiting does not schedule elapsed-time UI updates.
         async.elapse(const Duration(milliseconds: 400));
         expect(vm.state, isA<VoiceRecording>());
-        expect(
-          (vm.state as VoiceRecording).elapsed,
-          const Duration(milliseconds: 400),
-        );
+        expect(async.periodicTimerCount, 0);
 
         // More than the former cap: only explicit Stop ends the session.
         async.elapse(const Duration(seconds: 120));
