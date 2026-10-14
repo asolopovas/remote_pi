@@ -55,14 +55,53 @@ Server-owned agent IDs and unique names prevent collisions; return actual canoni
 
 ## Definition of Done
 
-- [ ] Phone can launch a fresh additional Pi in a chosen existing directory on a paired online host.
-- [ ] Same-directory launch does not resume/replace another session.
-- [ ] Phone can see and stop only agents it is authorized to manage.
-- [ ] Bounded processes, readiness, idempotency, cleanup and no arbitrary-shell transport are tested.
-- [ ] UI explains trust/lifetime, reports unsupported/offline/failure, and prevents accidental duplicate starts.
-- [ ] TS/Dart protocol agreement and focused checks pass; broader checks and unavailable validation reported honestly.
-- [ ] Independent review completed and accepted findings resolved.
-- [ ] Isolated patch handed off to other coordinator; shared checkout untouched.
+- [x] Phone launch UI and paired-host execution implemented and covered by component/integration tests.
+- [x] Same-directory launch does not resume/replace another session (two real Pi processes verified).
+- [x] Phone list/stop controls and host owner isolation implemented and tested, including failed-but-live cleanup retries.
+- [x] Bounded processes, readiness, idempotency, cleanup and no arbitrary-shell transport are tested.
+- [x] UI explains trust/lifetime, reports unsupported/offline/failure, and prevents accidental duplicate starts.
+- [x] TS/Dart protocol agreement and focused checks pass; broader checks and unavailable validation reported honestly.
+- [x] Independent review completed and accepted findings resolved.
+- [x] Isolated patch handed off to other coordinator; shared checkout untouched by this task.
+
+## Verification and coordinated handoff
+
+Code reference: `98fa523ec1c798fd2ce431758a33033c4ea858ad`, branch
+`feature/phone-agent-launch`, based on `ff65bf0b`. Integrate the full branch
+range, not just component commits: coordinator follow-ups close review findings.
+The other coordinator received exact files, reference and validation; its shared
+checkout remains reserved for unrelated relay/mobile work. No push, shared merge,
+production publish, service changes or device installation were performed.
+
+- Host: `pnpm typecheck`, `pnpm build`, strict compilation of new test files pass;
+  full suite **932 passed, 3 platform skips**, 43 files. Final tests isolate
+  HOME/REMOTE_PI_HOME. Actual Pi tests verify separate fresh same-cwd sessions,
+  authenticated loopback room publication, explicit stop and real IPC-loss exit.
+- Phone: `flutter analyze --no-pub` clean; final
+  `flutter test --no-pub --concurrency=1` **798 passed**; debug APK builds.
+  Earlier runs exposed a roomsStream timing failure reproduced on untouched base;
+  it was not patched outside scope. The final complete run passed.
+- Independent review accepted fixes for failed-child Stop, uncertain launch
+  replay, validation boundaries, lifetime wording and launcher-incarnation safety;
+  final targeted verdict **OK**. Active LSP probes found no errors; the last batch
+  confirmed three files and left three TS push-only checks inconclusive, covered
+  by explicit passing TypeScript checks rather than claimed as LSP-clean.
+- APK: `app/build/app/outputs/flutter-apk/app-debug.apk` in the integration
+  worktree; SHA-256 `f6c4c6179f4e20b5ce8f89bf8c9f44bc187ee56b8da9e364b42d65d8e518a217`.
+  This is a debug artifact, not a signed release or an installed update.
+
+Runtime disclosure: two early worker extension tests lacked a temporary
+REMOTE_PI_HOME and could refresh default skill/cache/audit files or briefly join
+the local broker. Peers/credentials were mocked; no explicit live pairing or
+service mutation was performed. Prior runtime state is unknown; no speculative
+restoration was attempted. Later tests were isolated. This caveat was disclosed
+to the operator and other coordinator.
+
+### Remaining release verification
+
+- [ ] Coordinate integration with the other task after its writer releases the shared checkout.
+- [ ] Install coordinated host/app builds and verify phone launch → discovery → chat → stop on a device.
+- [ ] Native macOS/Windows launch smoke, if those platforms are release targets (Linux validated).
 
 ## Next
 
