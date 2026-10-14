@@ -7,7 +7,8 @@
   "types": "dist/index.d.ts",
   "bin": {
     "remote-pi": "dist/index.js",
-    "pi-supervisord": "dist/bin/supervisord.js"
+    "pi-supervisord": "dist/bin/supervisord.js",
+    "remote-pi-launcher": "dist/bin/launcher.js"
   },
   "scripts": {
     "build": "tsc",

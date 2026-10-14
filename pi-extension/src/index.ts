@@ -30,6 +30,11 @@
  *   for integration tests.
  */
 
+import { EventEmitter } from "node:events";
+import { childBridge } from "./session/managed_pipe.js";
+import { decodeManagedControl } from "./session/managed_transport.js";
+import { SecureLauncher } from "./session/secure_launcher.js";
+import { decodeLauncherRequest, LAUNCHER_REQUEST_TYPES } from "./protocol/codec.js";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   ExtensionAPI,
@@ -79,7 +84,7 @@ import {
 } from "./extension_ui_bridge.js";
 import { roomIdFor } from "./rooms.js";
 import { decodeAgentRequest, DecodeError } from "./protocol/codec.js";
-import { ManagedAgents, MANAGED_CHILD_ENV, MAX_MANAGED_AGENTS } from "./session/managed_agents.js";
+import { MANAGED_CHILD_ENV, MAX_MANAGED_AGENTS } from "./session/managed_agents.js";
 
 import { registerAgentTools } from "./session/tools.js";
 import { formatPeerInventory } from "./session/peer_inventory.js";
@@ -275,7 +280,10 @@ let _meshJoinGeneration = 0;
 // relay/mesh generations below permanently distinguish the old candidates from
 // that replacement lifecycle even after `_disposed` becomes false again.
 let _disposed = false;
-let _managedAgents: ManagedAgents | null = null;
+let _secureLauncher: SecureLauncher | null = null;
+let _childEpoch = "";
+let _childSequence = 0;
+let _childTransportDispose: (() => void) | null = null;
 // True once the auto-init has run on the first session_start for this
 // process. Prevents re-running on session replacements (those re-init via
 // the _disposed re-arm path above). The session_start handler below auto-starts
@@ -1389,6 +1397,7 @@ function _reportRevocationByFingerprint(canonicalOwnerPubkey: string): void {
 
 function _revokeActiveOwnerRuntime(canonicalOwnerPubkey: string): void {
   _displayOwnerGeneration += 1;
+  _secureLauncher?.lock();
   if (!_activePeers.has(canonicalOwnerPubkey)) return;
   _refreshPairingsCache();
   _detachPeerChannel(canonicalOwnerPubkey);
@@ -1423,6 +1432,7 @@ async function _findKnownPeer(appPeerIdStd: string): Promise<PeerRecord | null> 
  */
 function _goIdle(byeReason?: import("./protocol/types.js").ByeReason): void {
   _displayAdapter?.deactivate();
+  _secureLauncher?.lock();
   _rootLifecycleGeneration += 1;
   _relayLifecycleGeneration += 1;
 
@@ -2146,6 +2156,38 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     process.once("disconnect", onLauncherGone);
   }
   _pi = pi;
+  if (process.env.REMOTE_PI_SANDBOX_CHILD === "1") {
+    _childTransportDispose?.();
+    const bridge = childBridge();
+    if (!bridge) throw new Error("Sandbox managed bridge unavailable");
+    bridge.events.once("disconnect", onLauncherGone);
+    const ipc = new EventEmitter() as RelayClient;
+    ipc.send = (line: string) => {
+      const envelope = JSON.parse(line) as { ct: string };
+      if (bridge.connected && _childEpoch) bridge.send({ type: "managed_event", epoch: _childEpoch, message: JSON.parse(Buffer.from(envelope.ct, "base64").toString("utf8")) });
+    };
+    let owner: string | null = null;
+    const receive = (raw: unknown) => {
+      if (!raw || typeof raw !== "object") return;
+      const m = raw as { type?: unknown; owner?: unknown; room_id?: unknown; epoch?: unknown; sequence?: unknown; message?: unknown };
+      if (m.type === "managed_init" && owner === null && typeof m.owner === "string" && typeof m.epoch === "string" && m.room_id === roomIdFor(process.cwd(), loadLocalConfig(process.cwd()).agent_name)) {
+        owner = m.owner; _childEpoch = m.epoch; _myRoomId = m.room_id as string;
+        const channel = new PlainPeerChannel(ipc, owner, _myRoomId, () => {});
+        _attachPeerChannel(owner, channel);
+      } else if (m.type === "managed_revoke" && typeof m.epoch === "string") {
+        _childEpoch = m.epoch;
+        _clearQueuedItems();
+      } else if (m.type === "managed_control" && owner && m.epoch === _childEpoch && Number.isSafeInteger(m.sequence) && Number(m.sequence) > _childSequence) {
+        let message: ClientMessage;
+        try { message = decodeManagedControl(m.message); } catch { return; }
+        _childSequence = Number(m.sequence);
+        const channel = _activePeers.get(owner);
+        if (channel && !_disposed) _routeClientMessageFrom(channel, message, (_liveCtx() as typeof _noopCtx) ?? _noopCtx);
+      }
+    };
+    bridge.events.on("message", receive);
+    _childTransportDispose = () => { bridge.events.off("message", receive); bridge.events.off("disconnect", onLauncherGone); for (const channel of _activePeers.values()) channel.detach(); _activePeers.clear(); _childEpoch = ""; };
+  }
 
   // Plan/57 — bridge @eko24ive/pi-ask clarification flows to the paired app.
   // Inert when pi-ask isn't installed (no events fire) or the SDK exposes no
@@ -2435,6 +2477,12 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     if (!_extensionUiBridge) {
       _extensionUiBridge = createExtensionUiBridge(pi, _broadcastToActive);
     }
+    if (process.env.REMOTE_PI_SANDBOX_CHILD === "1") {
+      _disposed = false;
+      const name = loadLocalConfig(ctx.cwd).agent_name;
+      childBridge()?.send({ type: "remote_pi_managed_ready", name, room_id: roomIdFor(ctx.cwd, name), ok: true });
+      return;
+    }
     // Rearm a reused-but-disposed instance. The session_shutdown teardown (below)
     // sets _disposed=true assuming the host re-evaluates THIS module fresh for the
     // replacement session, yielding a new instance with _disposed=false. Some hosts
@@ -2529,9 +2577,10 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // clears `_disposed` before its promises settle.
     _disposed = true;
     process.off("disconnect", onLauncherGone);
-    const managedAgents = _managedAgents;
-    _managedAgents = null;
-    const managedCleanup = managedAgents?.shutdown();
+    _childTransportDispose?.(); _childTransportDispose = null;
+    const secureLauncher = _secureLauncher; _secureLauncher = null;
+    secureLauncher?.lock();
+    const secureCleanup = secureLauncher?.shutdown();
     _displayAdapter?.deactivate();
     _displayAdapter = null;
     _displaySessionIsCurrent = null;
@@ -2573,7 +2622,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
       _lockedName = null;
     }
     try { await meshClose; } catch { /* best-effort */ }
-    await managedCleanup;
+    await secureCleanup;
   });
 
   // ── Commands ──────────────────────────────────────────────────────────────
@@ -2940,6 +2989,7 @@ async function _cmdSetup(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
 }
 
 async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<void> {
+  if (process.env.REMOTE_PI_SANDBOX_CHILD === "1") return;
   if (_state !== "idle") {
     ctx.ui.notify("[remote-pi] Already started.", "warning");
     return;
@@ -4298,6 +4348,7 @@ export function _deliverMeshMessageToAgentForTest(env: MeshEnvelope): void {
  * broker.
  */
 async function _cmdJoin(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<void> {
+  if (process.env.REMOTE_PI_SANDBOX_CHILD === "1") return;
   const cwd = "cwd" in ctx ? (ctx as ExtensionCommandContext).cwd : process.cwd();
   const local = loadLocalConfig(cwd);
   const sessionName = LOCAL_SESSION_NAME;
@@ -4492,6 +4543,28 @@ function _abortCurrentTurn(
   return false;
 }
 
+function _getSecureLauncher(cwd: string): SecureLauncher {
+  return _secureLauncher ??= new SecureLauncher({ cwd, extensionPath: fileURLToPath(import.meta.url),
+    keypair: async () => { if (!_cachedEd25519) throw new Error("Host identity unavailable"); return _cachedEd25519; },
+    paired: async owner => !!await _findKnownPeer(owner),
+    current: () => !_disposed,
+  });
+}
+async function _routeLauncherRequest(sender: PlainPeerChannel, raw: unknown): Promise<void> {
+  const rawId = (raw as { id?: unknown } | null)?.id;
+  let id = typeof rawId === "string" && rawId.length <= 128 ? rawId : undefined;
+  try {
+    const request = decodeLauncherRequest(raw); id = request.id;
+    const owner = [..._activePeers].find(([, channel]) => channel === sender)?.[0];
+    const generation = _rootLifecycleGeneration;
+    if (!owner || _disposed || !await _findKnownPeer(owner) || generation !== _rootLifecycleGeneration || _activePeers.get(owner) !== sender || process.env[MANAGED_CHILD_ENV] === "1") throw new Error("A paired host channel is required");
+    const result = await _getSecureLauncher(_lastCtx?.cwd ?? process.cwd()).handle(owner, request, async () => !_disposed && generation === _rootLifecycleGeneration && !!await _findKnownPeer(owner));
+    if (!_disposed && generation === _rootLifecycleGeneration && _activePeers.get(owner) === sender && await _findKnownPeer(owner)) sender.send(result);
+  } catch (error) {
+    sender.send({ type: "error", ...(id ? { in_reply_to: id } : {}), code: "invalid_message", message: error instanceof DecodeError ? error.message : "Launcher request denied; refresh security status or inspect local setup" });
+  }
+}
+
 async function _routeAgentRequest(sender: PlainPeerChannel, raw: unknown): Promise<void> {
   // Identity comes only from the authenticated relay channel installed by
   // pairing, never from payload names, IDs or an arbitrary PeerChannel sink.
@@ -4520,8 +4593,8 @@ async function _routeAgentRequest(sender: PlainPeerChannel, raw: unknown): Promi
         : { type: "error", in_reply_to: request.id, code: "unsupported_type", message: "Managed agents cannot launch or manage children" });
       return;
     }
-    _managedAgents ??= new ManagedAgents({ cwd, extensionPath: fileURLToPath(import.meta.url) });
-    const result = await _managedAgents.handle(owner, request,
+    const launcher = _getSecureLauncher(cwd);
+    const result = await launcher.legacy(owner, request,
       async () => !_disposed && generation === _rootLifecycleGeneration && !!await _findKnownPeer(owner));
     // Phone disconnects do not stop accepted children. A revoked Owner must
     // not receive a completed reply via a stale channel.
@@ -4537,6 +4610,7 @@ export function _routeClientMessageFrom(
   ctx: Pick<ExtensionContext, "abort">,
 ): void {
   if (isRoomDisplayMessage(msg)) return;
+  if (LAUNCHER_REQUEST_TYPES.has(msg.type)) { void _routeLauncherRequest(sender, msg); return; }
   if (msg.type === "agent_list" || msg.type === "agent_launch" || msg.type === "agent_stop") {
     void _routeAgentRequest(sender, msg);
     return;

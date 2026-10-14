@@ -6376,8 +6376,8 @@ describe("phone agent request routing", () => {
     _setDisposedForTest(false);
     _knownPeers.length = 0;
     const stop = captureHandler("remote-pi stop"); await stop("", makeMockCtx());
-    const { ManagedAgents } = await import("./session/managed_agents.js");
-    handleSpy = vi.spyOn(ManagedAgents.prototype, "handle").mockImplementation(async (_owner, request) => ({
+    const { SecureLauncher } = await import("./session/secure_launcher.js");
+    handleSpy = vi.spyOn(SecureLauncher.prototype, "legacy").mockImplementation(async (_owner, request) => ({
       type: "agent_list_result", in_reply_to: request.id, available: true, cwd: "/fixture", max_agents: 4, agents: [],
     }));
     captureHandler("remote-pi");
@@ -6394,7 +6394,7 @@ describe("phone agent request routing", () => {
   const send = (message: object, peer = OWNER_STANDARD_FIXTURE) => relayRef.current!.emit("message", makeInnerLine(peer,
     "type" in message && message.type === "agent_launch" ? { launcher_id: "fixture-launcher", ...message } : message));
 
-  test("known paired canonical Owner routes launch/list/stop only to the sender", async () => {
+  test("known paired canonical Owner routes legacy requests only to secure launcher and sender", async () => {
     send({ type: "agent_list", id: "list" });
     await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ peer: OWNER_STANDARD_FIXTURE, inner: expect.objectContaining({ in_reply_to: "list" }) })));
     expect(handleSpy).toHaveBeenLastCalledWith(OWNER_STANDARD_FIXTURE, { type: "agent_list", id: "list" }, expect.any(Function));
@@ -6402,6 +6402,30 @@ describe("phone agent request routing", () => {
     send({ type: "agent_stop", id: "stop", agent_id: "server-owned" });
     await vi.waitFor(() => expect(handleSpy).toHaveBeenCalledTimes(3));
     expect(replies().filter(r => ["launch", "stop"].includes(String(r.inner.in_reply_to))).every(r => r.peer === OWNER_STANDARD_FIXTURE)).toBe(true);
+  });
+  test("additive typed launcher frames route only authenticated Owners through exact codec", async () => {
+    const { SecureLauncher } = await import("./session/secure_launcher.js");
+    const handle = vi.spyOn(SecureLauncher.prototype, "handle").mockImplementation(async (_owner, request) => ({
+      type: "launcher_status_result", in_reply_to: request.id,
+      status: { launcher_id: "host", epoch: "epoch", configured: true, unlocked: false, expires_at: null, cooldown_until: 0 },
+    }));
+    try {
+      for (const type of ["launcher_status", "project_list", "launcher_unlock", "launcher_lock", "launcher_shutdown", "project_launch", "launcher_agent_stop"]) {
+        const request = { type, id: type, ...(!["launcher_status", "project_list"].includes(type) ? { launcher_id: "host", epoch: "epoch" } : {}),
+          ...(type === "launcher_unlock" ? { pin: "654321" } : {}), ...(type === "project_launch" ? { project_id: "registered-project" } : {}), ...(type === "launcher_agent_stop" ? { agent_id: "owned-agent" } : {}) };
+        send(request);
+        await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ inner: expect.objectContaining({ in_reply_to: type }) })));
+      }
+      await vi.waitFor(() => expect(handle).toHaveBeenCalledTimes(7));
+      expect(handle.mock.calls.every(call => call[0] === OWNER_STANDARD_FIXTURE)).toBe(true);
+      send({ type: "project_launch", id: "remote-path", launcher_id: "host", epoch: "epoch", project_id: "registered-project", cwd: "/arbitrary" });
+      await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ inner: expect.objectContaining({ type: "error", in_reply_to: "remote-path" }) })));
+      expect(handle).toHaveBeenCalledTimes(7);
+      _knownPeers.length = 0;
+      send({ type: "launcher_unlock", id: "revoked-unlock", launcher_id: "host", epoch: "epoch", pin: "654321" });
+      await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ inner: expect.objectContaining({ type: "error", in_reply_to: "revoked-unlock" }) })));
+      expect(handle).toHaveBeenCalledTimes(7);
+    } finally { handle.mockRestore(); }
   });
   test("unpaired peer cannot launch or discover capability", async () => {
     send({ type: "agent_launch", id: "unpaired", cwd: "/fixture" }, OTHER_OWNER_STANDARD_FIXTURE);
