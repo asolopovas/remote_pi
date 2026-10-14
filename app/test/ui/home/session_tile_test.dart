@@ -82,8 +82,9 @@ void main() {
         ),
       );
       expect(find.text('project'), findsNWidgets(2));
-      expect(find.text('room-a · Reconnecting'), findsOneWidget);
-      expect(find.text('room-b · Reconnecting'), findsOneWidget);
+      expect(find.text('room-a'), findsOneWidget);
+      expect(find.text('room-b'), findsOneWidget);
+      expect(find.text('Reconnecting'), findsNWidgets(2));
       expect(tester.takeException(), isNull);
     },
   );

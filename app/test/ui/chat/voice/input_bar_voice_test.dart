@@ -140,7 +140,7 @@ void main() {
       svc.ended!();
       await tester.pump();
       expect(text(tester), 'synthetic first final');
-      expect(find.textContaining('Reconnecting dictation'), findsOneWidget);
+      expect(find.textContaining('Restarting local dictation'), findsOneWidget);
       expect(find.textContaining('Listening'), findsNothing);
       expect(find.bySemanticsLabel('Stop dictation'), findsOneWidget);
       await tester.pump(vm.restartDelay);

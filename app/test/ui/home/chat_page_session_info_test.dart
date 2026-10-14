@@ -244,7 +244,11 @@ class _DialogLifecycleHarness {
             theme: dark ? buildDarkTheme() : buildLightTheme(),
             navigatorObservers: [observer],
             builder: (_, child) => MediaQuery(
-              data: MediaQueryData(textScaler: TextScaler.linear(scale)),
+              // Lifecycle tests settle with reduced motion; rotation is tested separately.
+              data: MediaQueryData(
+                disableAnimations: true,
+                textScaler: TextScaler.linear(scale),
+              ),
               child: failPush ? _PushFailingNavigator(page: page) : child!,
             ),
             home: ValueListenableBuilder(
@@ -361,6 +365,7 @@ void main() {
               home: const ChatPage(showBack: false),
               builder: (_, child) => MediaQuery(
                 data: const MediaQueryData(
+                  disableAnimations: true,
                   size: Size(320, 1100),
                   textScaler: TextScaler.linear(2),
                 ),

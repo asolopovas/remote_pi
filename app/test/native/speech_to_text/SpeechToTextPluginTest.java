@@ -35,6 +35,10 @@ public class SpeechToTextPluginTest {
             Field field=SpeechToTextPlugin.class.getDeclaredField(name);
             field.setAccessible(true); field.set(plugin,value);
         }
+        Object get(String name) throws Exception {
+            Field field=SpeechToTextPlugin.class.getDeclaredField(name);
+            field.setAccessible(true); return field.get(plugin);
+        }
         Reply call(String name,Map<String,Object> args) {
             Reply result=new Reply(); plugin.onMethodCall(new MethodCall(name,args),result);
             Handler.advance(0); check(result.calls==1,"exactly one reply: "+name); return result;
@@ -51,6 +55,8 @@ public class SpeechToTextPluginTest {
     }
     static Fixture fresh() throws Exception {
         Handler.reset(); SpeechRecognizer.reset(); ContextCompat.granted=true;
+        ContextCompat.bluetoothGranted=false;
+        androidx.core.app.ActivityCompat.requested=null;
         Build.VERSION.SDK_INT=33; return new Fixture();
     }
     static Bundle words(String text) {
@@ -161,13 +167,27 @@ public class SpeechToTextPluginTest {
         f.set("currentActivity",new android.app.Activity());
         Reply reply=new Reply(); f.plugin.onMethodCall(new MethodCall("initialize",Map.of("noBluetooth",true)),reply);
         Handler.advance(0); check(reply.calls==0,"permission startup waits honestly");
+        check(Arrays.equals(androidx.core.app.ActivityCompat.requested,
+            new String[]{"android.permission.RECORD_AUDIO"}),"handset dictation never requests Bluetooth permission");
         f.plugin.onDetachedFromEngine(new io.flutter.embedding.engine.plugins.FlutterPlugin.FlutterPluginBinding(new Context(),null,null,null,null,null,null)); Handler.advance(0);
         check(reply.calls==1 && Boolean.FALSE.equals(reply.value),"dispose resolves pending permission");
         f.plugin.onRequestPermissionsResult(28521,new String[]{"android.permission.RECORD_AUDIO"},new int[]{0});
         Handler.advance(0); check(reply.calls==1,"late permission reply cannot double-complete");
     }
+    static void handsetBluetoothOptOut() throws Exception {
+        Fixture f=fresh(); ContextCompat.bluetoothGranted=true;
+        check(Boolean.TRUE.equals(f.initialize().value),"handset ready even when Bluetooth already granted");
+        check(Boolean.TRUE.equals(f.get("bluetoothDisabled")),"explicit opt-out overrides granted Bluetooth permission");
+        check(f.get("bluetoothAdapter")==null && f.get("bluetoothHeadset")==null,"no Bluetooth profile setup");
+        for(int id=1;id<=3;id++) {
+            f.listen(id);
+            check(f.get("activeBluetooth")==null,"segment does not enter headset voice mode");
+            f.call("stop",Map.of()); f.call("cancel",Map.of());
+            check(f.get("activeBluetooth")==null,"segment release leaves Bluetooth route alone");
+        }
+    }
     public static void main(String[] args) throws Exception {
-        privacyAndCapability(); finalAndGeneration(); endsErrorsCapsAndDispose(); localesAndPermission();
+        privacyAndCapability(); finalAndGeneration(); endsErrorsCapsAndDispose(); localesAndPermission(); handsetBluetoothOptOut();
         System.out.println("PASS actual SpeechToTextPlugin JVM lifecycle: "+assertions+" assertions (Android/Flutter doubles; NOT device/acoustic proof)");
     }
 }

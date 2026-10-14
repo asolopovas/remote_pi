@@ -1,3 +1,4 @@
+import 'package:app/ui/core/session_status_indicator.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/pairing/storage.dart';
@@ -268,8 +269,7 @@ class _ChatPageState extends State<ChatPage> {
                 Text(
                   roomName,
                   maxLines: 1,
-                  style: TextStyle(
-                    fontFamily: kMonoFamily,
+                  style: context.typo.mono.copyWith(
                     fontSize: 13,
                     color: colors.text,
                     letterSpacing: -0.2,
@@ -278,57 +278,42 @@ class _ChatPageState extends State<ChatPage> {
                   overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 2),
-                Row(
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                    Flexible(
-                      child: Text(
-                        _truncate(peerLabel, 24),
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontFamily: kMonoFamily,
-                          fontSize: 10,
-                          color: colors.muted,
-                        ),
+                    Text(
+                      _truncate(peerLabel, 24),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: context.typo.monoSmall.copyWith(
+                        color: colors.muted,
                       ),
                     ),
-                    const SizedBox(width: 6),
                     Builder(
                       builder: (_) {
-                        // Plan-18 follow-up — 4-state pill:
-                        // working / reconnecting / online / offline.
-                        // Priority: working > reconnecting > online > offline.
-                        final color = isWorking
-                            ? colors.working
-                            : isReconnecting
-                            ? colors.warning
-                            : isOnline
-                            ? colors.success
-                            : colors.muted;
-                        final label = isWorking
-                            ? 'working…'
-                            : isReconnecting
-                            ? 'reconnecting…'
-                            : isOnline
-                            ? 'online'
-                            : 'offline';
+                        final status = SessionStatus.resolve(
+                          isWorking: isWorking,
+                          isReconnecting: isReconnecting,
+                          isOnline: isOnline,
+                        );
+                        final label = switch (status) {
+                          SessionStatus.working => 'working…',
+                          SessionStatus.reconnecting => 'reconnecting…',
+                          _ => status.label.toLowerCase(),
+                        };
                         return Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Container(
-                              width: 7,
-                              height: 7,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: color,
-                              ),
-                            ),
+                            SessionStatusIndicator(status: status),
                             const SizedBox(width: 4),
-                            Text(
-                              label,
-                              style: TextStyle(
-                                fontFamily: kMonoFamily,
-                                fontSize: 10,
-                                color: color,
+                            Flexible(
+                              child: Text(
+                                label,
+                                style: context.typo.monoSmall.copyWith(
+                                  color: status.color(colors),
+                                ),
                               ),
                             ),
                           ],

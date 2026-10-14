@@ -28,6 +28,7 @@ void main() {
   late int id;
   late List<String> calls;
   late List<Map> listenOptions;
+  late List<Map> initializeOptions;
   bool earlyFinal = false;
 
   Future<void> event(String method, Object payload, {int? captureId}) =>
@@ -43,12 +44,15 @@ void main() {
     id = 0;
     calls = [];
     listenOptions = [];
+    initializeOptions = [];
     earlyFinal = false;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_channel, (call) async {
           calls.add(call.method);
           switch (call.method) {
             case 'initialize':
+              initializeOptions.add(call.arguments as Map);
+              return true;
             case 'has_permission':
               return true;
             case 'locales':
@@ -79,7 +83,13 @@ void main() {
   });
 
   tearDown(() async {
+    expect(initializeOptions, everyElement(containsPair('noBluetooth', true)));
     expect(listenOptions, everyElement(containsPair('onDevice', true)));
+    // The local Android adapter omits haptics entirely; never opt in.
+    expect(
+      listenOptions.map((options) => options['enableHaptics']),
+      everyElement(isNot(true)),
+    );
     expect(
       listenOptions,
       everyElement(containsPair('listenMode', stt.ListenMode.dictation.index)),
@@ -89,6 +99,28 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_channel, null);
   });
+
+  test(
+    'handset dictation initializes without Bluetooth and keeps local-only options',
+    () async {
+      final service = SpeechToTextService(SttPluginImpl(speech));
+      expect(
+        await service.init(preferredLocaleId: 'en_US'),
+        const SpeechReady('en_US'),
+      );
+      await service.init(preferredLocaleId: 'en_US');
+      expect(initializeOptions, hasLength(1));
+      expect(initializeOptions.single['noBluetooth'], true);
+      await service.start(
+        localeId: 'en_US',
+        maxDuration: const Duration(seconds: 60),
+      );
+      expect(listenOptions.single['onDevice'], true);
+      expect(listenOptions.single['enableHaptics'], isNot(true));
+      await service.cancel();
+      service.dispose();
+    },
+  );
 
   testWidgets(
     'vendor segments accumulate, fence stale IDs, and explicit Stop wins',

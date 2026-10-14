@@ -31,8 +31,17 @@ void main() {
             expect(contrast(token, background), greaterThanOrEqualTo(4.5));
           }
         }
-        // Working text appears on the home/chat background, not card surfaces.
-        expect(contrast(c.working, c.bg), greaterThanOrEqualTo(4.5));
+        // Check the actual selected tile composite as well as opaque surfaces.
+        for (final background in [
+          c.bg,
+          c.surface,
+          c.inputFill,
+          Color.alphaBlend(c.accent.withValues(alpha: 0.06), c.bg),
+        ]) {
+          expect(contrast(c.working, background), greaterThanOrEqualTo(4.5));
+        }
+        expect(c.working.g, greaterThan(c.working.r));
+        expect(c.working.g, greaterThan(c.working.b));
       }
     },
   );

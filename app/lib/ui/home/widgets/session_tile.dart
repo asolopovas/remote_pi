@@ -2,6 +2,7 @@ import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/core/session_label.dart';
+import 'package:app/ui/core/session_status_indicator.dart';
 import 'package:flutter/material.dart';
 
 export 'package:app/ui/core/session_label.dart'
@@ -9,9 +10,8 @@ export 'package:app/ui/core/session_label.dart'
 
 /// A row in the Home list.
 ///
-/// Renders an inline presence dot (plano 12) driven by
-/// [ConnectionManager.presenceStream]: green = online, grey = offline,
-/// no dot = relay hasn't reported yet.
+/// Observed session status uses a labelled dot, or a rotating working glyph.
+/// Working takes priority over relay reconnecting, online and offline.
 class SessionTile extends StatelessWidget {
   final PeerRecord peer;
 
@@ -25,7 +25,7 @@ class SessionTile extends StatelessWidget {
   final bool isReconnecting;
 
   /// Plan-18 follow-up — `true` when the agent in this room is
-  /// currently producing a response. Highest-priority colour (blue).
+  /// currently producing a response. Highest-priority status (green spinner).
   final bool isWorking;
   final RoomInfo? room;
   final VoidCallback onOpen;
@@ -90,10 +90,13 @@ class SessionTile extends StatelessWidget {
                     isWorking: isWorking,
                   ),
                 ),
-                _PresenceDot(
-                  isLive: isLive,
-                  isReconnecting: isReconnecting,
-                  isWorking: isWorking,
+                const SizedBox(width: 12),
+                SessionStatusIndicator(
+                  status: SessionStatus.resolve(
+                    isOnline: isLive,
+                    isReconnecting: isReconnecting,
+                    isWorking: isWorking,
+                  ),
                 ),
               ],
             ),
@@ -104,39 +107,6 @@ class SessionTile extends StatelessWidget {
   }
 
   String _avatarName() => sessionDisplayName(room, peer);
-}
-
-class _PresenceDot extends StatelessWidget {
-  final bool isLive;
-  final bool isReconnecting;
-  final bool isWorking;
-  const _PresenceDot({
-    required this.isLive,
-    required this.isReconnecting,
-    this.isWorking = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    // Plan-18 follow-up — 4-state dot. Priority high → low:
-    //   working (agent streaming)   → blue
-    //   reconnecting (relay down)   → amber
-    //   live (relay up + announced) → green
-    //   else (cached / offline)     → grey
-    final colors = context.colors;
-    final Color color = isWorking
-        ? colors.working
-        : isReconnecting
-        ? colors.warning
-        : isLive
-        ? colors.success
-        : colors.muted;
-    return Container(
-      width: 10,
-      height: 10,
-      decoration: BoxDecoration(shape: BoxShape.circle, color: color),
-    );
-  }
 }
 
 class _TitleBlock extends StatelessWidget {
@@ -159,13 +129,14 @@ class _TitleBlock extends StatelessWidget {
     final r = room;
     final path = r?.cwd;
     final title = sessionDisplayName(r, peer);
-    final status = isWorking
-        ? 'Working'
-        : isReconnecting
-        ? 'Reconnecting'
-        : isLive
+    final status = SessionStatus.resolve(
+      isWorking: isWorking,
+      isReconnecting: isReconnecting,
+      isOnline: isLive,
+    );
+    final statusLabel = status == SessionStatus.online
         ? 'Online · idle'
-        : 'Offline';
+        : status.label;
     final sessionContext = r?.name?.isNotEmpty == true
         ? '${r!.name} · ${r.roomId.length > 8 ? r.roomId.substring(0, 8) : r.roomId}'
         : r?.roomId ?? peer.sessionName;
@@ -178,32 +149,48 @@ class _TitleBlock extends StatelessWidget {
           title,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            color: colors.text,
+          style: context.typo.sansBody.copyWith(
             fontSize: 15,
             fontWeight: FontWeight.w500,
           ),
         ),
-        const SizedBox(height: 3),
+        const SizedBox(height: 4),
         Text(
           path ?? 'Working directory unavailable',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            color: colors.muted,
-            fontSize: 11,
-            fontFamily: kMonoFamily,
-          ),
+          style: context.typo.monoSmall.copyWith(color: colors.muted),
         ),
-        const SizedBox(height: 2),
+        const SizedBox(height: 4),
         Text(
-          '$sessionContext · $status${room?.model?.isNotEmpty == true ? ' · ${_truncateModel(room!.model!)}' : ''}',
-          maxLines: 2,
+          sessionContext,
+          maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            color: isWorking ? colors.working : colors.muted,
-            fontSize: 11,
-            fontFamily: kMonoFamily,
+          style: context.typo.monoSmall.copyWith(color: colors.muted),
+        ),
+        const SizedBox(height: 4),
+        LayoutBuilder(
+          builder: (context, constraints) => Row(
+            children: [
+              ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: constraints.maxWidth),
+                child: Text(
+                  statusLabel,
+                  style: context.typo.monoSmall.copyWith(
+                    color: status.color(colors),
+                  ),
+                ),
+              ),
+              if (room?.model?.isNotEmpty == true)
+                Flexible(
+                  child: Text(
+                    ' · ${_truncateModel(room!.model!)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: context.typo.monoSmall,
+                  ),
+                ),
+            ],
           ),
         ),
       ],
@@ -233,10 +220,10 @@ class _Avatar extends StatelessWidget {
       alignment: Alignment.center,
       child: Text(
         initial,
-        style: TextStyle(
+        style: context.typo.mono.copyWith(
           color: colors.accent,
-          fontFamily: kMonoFamily,
           fontSize: 16,
+          height: 1,
           fontWeight: FontWeight.w600,
         ),
       ),
