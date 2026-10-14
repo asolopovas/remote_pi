@@ -1,7 +1,37 @@
 import { describe, expect, test } from "vitest";
+import { readFileSync } from "node:fs";
 import { decodeAgentRequest, decodeServer, encodeClient } from "./codec.js";
+import type { AgentRequest, ManagedAgent, ServerMessage } from "./types.js";
 
 describe("agent request codec (plan 94 frozen contract)", () => {
+  test("Dart consumer fixture agrees with the typed host wire contract", () => {
+    // This exact file is also exercised by app/test/agents/agent_repository_test.dart.
+    const fixture: unknown = JSON.parse(readFileSync(new URL(
+      "../../../app/test/protocol/fixtures/agent_management.json", import.meta.url,
+    ), "utf8"));
+    const agent: ManagedAgent = {
+      agent_id: "agent-1", name: "Phone agent-1", cwd: "/projects/pi",
+      room_id: "room-agent-1", state: "running",
+    };
+    const requests: AgentRequest[] = [
+      { type: "agent_list", id: "list-1" },
+      { type: "agent_launch", id: "launch-1", cwd: "/projects/pi", name: "Phone agent" },
+      { type: "agent_launch", id: "launch-2", cwd: "/projects/pi" },
+      { type: "agent_stop", id: "stop-1", agent_id: "agent-1" },
+    ];
+    const replies: ServerMessage[] = [
+      { type: "agent_list_result", in_reply_to: "list-1", available: true,
+        cwd: "/projects/pi", max_agents: 4, agents: [] },
+      { type: "agent_list_result", in_reply_to: "list-2", available: false,
+        reason: "Managed children cannot launch agents", cwd: "/projects/pi", max_agents: 4, agents: [] },
+      { type: "agent_launch_result", in_reply_to: "launch-1", agent },
+      { type: "agent_stop_result", in_reply_to: "stop-1", agent: { ...agent, state: "stopped" } },
+      { type: "error", in_reply_to: "launch-2", code: "invalid_message", message: "Directory does not exist" },
+    ];
+    expect(fixture).toEqual({ requests, replies });
+    for (const request of requests) expect(decodeAgentRequest(JSON.parse(encodeClient(request)))).toEqual(request);
+    for (const reply of replies) expect(decodeServer(JSON.stringify(reply))).toEqual(reply);
+  });
   test.each([
     { type: "agent_list", id: "list" },
     { type: "agent_launch", id: "launch", cwd: "/project" },
