@@ -1,3 +1,5 @@
+import 'package:app/ui/agents/agents_page.dart';
+import 'package:app/ui/agents/viewmodels/agents_viewmodel.dart';
 import 'package:app/config/dependencies.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/preferences/preferences.dart';
@@ -303,6 +305,14 @@ GoRouter buildRouter(
             ],
           ),
         ],
+      ),
+
+      GoRoute(
+        path: '/agents',
+        redirect: (ctx, st) => st.extra is AgentsTarget ? null : '/home',
+        builder: (ctx, st) => ViewmodelProvider<AgentsViewModel>(
+          child: AgentsPage(target: st.extra! as AgentsTarget),
+        ),
       ),
 
       // QR pairing flow

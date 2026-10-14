@@ -121,6 +121,21 @@ class WsTransport implements PeerTransport, IControlLink {
               }
               return;
             }
+            // Agent management never accepts legacy unscoped replies, including
+            // correlated errors. Keep other legacy chat/action behavior intact.
+            if (inner is Map<String, dynamic> &&
+                (const [
+                      'agent_list_result',
+                      'agent_launch_result',
+                      'agent_stop_result',
+                    ].contains(inner['type']) ||
+                    (inner['type'] == 'error' &&
+                        transport._agentRequestIds.contains(
+                          inner['in_reply_to'],
+                        ))) &&
+                senderRoom != transport._activeRoom) {
+              return;
+            }
             // Plan-18 follow-up — DEMUX inbound by sender room.
             // SessionRepository is singleton; without this guard,
             // AgentChunks for a chat the user just left bleed into
@@ -227,6 +242,7 @@ class WsTransport implements PeerTransport, IControlLink {
   /// per-cwd session.
   String _activeRoom = 'main';
   int _roomEpoch = 0;
+  final _agentRequestIds = <String>{};
 
   /// Override the destination room (Pi side). The app remains on the
   /// 'main' room itself (that's what we sent in `hello.room_id`).
@@ -250,6 +266,18 @@ class WsTransport implements PeerTransport, IControlLink {
 
   @override
   Future<void> send(Uint8List data) async {
+    final inner = jsonDecode(utf8.decode(data));
+    if (inner is Map<String, dynamic> &&
+        const [
+          'agent_list',
+          'agent_launch',
+          'agent_stop',
+        ].contains(inner['type'])) {
+      _agentRequestIds.add(inner['id'] as String);
+      if (_agentRequestIds.length > 128) {
+        _agentRequestIds.remove(_agentRequestIds.first);
+      }
+    }
     _ws.sink.add(
       jsonEncode({
         'peer': _peerPubkey,

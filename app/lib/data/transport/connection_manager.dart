@@ -266,6 +266,10 @@ class ConnectionManager extends Service {
   // Plan 17 — active room on the destination Pi. 'main' is the implicit
   // default and matches the per-cwd room a Pi opens.
   String _activeRoomId = 'main';
+  int _roomSelectionEpoch = 0;
+
+  /// Monotonic routing revision, including away-and-back selections.
+  int get roomSelectionEpoch => _roomSelectionEpoch;
 
   Timer? _retryTimer;
   Timer? _pingTimer;
@@ -387,6 +391,7 @@ class ConnectionManager extends Service {
     }
     _clearHeartbeatRecovery();
     _missedPings = 0;
+    _roomSelectionEpoch++;
     _activeRoomId = roomId;
     final active = _activePeer;
     if (active != null) {
@@ -675,6 +680,7 @@ class ConnectionManager extends Service {
       _activePeer = peer;
       final boundRoom = peer.roomId ?? 'main';
       if (boundRoom != _activeRoomId) {
+        _roomSelectionEpoch++;
         _activeRoomId = boundRoom;
       }
     }
@@ -1221,6 +1227,7 @@ class ConnectionManager extends Service {
     if (active.roomId != null) {
       return; // explicit room selection — discovery must not override it
     }
+    _roomSelectionEpoch++;
     _activeRoomId = discoveredRoom;
     final cur = _status;
     if (cur is StatusOnline) {
