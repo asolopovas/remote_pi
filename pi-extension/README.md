@@ -148,6 +148,50 @@ interactive loop), so the app exposes only the actions that have a clean
 SDK call. The [`pi-telegram`](https://github.com/llblab/pi-telegram) adapter
 follows the same pattern.
 
+### Phone-launched agents (host support)
+
+A paired phone can use `agent_list` to discover launch capability on a host
+session, then send `agent_launch` (existing directory + optional human name)
+and `agent_stop` (server-owned agent ID). This host slice does not add an LLM
+launch tool, a file browser, or a generic shell/flags/environment/prompt API.
+
+- The launching Pi owns **at most four live children**, across all paired
+  Owners. Each Owner can list/stop only its own children. Pairing is rechecked
+  at dispatch and around startup; names and payload aliases are not identities.
+- Children use fresh Pi RPC sessions, never `--continue`/`--resume`. Paths are
+  canonicalized and names get a unique server suffix, so another session in
+  the same directory is not resumed or replaced. Parent worker/session and
+  pane identity variables are removed; children publish their own mobile room
+  using the existing host identity and pairing discovery. They cannot launch
+  further children.
+- Explicit **Start trusts that directory's project code for this run**
+  (`--approve`), including local project extensions/settings. No initial paid
+  prompt is sent. Use only directories you trust.
+- `running` requires both a Pi RPC response and the extension's independent
+  mesh/room startup acknowledgement, within **20 seconds**. Failure/timeout
+  cleans up the partial process and returns a correlated actionable `error`.
+  Startup output is drained, bounded, and not forwarded into launcher logs.
+  A launched room may take time to appear in phone discovery; refresh discovery
+  rather than treating the returned room ID as an already connected chat.
+- Children survive phone/relay disconnects but **not launching host session
+  shutdown/replacement** (including `/new`, resume, reload, or host exit).
+  Stop closes RPC stdin, sends SIGTERM, then escalates after three seconds to
+  SIGKILL and waits another three seconds. A process not observed exiting is
+  reported as a failure, never as successfully stopped. Parent IPC loss also
+  requests child shutdown, with a six-second orphan fallback. There is no crash
+  restart, daemon registry entry, service installation, or persistence promise.
+
+Mutation IDs are Owner/launcher-scoped idempotency keys, including concurrent
+replays; conflicting payloads fail. Launch replies replay the original result;
+refresh `agent_list` for current state. The host retains **32 agent records**
+and **256 ordinary mutation IDs** until shutdown, without evicting launch keys.
+At mutation-history saturation it reserves **three additional live-stop IDs
+per owned record** (at most 96) for cleanup/retry; unknown/unowned targets do
+not spend this reserve. Failed stop attempts remain replayable, so retry with
+a new ID. Exhausted cleanup retries require host shutdown/manual host inspection.
+Read-only lists and stops of proven-exited children return fresh snapshots and
+do not consume history (existing retained IDs still enforce conflicts/replay).
+
 ### Images
 
 The app can attach **one image** (camera or gallery) to a message. It's

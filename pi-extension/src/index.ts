@@ -61,6 +61,7 @@ import { SelfRevoke } from "./mesh/self_revoke.js";
 import type { MeshTopologySnapshot } from "./mesh/siblings.js";
 import type {
   ClientMessage,
+  AgentRequest,
   PairErrorCode,
   ServerMessage,
   SessionHistoryEvent,
@@ -77,6 +78,9 @@ import {
   type ExtensionUiBridge,
 } from "./extension_ui_bridge.js";
 import { roomIdFor } from "./rooms.js";
+import { decodeAgentRequest, DecodeError } from "./protocol/codec.js";
+import { ManagedAgents, MANAGED_CHILD_ENV, MAX_MANAGED_AGENTS } from "./session/managed_agents.js";
+
 import { registerAgentTools } from "./session/tools.js";
 import { formatPeerInventory } from "./session/peer_inventory.js";
 import { MeshNode } from "./session/mesh_node.js";
@@ -271,6 +275,7 @@ let _meshJoinGeneration = 0;
 // relay/mesh generations below permanently distinguish the old candidates from
 // that replacement lifecycle even after `_disposed` becomes false again.
 let _disposed = false;
+let _managedAgents: ManagedAgents | null = null;
 // True once the auto-init has run on the first session_start for this
 // process. Prevents re-running on session replacements (those re-init via
 // the _disposed re-arm path above). The session_start handler below auto-starts
@@ -2130,7 +2135,16 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   const applied = _appliedRegistry();
   if (applied.has(pi)) return;  // this session's pi was already wired
   applied.add(pi);
-
+  // RPC mode already shuts down on stdin EOF. IPC loss also covers a parent
+  // killed while other inherited handles are still open; never orphan a child.
+  const onLauncherGone = () => {
+    const fallback = setTimeout(() => process.kill(process.pid, "SIGKILL"), 6_000);
+    fallback.unref();
+    process.kill(process.pid, "SIGTERM");
+  };
+  if (process.env[MANAGED_CHILD_ENV] === "1" && process.send) {
+    process.once("disconnect", onLauncherGone);
+  }
   _pi = pi;
 
   // Plan/57 — bridge @eko24ive/pi-ask clarification flows to the paired app.
@@ -2397,6 +2411,9 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // New session. Fires on startup/new/fork/reload/resume; the ctx is always
   // bound to the current session.
   pi.on("session_start", (_event, ctx) => {
+    // Some hosts reuse this factory after replacing a session.
+    process.off("disconnect", onLauncherGone);
+    if (process.env[MANAGED_CHILD_ENV] === "1" && process.send) process.once("disconnect", onLauncherGone);
     _displayAdapter?.deactivate();
     _displayAdapter = null;
     _displaySessionIsCurrent = null;
@@ -2511,6 +2528,10 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // generations keep queued work stale even if a same-module session_start
     // clears `_disposed` before its promises settle.
     _disposed = true;
+    process.off("disconnect", onLauncherGone);
+    const managedAgents = _managedAgents;
+    _managedAgents = null;
+    const managedCleanup = managedAgents?.shutdown();
     _displayAdapter?.deactivate();
     _displayAdapter = null;
     _displaySessionIsCurrent = null;
@@ -2552,6 +2573,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
       _lockedName = null;
     }
     try { await meshClose; } catch { /* best-effort */ }
+    await managedCleanup;
   });
 
   // ── Commands ──────────────────────────────────────────────────────────────
@@ -2782,6 +2804,13 @@ async function _cmdRoot(
   try {
     await run;
   } finally {
+    if (process.env[MANAGED_CHILD_ENV] === "1" && process.send && process.connected) {
+      const name = loadLocalConfig(ctx.cwd).agent_name;
+      const room = name ? roomIdFor(ctx.cwd, name) : undefined;
+      process.send({ type: "remote_pi_managed_ready", name, room_id: room,
+        ok: !_disposed && !!_meshNode && _lockedName === name && _myRoomId === room && !!_relay?.isOpen(),
+      }, () => { /* parent exit/IPC race; disconnect guard stops this child */ });
+    }
     if (_cmdRootInFlight === run) _cmdRootInFlight = null;
   }
 }
@@ -4302,7 +4331,7 @@ async function _cmdJoin(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<void
     name: agentName,
     cwd: canonCwd,
     auditPath: audit,
-    takeoverExisting: process.env["REMOTE_PI_DAEMON"] === "1",
+    takeoverExisting: process.env["REMOTE_PI_DAEMON"] === "1" && process.env[MANAGED_CHILD_ENV] !== "1",
   });
 
   peer.onMessage((env) => {
@@ -4463,12 +4492,55 @@ function _abortCurrentTurn(
   return false;
 }
 
+async function _routeAgentRequest(sender: PlainPeerChannel, raw: unknown): Promise<void> {
+  // Identity comes only from the authenticated relay channel installed by
+  // pairing, never from payload names, IDs or an arbitrary PeerChannel sink.
+  const owner = [..._activePeers].find(([, channel]) => channel === sender)?.[0];
+  const generation = _rootLifecycleGeneration;
+  let request: AgentRequest;
+  try { request = decodeAgentRequest(raw); }
+  catch (err) {
+    const id = (raw as { id?: unknown } | null)?.id;
+    sender.send({ type: "error", code: err instanceof DecodeError ? err.code : "invalid_message",
+      ...(typeof id === "string" && id.length <= 128 ? { in_reply_to: id } : {}),
+      message: err instanceof Error ? err.message : "Invalid agent request" });
+    return;
+  }
+  try {
+    if (!owner || !await _findKnownPeer(owner) || _activePeers.get(owner) !== sender ||
+        _disposed || generation !== _rootLifecycleGeneration) {
+      sender.send({ type: "error", in_reply_to: request.id, code: "invalid_message", message: "A currently paired Owner channel is required" });
+      return;
+    }
+    const cwd = _lastCtx?.cwd ?? process.cwd();
+    if (process.env[MANAGED_CHILD_ENV] === "1") {
+      sender.send(request.type === "agent_list"
+        ? { type: "agent_list_result", in_reply_to: request.id, available: false,
+            reason: "Managed agents cannot launch children; use their launching host session", cwd, max_agents: MAX_MANAGED_AGENTS, agents: [] }
+        : { type: "error", in_reply_to: request.id, code: "unsupported_type", message: "Managed agents cannot launch or manage children" });
+      return;
+    }
+    _managedAgents ??= new ManagedAgents({ cwd, extensionPath: fileURLToPath(import.meta.url) });
+    const result = await _managedAgents.handle(owner, request,
+      async () => !_disposed && generation === _rootLifecycleGeneration && !!await _findKnownPeer(owner));
+    // Phone disconnects do not stop accepted children. A revoked Owner must
+    // not receive a completed reply via a stale channel.
+    if (_activePeers.get(owner) === sender && await _findKnownPeer(owner)) sender.send(result);
+  } catch {
+    sender.send({ type: "error", in_reply_to: request.id, code: "internal_error", message: "Could not verify Owner or manage agents; check the host" });
+  }
+}
+
 export function _routeClientMessageFrom(
   sender: PlainPeerChannel,
   msg: ClientMessage,
   ctx: Pick<ExtensionContext, "abort">,
 ): void {
   if (isRoomDisplayMessage(msg)) return;
+  if (msg.type === "agent_list" || msg.type === "agent_launch" || msg.type === "agent_stop") {
+    void _routeAgentRequest(sender, msg);
+    return;
+  }
   // session_sync has its own internal guards — handle before the strict
   // pi-binding guard so a missing _pi doesn't drop the reply.
   if (msg.type === "session_sync") {
