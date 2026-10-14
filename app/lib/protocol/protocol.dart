@@ -1831,13 +1831,14 @@ class AgentList extends ClientMessage {
 }
 
 class AgentLaunch extends ClientMessage {
-  AgentLaunch(this.id, this.cwd, this.name);
-  final String id, cwd;
+  AgentLaunch(this.id, this.cwd, this.name, this.launcherId);
+  final String id, cwd, launcherId;
   final String? name;
   @override
   Map<String, dynamic> toJson() => {
     'type': 'agent_launch',
     'id': id,
+    'launcher_id': launcherId,
     'cwd': cwd,
     if (name != null) 'name': name,
   };
@@ -1877,6 +1878,7 @@ class AgentListResult extends ServerMessage {
     j['in_reply_to'] as String,
     AgentAvailability(
       available: j['available'] as bool,
+      launcherId: j['launcher_id'] as String?,
       reason: j['reason'] as String?,
       cwd: j['cwd'] as String,
       maxAgents: j['max_agents'] as int,

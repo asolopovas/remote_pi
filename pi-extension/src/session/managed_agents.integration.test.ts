@@ -61,7 +61,7 @@ test("real Pi children publish distinct authenticated rooms, create fresh same-c
       PI_CODING_AGENT_DIR: join(root, ".pi", "agent"), PI_PACKAGE_DIR: dirname(dirname(cli)),
       REMOTE_PI_RELAY: `http://127.0.0.1:${address.port}` }, readinessMs: 15_000 });
   try {
-    const [first, second] = await Promise.all(["one", "two"].map(id => manager.handle("fixture-owner", { type: "agent_launch", id, cwd, name: "reviewer" }, async () => true)));
+    const [first, second] = await Promise.all(["one", "two"].map(id => manager.handle("fixture-owner", { type: "agent_launch", id, launcher_id: manager.launcherId, cwd, name: "reviewer" }, async () => true)));
     expect(first.type).toBe("agent_launch_result"); expect(second.type).toBe("agent_launch_result");
     if (first.type !== "agent_launch_result" || second.type !== "agent_launch_result") throw new Error(JSON.stringify([first, second]));
     expect(first.agent.state).toBe("running"); expect(second.agent.state).toBe("running");

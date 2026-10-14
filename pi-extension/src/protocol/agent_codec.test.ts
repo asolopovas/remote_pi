@@ -9,7 +9,7 @@ describe("agent request codec (plan 94 frozen contract)", () => {
       "../../../app/test/protocol/fixtures/agent_input_validation.json", import.meta.url,
     ), "utf8"));
     for (const { valid, ...input } of cases) {
-      const parse = () => decodeAgentRequest({ type: "agent_launch", id: "boundary", ...input });
+      const parse = () => decodeAgentRequest({ type: "agent_launch", id: "boundary", launcher_id: "launcher-1", ...input });
       if (valid) expect(parse).not.toThrow();
       else expect(parse).toThrow();
     }
@@ -25,12 +25,12 @@ describe("agent request codec (plan 94 frozen contract)", () => {
     };
     const requests: AgentRequest[] = [
       { type: "agent_list", id: "list-1" },
-      { type: "agent_launch", id: "launch-1", cwd: "/projects/pi", name: "Phone agent" },
-      { type: "agent_launch", id: "launch-2", cwd: "/projects/pi" },
+      { type: "agent_launch", id: "launch-1", launcher_id: "launcher-1", cwd: "/projects/pi", name: "Phone agent" },
+      { type: "agent_launch", id: "launch-2", launcher_id: "launcher-1", cwd: "/projects/pi" },
       { type: "agent_stop", id: "stop-1", agent_id: "agent-1" },
     ];
     const replies: ServerMessage[] = [
-      { type: "agent_list_result", in_reply_to: "list-1", available: true,
+      { type: "agent_list_result", in_reply_to: "list-1", available: true, launcher_id: "launcher-1",
         cwd: "/projects/pi", max_agents: 4, agents: [] },
       { type: "agent_list_result", in_reply_to: "list-2", available: false,
         reason: "Managed children cannot launch agents", cwd: "/projects/pi", max_agents: 4, agents: [] },
@@ -44,14 +44,15 @@ describe("agent request codec (plan 94 frozen contract)", () => {
   });
   test.each([
     { type: "agent_list", id: "list" },
-    { type: "agent_launch", id: "launch", cwd: "/project" },
-    { type: "agent_launch", id: "launch", cwd: "/project", name: "Reviewer" },
+    { type: "agent_launch", id: "launch", launcher_id: "launcher-1", cwd: "/project" },
+    { type: "agent_launch", id: "launch", launcher_id: "launcher-1", cwd: "/project", name: "Reviewer" },
     { type: "agent_stop", id: "stop", agent_id: "server-owned-id" },
   ] as const)("valid $type", request => {
     expect(decodeAgentRequest(JSON.parse(encodeClient(request)))).toEqual(request);
   });
   test.each([
     null, [], "agent_list", {}, { type: "unknown", id: "x" },
+    { type: "agent_launch", id: "x", cwd: "/p", launcher_id: undefined },
     { type: "agent_list" }, { type: "agent_list", id: 3 }, { type: "agent_list", id: "" },
     { type: "agent_list", id: "\n" }, { type: "agent_list", id: "x".repeat(129) },
     { type: "agent_launch", id: "x", cwd: " " }, { type: "agent_launch", id: "x", cwd: [] },
@@ -65,7 +66,11 @@ describe("agent request codec (plan 94 frozen contract)", () => {
     { type: "agent_launch", id: "x", cwd: "/a", binary: "/bin/sh" },
     { type: "agent_stop", id: "x", agent_id: 123 }, { type: "agent_stop", id: "x", agent_id: "\r" },
     { type: "agent_stop", id: "x", agent_id: "a", pid: 123 },
-  ])("rejects malformed/extraneous shape %#", request => expect(() => decodeAgentRequest(request)).toThrow());
+  ])("rejects malformed/extraneous shape %#", request => {
+    const withLauncher = request && typeof request === "object" && "type" in request && request.type === "agent_launch"
+      ? { launcher_id: "launcher-1", ...request } : request;
+    expect(() => decodeAgentRequest(withLauncher)).toThrow();
+  });
   test("accepts frozen result envelopes", () => {
     const agent = { agent_id: "id", name: "reviewer-id", cwd: "/project", room_id: "room", state: "running" };
     for (const result of [

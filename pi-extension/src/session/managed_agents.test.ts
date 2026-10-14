@@ -46,7 +46,9 @@ function harness(mode: "ready" | "timeout" | "enoent" | "crash" | "bad-room" | "
     return child;
   });
   const manager = new ManagedAgents({ cwd, extensionPath: "/extension.js", spawn: spawnMock, readinessMs: 25, stopMs: 10 }); managers.push(manager);
-  const request = (r: AgentRequest, owner = "owner-a", auth = allowed) => manager.handle(owner, r, auth);
+  type Input = Exclude<AgentRequest, { type: "agent_launch" }> | (Omit<Extract<AgentRequest, { type: "agent_launch" }>, "launcher_id"> & { launcher_id?: string });
+  const request = (r: Input, owner = "owner-a", auth = allowed) => manager.handle(owner,
+    r.type === "agent_launch" ? { ...r, launcher_id: r.launcher_id ?? manager.launcherId } : r, auth);
   const launch = (id = "launch", name?: string) => request({ type: "agent_launch", id, cwd, ...(name ? { name } : {}) });
   return { cwd, manager, children, spawnMock, request, launch };
 }
@@ -56,6 +58,15 @@ function agent(result: ServerMessage) {
 }
 
 describe("ManagedAgents lifecycle", () => {
+  test("replacement launcher rejects replay from an old incarnation without spawning", async () => {
+    const old = harness(), replacement = harness();
+    const request = { type: "agent_launch", id: "lost-reply", launcher_id: old.manager.launcherId, cwd: old.cwd } as const;
+    expect(await old.request(request)).toMatchObject({ type: "agent_launch_result" });
+    await old.manager.shutdown();
+    expect(await replacement.request(request)).toMatchObject({ type: "error", code: "invalid_message", message: expect.stringContaining("session changed") });
+    expect(replacement.spawnMock).not.toHaveBeenCalled();
+    expect(await replacement.request({ type: "agent_list", id: "new-capability" })).toMatchObject({ launcher_id: replacement.manager.launcherId });
+  });
   test("replaying original ID settles delayed admission without a duplicate after an empty snapshot", async () => {
     const h = harness();
     let release!: () => void;
@@ -199,7 +210,7 @@ describe("ManagedAgents lifecycle", () => {
       return spawn(process.execPath, ["-e", script], options);
     });
     const m = new ManagedAgents({ cwd, extensionPath: "/extension.js", spawn: spawnReal, readinessMs: 2000 }); managers.push(m);
-    const a = agent(await m.handle("owner", { type: "agent_launch", id: "launch", cwd }, allowed));
+    const a = agent(await m.handle("owner", { type: "agent_launch", id: "launch", launcher_id: m.launcherId, cwd }, allowed));
     expect(a.state).toBe("running");
     expect(agent(await m.handle("owner", { type: "agent_stop", id: "stop", agent_id: a.agent_id }, allowed)).state).toBe("stopped");
   });

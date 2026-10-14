@@ -80,6 +80,7 @@ class Connection extends ConnectionManager {
 
 const available = AgentAvailability(
   available: true,
+  launcherId: 'launcher-1',
   cwd: '/project',
   maxAgents: 4,
   agents: [],
@@ -113,8 +114,8 @@ void main() {
             as Map;
     final requests = [
       AgentList('list-1'),
-      AgentLaunch('launch-1', '/projects/pi', 'Phone agent'),
-      AgentLaunch('launch-2', '/projects/pi', null),
+      AgentLaunch('launch-1', '/projects/pi', 'Phone agent', 'launcher-1'),
+      AgentLaunch('launch-2', '/projects/pi', null, 'launcher-1'),
       AgentStop('stop-1', 'agent-1'),
     ];
     expect(requests.map((r) => r.toJson()).toList(), fixture['requests']);
@@ -139,6 +140,12 @@ void main() {
         );
         repo.bind(peer.remoteEpk, 'launcher');
         clock.flushMicrotasks();
+        repo.list();
+        channel.messages.add(
+          AgentListResult((channel.sent.last as AgentList).id, available),
+        );
+        clock.flushMicrotasks();
+        channel.sent.clear();
         AgentFailure? failure;
         final operation = switch (kind) {
           'list' => repo.list(),
@@ -179,6 +186,12 @@ void main() {
         mutationTimeout: const Duration(milliseconds: 40),
       );
       await repo.bind(peer.remoteEpk, 'launcher');
+      final discovery = repo.list();
+      channel.messages.add(
+        AgentListResult((channel.sent.last as AgentList).id, available),
+      );
+      await discovery;
+      channel.sent.clear();
       await tick();
     });
     tearDown(() async {
@@ -247,6 +260,10 @@ void main() {
         );
         final original = channel.sent.single as AgentLaunch;
         final refresh = repo.list();
+        channel.messages.add(
+          AgentListResult((channel.sent.last as AgentList).id, available),
+        );
+        await tick();
         expect((channel.sent.last as AgentLaunch).toJson(), original.toJson());
         // A snapshot, even with the pending request ID, is not a mutation result.
         channel.messages.add(AgentListResult(original.id, available));
@@ -255,7 +272,7 @@ void main() {
           repo.launch('/different', null),
           throwsA(isA<AgentFailure>()),
         );
-        expect(channel.sent.whereType<AgentList>(), isEmpty);
+        expect(channel.sent.whereType<AgentList>().length, 1);
         channel.messages.add(
           AgentMutationResult(
             'agent_launch_result',
@@ -303,10 +320,11 @@ void main() {
         repo = AgentRepositoryImpl(conn, Storage(), journal);
         await repo.bind(peer.remoteEpk, 'launcher');
         final refresh = repo.list();
-        expect(
-          (channel.sent.single as AgentLaunch).toJson(),
-          original.toJson(),
+        channel.messages.add(
+          AgentListResult((channel.sent.last as AgentList).id, available),
         );
+        await tick();
+        expect((channel.sent.last as AgentLaunch).toJson(), original.toJson());
         // A definitive error settles the original request before the fresh list.
         channel.messages.add(
           ErrorMessage(
@@ -347,6 +365,80 @@ void main() {
         channel.messages.add(AgentListResult(list.id, available));
         expect(await refresh, available);
         expect(channel.sent.whereType<AgentLaunch>().length, 1);
+      },
+    );
+    test(
+      'replacement launcher never automatically replays an old launch',
+      () async {
+        await expectLater(
+          repo.launch('/old', null),
+          throwsA(isA<AgentFailure>()),
+        );
+        final original = channel.sent.single as AgentLaunch;
+        repo.dispose();
+        repo = AgentRepositoryImpl(conn, Storage(), journal);
+        await repo.bind(peer.remoteEpk, 'launcher');
+        const replacement = AgentAvailability(
+          available: true,
+          launcherId: 'launcher-2',
+          cwd: '/project',
+          maxAgents: 4,
+          agents: [],
+        );
+        final refresh = repo.list();
+        channel.messages.add(
+          AgentListResult((channel.sent.last as AgentList).id, replacement),
+        );
+        await expectLater(
+          refresh,
+          throwsA(
+            isA<AgentFailure>().having(
+              (e) => e.message,
+              'replacement warning',
+              contains('session changed'),
+            ),
+          ),
+        );
+        expect(channel.sent.whereType<AgentLaunch>().length, 1);
+        // Only a new explicit launch call uses the replacement's identity/key.
+        final explicit = repo.launch('/new', null);
+        final next = channel.sent.last as AgentLaunch;
+        expect(next.id, isNot(original.id));
+        expect(next.launcherId, 'launcher-2');
+        channel.messages.add(
+          ErrorMessage(
+            inReplyTo: next.id,
+            code: 'invalid_message',
+            message: 'Settled test outcome',
+          ),
+        );
+        await expectLater(explicit, throwsA(isA<AgentFailure>()));
+      },
+    );
+    test(
+      'missing launcher incarnation is unsupported, not permission to launch',
+      () async {
+        repo.dispose();
+        repo = AgentRepositoryImpl(conn, Storage(), journal);
+        await repo.bind(peer.remoteEpk, 'launcher');
+        final refresh = repo.list();
+        channel.messages.add(
+          AgentListResult(
+            (channel.sent.last as AgentList).id,
+            const AgentAvailability(
+              available: true,
+              cwd: '/p',
+              maxAgents: 4,
+              agents: [],
+            ),
+          ),
+        );
+        await expectLater(refresh, throwsA(isA<AgentFailure>()));
+        await expectLater(
+          repo.launch('/p', null),
+          throwsA(isA<AgentFailure>()),
+        );
+        expect(channel.sent.whereType<AgentLaunch>(), isEmpty);
       },
     );
     test('correlated error is human readable', () async {

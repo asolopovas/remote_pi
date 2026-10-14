@@ -6,7 +6,12 @@ import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/protocol/uuid7.dart';
 
-typedef _AgentMutation = ({String id, String type, ClientMessage message});
+typedef _AgentMutation = ({
+  String id,
+  String type,
+  String launcherId,
+  ClientMessage message,
+});
 
 /// App-lifetime request journal: page disposal or reconnect must not forget an
 /// accepted mutation's idempotency key. Never evict an uncertain request.
@@ -31,7 +36,7 @@ class AgentRepositoryImpl extends AgentRepository {
 
   /// Host readiness (20s) plus failed-child cleanup (up to 6s), with margin.
   final Duration mutationTimeout;
-  String? _peer, _room;
+  String? _peer, _room, _launcherId;
   int? _roomEpoch;
   bool _disposed = false;
   IChannel? _channel;
@@ -148,6 +153,11 @@ class AgentRepositoryImpl extends AgentRepository {
     final key = (_peer!, _room!);
     final id = replay?.id ?? uuid7();
     final mutation = type != 'agent_list_result';
+    if (mutation && _launcherId == null) {
+      throw const AgentFailure(
+        'Refresh launcher capabilities before starting an operation.',
+      );
+    }
     final previous = _journal._entries[key];
     if (mutation && previous != null && previous.id != id) {
       throw const AgentFailure(
@@ -165,7 +175,12 @@ class AgentRepositoryImpl extends AgentRepository {
           'Resolve pending agent operations before managing more hosts.',
         );
       }
-      _journal._entries[key] = (id: id, type: type, message: request);
+      _journal._entries[key] = (
+        id: id,
+        type: type,
+        launcherId: _launcherId!,
+        message: request,
+      );
     }
     final completer = Completer<ServerMessage>();
     final deadline = type == 'agent_list_result' ? timeout : mutationTimeout;
@@ -204,10 +219,18 @@ class AgentRepositoryImpl extends AgentRepository {
 
   @override
   Future<AgentAvailability> list() async {
-    final mutation = _journal._entries[(_peer, _room)];
+    final snapshot = await _fetchList();
+    final key = (_peer!, _room!);
+    final mutation = _journal._entries[key];
     if (mutation != null) {
-      // An empty snapshot cannot settle a launch still awaiting admission.
-      // Replay the exact original request, also after reopening/reconnecting.
+      if (snapshot.launcherId != mutation.launcherId) {
+        _journal._entries.remove(key);
+        throw const AgentFailure(
+          'The launching session changed. The previous operation was not retried. Refresh and confirm a new Start if needed.',
+        );
+      }
+      // A snapshot only verifies incarnation; it cannot settle pending admission.
+      // Replay the exact request. Host checks the incarnation again at execution.
       try {
         await _request(
           mutation.type,
@@ -219,10 +242,24 @@ class AgentRepositoryImpl extends AgentRepository {
         // A correlated host error is a settled outcome. Now fetch its records.
       }
       refreshDiscovery();
+      return _fetchList();
     }
-    return ((await _request('agent_list_result', AgentList.new))
-            as AgentListResult)
-        .availability;
+    return snapshot;
+  }
+
+  Future<AgentAvailability> _fetchList() async {
+    final result =
+        ((await _request('agent_list_result', AgentList.new))
+                as AgentListResult)
+            .availability;
+    if (result.available &&
+        (result.launcherId == null || result.launcherId!.isEmpty)) {
+      throw const AgentFailure(
+        'Update the host Remote Pi extension: launcher identity is unavailable.',
+      );
+    }
+    _launcherId = result.launcherId;
+    return result;
   }
 
   @override
@@ -231,7 +268,7 @@ class AgentRepositoryImpl extends AgentRepository {
     if (error != null) throw AgentFailure(error);
     final reply = await _request(
       'agent_launch_result',
-      (id) => AgentLaunch(id, cwd, name),
+      (id) => AgentLaunch(id, cwd, name, _launcherId!),
     );
     refreshDiscovery();
     return (reply as AgentMutationResult).agent;

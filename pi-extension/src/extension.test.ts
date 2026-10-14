@@ -6391,7 +6391,8 @@ describe("phone agent request routing", () => {
     _knownPeers.length = 0;
   });
   const replies = () => relayRef.current!.send.mock.calls.map(c => decodeSentCt(c[0] as string));
-  const send = (message: object, peer = OWNER_STANDARD_FIXTURE) => relayRef.current!.emit("message", makeInnerLine(peer, message));
+  const send = (message: object, peer = OWNER_STANDARD_FIXTURE) => relayRef.current!.emit("message", makeInnerLine(peer,
+    "type" in message && message.type === "agent_launch" ? { launcher_id: "fixture-launcher", ...message } : message));
 
   test("known paired canonical Owner routes launch/list/stop only to the sender", async () => {
     send({ type: "agent_list", id: "list" });

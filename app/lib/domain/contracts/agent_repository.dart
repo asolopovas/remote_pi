@@ -16,12 +16,14 @@ class ManagedAgent {
 class AgentAvailability {
   const AgentAvailability({
     required this.available,
+    this.launcherId,
     this.reason,
     required this.cwd,
     required this.maxAgents,
     required this.agents,
   });
   final bool available;
+  final String? launcherId;
   final String? reason;
   final String cwd;
   final int maxAgents;

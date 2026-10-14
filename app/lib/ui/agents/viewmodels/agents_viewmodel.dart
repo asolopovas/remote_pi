@@ -58,6 +58,7 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
         final agent = await _repo.launch(cwd, name);
         return AgentAvailability(
           available: old.available,
+          launcherId: old.launcherId,
           reason: old.reason,
           cwd: old.cwd,
           maxAgents: old.maxAgents,
@@ -89,6 +90,7 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
       final agent = await _repo.stop(id);
       return AgentAvailability(
         available: old.available,
+        launcherId: old.launcherId,
         reason: old.reason,
         cwd: old.cwd,
         maxAgents: old.maxAgents,

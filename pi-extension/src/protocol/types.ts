@@ -198,11 +198,11 @@ export interface ManagedAgent {
 
 export type AgentRequest =
   | { type: "agent_list"; id: string }
-  | { type: "agent_launch"; id: string; cwd: string; name?: string }
+  | { type: "agent_launch"; id: string; launcher_id: string; cwd: string; name?: string }
   | { type: "agent_stop"; id: string; agent_id: string };
 
 export type AgentResult =
-  | { type: "agent_list_result"; in_reply_to: string; available: boolean; reason?: string; cwd: string; max_agents: number; agents: ManagedAgent[] }
+  | { type: "agent_list_result"; in_reply_to: string; available: boolean; launcher_id?: string; reason?: string; cwd: string; max_agents: number; agents: ManagedAgent[] }
   | { type: "agent_launch_result"; in_reply_to: string; agent: ManagedAgent }
   | { type: "agent_stop_result"; in_reply_to: string; agent: ManagedAgent };
 

@@ -70,7 +70,8 @@ export function decodeAgentRequest(value: unknown): AgentRequest {
   switch (o.type) {
     case "agent_list": keys = ["type", "id"]; break;
     case "agent_launch":
-      keys = ["type", "id", "cwd", "name"];
+      keys = ["type", "id", "launcher_id", "cwd", "name"];
+      if (!text(o.launcher_id, 128)) throw new DecodeError("invalid_message", "Refresh launcher capabilities before starting an agent");
       if (!text(o.cwd, 4096) || (o.name !== undefined && !text(o.name, 80))) {
         throw new DecodeError("invalid_message", "Provide an existing directory and an optional name of 1–80 characters");
       }

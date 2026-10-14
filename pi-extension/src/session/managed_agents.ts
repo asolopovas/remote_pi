@@ -56,6 +56,8 @@ class AgentFailure extends Error {
  * mutations rather than evicting a key and accidentally launching its replay.
  */
 export class ManagedAgents {
+  /** Incarnation of the host session and its idempotency history. */
+  readonly launcherId = randomUUID();
   private readonly entries = new Map<string, Entry>();
   private readonly requests = new Map<string, { payload: string; result: Promise<ServerMessage> }>();
   private ordinaryRequests = 0;
@@ -69,9 +71,12 @@ export class ManagedAgents {
   async handle(owner: string, request: AgentRequest, authorized: () => Promise<boolean>): Promise<ServerMessage> {
     const error = (code: "invalid_message" | "rate_limited" | "timeout" | "internal_error", message: string): ServerMessage =>
       ({ type: "error", in_reply_to: request.id, code, message });
+    if (request.type === "agent_launch" && request.launcher_id !== this.launcherId) {
+      return Promise.resolve(error("invalid_message", "Launching session changed; refresh and confirm a new Start"));
+    }
     const key = JSON.stringify([owner, request.id]);
     const payload = JSON.stringify(request.type === "agent_launch"
-      ? [request.type, request.cwd, request.name ?? null]
+      ? [request.type, request.launcher_id, request.cwd, request.name ?? null]
       : request.type === "agent_stop" ? [request.type, request.agent_id] : [request.type]);
     try {
       if (this.closing || !await authorized()) return error("invalid_message", "Launcher closed or Owner no longer paired");
@@ -82,7 +87,7 @@ export class ManagedAgents {
     // Read-only snapshots are fresh and never consume mutation history. Any
     // retained mutation ID still takes precedence for replay/conflict checks.
     if (request.type === "agent_list") return {
-      type: "agent_list_result", in_reply_to: request.id, available: true,
+      type: "agent_list_result", in_reply_to: request.id, available: true, launcher_id: this.launcherId,
       cwd: this.opts.cwd, max_agents: MAX_MANAGED_AGENTS,
       agents: [...this.entries.values()].filter(e => e.owner === owner).map(e => ({ ...e.agent })),
     };

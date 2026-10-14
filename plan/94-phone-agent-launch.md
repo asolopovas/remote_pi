@@ -4,7 +4,7 @@
 
 The operator requested additional Pi processes from the phone and authorized choosing the best interface. Deliver a phone-first flow; do not add a second LLM launch surface in this slice. Existing persistent daemons are one-per-cwd and resume recent sessions, which is not suitable for fresh additional agents in a folder already in use.
 
-Reuse the existing safe Pi process-launch primitives, without installing services, changing pairing, opening terminals, or replacing an existing agent. One connected, paired host Pi owns bounded, session-scoped headless children. They survive phone disconnects, but are stopped when their launching host Pi shuts down. This lifetime must be visible in the phone UI. No automatic crash restart or paid initial prompt. Each launch starts a fresh session with a unique identity, including when sharing a cwd.
+Reuse the existing safe Pi process-launch primitives, without installing services, changing pairing, opening terminals, or replacing an existing agent. One connected, paired host Pi owns bounded, session-scoped headless children. They survive phone disconnects, but are stopped when their launching host Pi exits or its session is replaced, resumed or reloaded. This lifetime must be visible in the phone UI. No automatic crash restart or paid initial prompt. Each launch starts a fresh session with a unique identity, including when sharing a cwd.
 
 ## Ownership and structure
 
@@ -18,14 +18,14 @@ Multi-seam implementation, with exclusive isolated owners:
 
 Base: `ff65bf0b`. Shared `/home/andrius/src/remote-pi` belongs to another task: do not write, switch its branch/index, deploy, or modify active services/pairings. Avoid App `session_tile.dart`, chat/voice/theme files belonging to that task. No publication/installation in this slice.
 
-## Frozen wire contract (paired room channel only)
+## Wire contract (paired room channel only; incarnation-safe revision)
 
 All requests use existing request IDs and transport. Do not create relay control messages, mesh remote-command endpoints, or accept launches from unpaired peers.
 
 Client messages:
 
 - `{type: "agent_list", id: string}`
-- `{type: "agent_launch", id: string, cwd: string, name?: string}`
+- `{type: "agent_launch", id: string, launcher_id: string, cwd: string, name?: string}`
 - `{type: "agent_stop", id: string, agent_id: string}`
 
 Managed agent shape:
@@ -34,10 +34,12 @@ Managed agent shape:
 
 Server messages:
 
-- `{type: "agent_list_result", in_reply_to: string, available: boolean, reason?: string, cwd: string, max_agents: number, agents: ManagedAgent[]}`
+- `{type: "agent_list_result", in_reply_to: string, available: boolean, launcher_id?: string, reason?: string, cwd: string, max_agents: number, agents: ManagedAgent[]}`
 - `{type: "agent_launch_result", in_reply_to: string, agent: ManagedAgent}`
 - `{type: "agent_stop_result", in_reply_to: string, agent: ManagedAgent}`
 - Existing correlated `error` message for validation, unsupported, limits, ownership, launch/stop failures. Use existing supported error codes, not uncoordinated enums.
+
+An available launcher returns a unique `launcher_id` for its host-session incarnation; launch requests must echo it and execution rejects stale IDs. Review identified that `(peer, room)` alone survives host-session replacement while idempotency history does not. The phone retains original pending mutation IDs/payloads across page disposal/reconnect for the app-process lifetime, checks incarnation before replay, and requires fresh confirmation on replacement. An empty snapshot alone never resolves a pending mutation. This additive safety revision does not change relay routing.
 
 `agent_list` is capability discovery; old extensions may silently ignore it, so the phone bounds the timeout and offers an update-extension message, never false availability. `available: false` carries a human-readable reason. `cwd` is the current launcher cwd (default form path). No file browser required: users enter an existing path explicitly. Canonicalize paths and require a directory. Reject control characters, overlong values and malformed input. Do not accept arbitrary binary, env, shell, flags, prompt, or model arguments. Optional name is a human label, not an opaque peer address.
 

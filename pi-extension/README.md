@@ -181,6 +181,14 @@ launch tool, a file browser, or a generic shell/flags/environment/prompt API.
   requests child shutdown, with a six-second orphan fallback. There is no crash
   restart, daemon registry entry, service installation, or persistence promise.
 
+Available launchers return a `launcher_id` identifying their host-session
+incarnation. Every `agent_launch` must echo it; stale IDs are rejected before
+spawning, even if the replacement reuses the same room. The phone retains
+pending IDs/payloads across page disposal and reconnect for its app-process
+lifetime. Recovery verifies incarnation and replays the original request before
+listing; an empty list alone cannot settle delayed admission. A changed launcher
+requires fresh Start confirmation, never automatic relaunch.
+
 Mutation IDs are Owner/launcher-scoped idempotency keys, including concurrent
 replays; conflicting payloads fail. Launch replies replay the original result;
 refresh `agent_list` for current state. The host retains **32 agent records**
