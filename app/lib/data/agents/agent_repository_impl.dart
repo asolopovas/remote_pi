@@ -12,10 +12,14 @@ class AgentRepositoryImpl extends AgentRepository {
     this._conn,
     this._storage, {
     this.timeout = const Duration(seconds: 20),
+    this.mutationTimeout = const Duration(seconds: 35),
   });
   final ConnectionManager _conn;
   final PairingStorage _storage;
   final Duration timeout;
+
+  /// Host readiness (20s) plus failed-child cleanup (up to 6s), with margin.
+  final Duration mutationTimeout;
   String? _peer, _room;
   int? _roomEpoch;
   bool _disposed = false;
@@ -128,7 +132,8 @@ class AgentRepositoryImpl extends AgentRepository {
     }
     final id = uuid7();
     final completer = Completer<ServerMessage>();
-    final timer = Timer(timeout, () {
+    final deadline = type == 'agent_list_result' ? timeout : mutationTimeout;
+    final timer = Timer(deadline, () {
       final p = _pending.remove(id);
       p?.completer.completeError(
         AgentFailure(

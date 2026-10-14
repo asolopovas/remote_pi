@@ -1,3 +1,4 @@
+import 'package:fake_async/fake_async.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -109,6 +110,56 @@ void main() {
     expect((replies[3] as AgentMutationResult).agent.state, 'stopped');
     expect((replies[4] as ErrorMessage).inReplyTo, 'launch-2');
   });
+  test('default mutation deadlines exceed host readiness and cleanup', () {
+    fakeAsync((clock) {
+      final channel = Channel(), conn = Connection(Channel());
+      conn.current = channel;
+      final repo = AgentRepositoryImpl(conn, Storage());
+      repo.bind(peer.remoteEpk, 'launcher');
+      clock.flushMicrotasks();
+      AgentFailure? listFailure, launchFailure, stopFailure;
+      repo.list().then(
+        (_) {},
+        onError: (Object error) {
+          listFailure = error as AgentFailure;
+        },
+      );
+      repo
+          .launch('/p', null)
+          .then(
+            (_) {},
+            onError: (Object error) {
+              launchFailure = error as AgentFailure;
+            },
+          );
+      repo
+          .stop('managed')
+          .then(
+            (_) {},
+            onError: (Object error) {
+              stopFailure = error as AgentFailure;
+            },
+          );
+      clock.flushMicrotasks();
+      clock.elapse(const Duration(seconds: 20));
+      clock.flushMicrotasks();
+      expect(listFailure, isNotNull);
+      expect(launchFailure, isNull);
+      expect(stopFailure, isNull);
+      clock.elapse(const Duration(seconds: 6));
+      clock.flushMicrotasks();
+      expect(launchFailure, isNull);
+      expect(stopFailure, isNull);
+      clock.elapse(const Duration(seconds: 9));
+      clock.flushMicrotasks();
+      expect(launchFailure!.outcomeUnknown, true);
+      expect(stopFailure!.outcomeUnknown, true);
+      repo.dispose();
+      conn.dispose();
+      clock.flushMicrotasks();
+    });
+  });
+
   group('pinned repository', () {
     late Channel channel;
     late Connection conn;
@@ -120,6 +171,7 @@ void main() {
         conn,
         Storage(),
         timeout: const Duration(milliseconds: 40),
+        mutationTimeout: const Duration(milliseconds: 40),
       );
       await repo.bind(peer.remoteEpk, 'launcher');
       await tick();
