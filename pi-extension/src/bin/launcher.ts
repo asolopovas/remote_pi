@@ -5,8 +5,9 @@ import { pathToFileURL } from "node:url";
 
 async function hiddenPin(label: string): Promise<string> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("PIN setup requires a local interactive terminal");
-  process.stdout.write(label);
+  // Disable terminal echo before advertising that PIN input is ready.
   process.stdin.setRawMode(true); process.stdin.resume();
+  process.stdout.write(label);
   return new Promise((ok, fail) => {
     let value = "";
     const done = (error?: Error) => {
