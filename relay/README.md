@@ -81,6 +81,14 @@ strongly recommend running your own relay.**
 Running your own relay removes the shared Relay operator from the trust path and
 places the TLS endpoint, executable, and storage under infrastructure you control.
 
+### Secure IP-only deployment on fn
+
+For the isolated, publicly trusted **TLS 1.3-only** deployment at
+`wss://173.208.50.216`, see [deploy/fn/README.md](deploy/fn/README.md).
+It includes pinned source/image provenance, ACME-only HTTP, automated short-lived
+IP certificate renewal, protocol acceptance probes, and backup/rollback operations.
+No existing client pairing or relay configuration is migrated by this deployment.
+
 ### Docker (quickest)
 
 ```bash

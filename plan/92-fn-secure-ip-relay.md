@@ -4,7 +4,7 @@
 
 The operator requested a Docker deployment of Remote Pi Relay on SSH alias `fn`, accepted an IP-only endpoint, requested the most secure compatible method backed by official documentation, and instructed the coordinator to proceed without further questions.
 
-**Status: researched and specified; NOT deployed.** The original planning-only/pane-only instructions blocked execution. At the operator's request, `CLAUDE.md` now permits scoped direct execution and native workers when Cockpit/cmux is unavailable. Implementation is authorized and pending; do not expose plaintext or claim deployment before live verification. No server state has been changed at this checkpoint.
+**Status: deployed and accepted (2026-10-14).** Working endpoint: **`wss://173.208.50.216`**; trusted health: `https://173.208.50.216/health`. The root execution-policy correction allowed the scoped native Relay worker to implement and verify this deployment. Independent review found renewal-retry and static-upstream recovery defects; both were corrected, including the follow-up aging-pending-certificate regression. Parent inspected the final recovery scripts/tests and independently verified deployed hashes and trusted live health. No client configuration or pairing was changed by this task.
 
 ### Verified prerequisites (read-only SSH)
 
@@ -53,13 +53,21 @@ This is the secure **direct-IP, existing-client-compatible** choice, not a claim
 - [x] Official relay and IP-certificate documentation checked.
 - [x] SSH/Docker prerequisites verified read-only.
 - [x] IP-only TLS deployment and fail-closed policy specified.
-- [ ] Eligible Relay worker receives implementation handoff.
-- [ ] Containers deployed with persistent storage and reviewed least privilege.
-- [ ] Trusted IP certificate, TLS 1.3, and automated renewal verified.
-- [ ] External network, authentication, routing, and restart checks pass.
-- [ ] Backup/restore and rollback evidence recorded.
-- [ ] Final working WSS endpoint reported; client migration status stated accurately.
+- [x] Scoped native Relay worker completed implementation and released ownership.
+- [x] Containers deployed with persistent storage and reviewed least privilege.
+- [x] Trusted IP certificate, TLS 1.3, renewal dry-run/hooks and pending-failure recovery verified.
+- [x] External IPv4, authentication, routing, and restart checks pass; IPv6 limit recorded below.
+- [x] Backup/restore and address-change rollback recovery evidence recorded.
+- [x] Working WSS endpoint reported; this task did not migrate clients or pairings.
+
+## Accepted implementation and remaining limits
+
+- Deployment: `relay/deploy/fn/`, installed at `/opt/remote-pi-relay` on fn. Relay 0.3.1 was built from locked source revision `ff65bf0b245bec752d280fd3c195cde92e552578`; runtime image ID `sha256:e4d6c951eb1e43d0fee7d083b622edd3516fe7d8c8bad600a2314ca961c5cc3b`. Detailed image digests, permissions, service names, backup and rollback commands are in the deployment README.
+- Let's Encrypt YE1, IP SAN `173.208.50.216`, initial certificate expiry `2026-10-20 16:01:48 UTC`. Automatic six-hourly renewal and hourly exact-certificate/expiry checks are enabled. Failed pending deployment no longer loses its marker or blocks new issuance. Markers clear only after exact production-certificate confirmation; unresolved failures remain nonzero.
+- Evidence: 130 Rust tests, clippy/fmt, deployment/probe tests, seven final renewal regressions locally and on fn, real authenticated WSS routing and rejection checks, consistent SQLite backup/isolated restore, renewal dry-run, and isolated actual backend-address-change recovery. Parent independently verified final deployed file hashes, trusted TLS1.3 health, unpublished relay port, enabled timers and unchanged unrelated containers.
+- Active all-server pi-lens checks confirm 15 supported deployment files clean, including the final three-file correction. Dockerfile has zero reported findings but its language server does not confirm coverage; successful pinned-image build is separate evidence, not an LSP-clean claim.
+- External IPv6 probing was unavailable; no IPv6 relay/proxy binding was configured. Off-host notification/encrypted backup transport is not enrolled. The first future scheduled production renewal has not yet elapsed. TLS is not E2E. These limits remain explicit; current live service health is verified.
 
 ## Next plans
 
-Execute through a scoped native Relay worker or directly from `relay/`, per the updated orchestration instructions. Do not change this coordinator's active relay or existing user pairing configuration until the new endpoint is verified; report separately whether any clients were migrated. Design refinement is tracked independently in plan 93.
+Monitor the first scheduled production renewal and enroll off-host alerts/backups through the operator's existing infrastructure when that scope is selected. Keep client migration separate from deployment acceptance. Continue the queued App dictation/Working-indicator fixes and plan 93 design refinement.
