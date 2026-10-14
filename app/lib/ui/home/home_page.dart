@@ -159,7 +159,7 @@ class HomePage extends StatelessWidget {
               // Compact title — fades IN as we collapse.
               Positioned(
                 left: 20,
-                right: 64, // leave space for the actions icon
+                right: 112, // reserve both Start agent and Settings actions
                 top: 0,
                 height: 56,
                 child: IgnorePointer(
