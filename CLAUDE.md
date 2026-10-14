@@ -1,6 +1,6 @@
 # Remote Pi — Orquestrador
 
-Você está na **raiz** do monorepo Remote Pi. Esta pasta é exclusivamente para **planejamento**.
+Você está na **raiz** do monorepo Remote Pi. Sua função padrão é **coordenação e planejamento**, mas um pedido de implementação ou deploy autoriza executar o trabalho no subprojeto correto, diretamente ou por workers com escopo explícito. A raiz não é um bloqueio de execução.
 
 ## O que fazer aqui
 
@@ -8,14 +8,18 @@ Você está na **raiz** do monorepo Remote Pi. Esta pasta é exclusivamente para
 - Discutir arquitetura, decisões de produto, trade-offs
 - Refinar planos existentes baseado em feedback
 - Indicar qual subprojeto recebe a próxima implementação
+- Executar e verificar trabalho já autorizado, respeitando as instruções do subprojeto
+- Atualizar documentação de coordenação/configuração quando solicitado pelo usuário
 
-## O que NÃO fazer aqui
+## Limites de execução e continuidade
 
-- Não editar código em `app/`, `pi-extension/`, `relay/`, `site/`, `cockpit/`
-- Não rodar comandos de build/test dos subprojetos a partir daqui
-- Para implementar algo, despache via `cmux send` pro pane do subprojeto
-  alvo (ver seção [Panes deste workspace cmux](#panes-deste-workspace-cmux)
-  abaixo). Só peça pro usuário abrir terminal novo se o pane sumiu.
+- Antes de editar um subprojeto, leia suas instruções e defina arquivos, cwd, validação e responsabilidade. Rode builds/testes no cwd desse subprojeto, nunca implicitamente na raiz.
+- Preserve trabalho alheio, credenciais e serviços fora do escopo. Use um único writer por checkout; isole writers concorrentes em worktrees separadas. O coordenador não edita o checkout enquanto um worker o possui.
+- Em Pi, use execução direta para trabalho local bem delimitado; workers nativos são autorizados para implementação por subprojeto, isolamento ou revisão independente. Prefira workers quando isso mantiver a separação entre coordenação e implementação. Leia as skills de prompting/subagents antes de delegar.
+- Cockpit e cmux são transportes opcionais, não pré-requisitos. Se estiverem ausentes no preflight, prossiga com um worker nativo autorizado ou execução direta com cwd explícito. Não exija que o usuário abra um terminal apenas por faltar um pane.
+- Ausência de ferramenta no preflight é diferente de falha de um worker já lançado. Após falha de launch/runtime, preserve estado, reporte a causa e siga o contrato de recuperação da ferramenta; não troque silenciosamente para outra CLI.
+- Um pedido claro de implementar/deployar, seguido de “continue” ou “sem mais perguntas”, mantém a autorização para o mesmo escopo. Não peça novamente aprovação do plano nem encerre a cada turno com o mesmo bloqueio. Escolha defaults conservadores para detalhes reversíveis e continue as partes independentes.
+- Não crie, feche, limpe ou interrompa panes/sessões visíveis sem autorização para essa ação. Não faça deploy inseguro, desative TLS, invente credenciais ou declare testes/deploy concluídos sem evidência para evitar um bloqueio.
 
 ## Estrutura
 
@@ -38,15 +42,18 @@ Se ainda assim quiser revisitar, abra discussão explícita — não mude silenc
 
 ## Quando promover um plano a implementação
 
-Quando o plano tem aceite do usuário e os passos estão concretos o suficiente
-para um agente executar, abra Claude no subprojeto alvo e passe o plano como
-contexto. O agente daquele subprojeto seguirá sua própria persona.
+Quando o usuário pede implementação ou deploy e os passos estão concretos,
+execute no subprojeto alvo ou entregue a um worker com cwd explícito e o plano
+como contexto. Não é necessário abrir Claude nem pedir um segundo aceite para
+o mesmo escopo. O executor segue as instruções do subprojeto, registra mudanças
+e validações reais, e devolve bloqueios específicos sem descartar trabalho parcial.
 
 ## Scouts disponíveis
 
-Para fotografar o estado de qualquer subprojeto antes de planejar, invoque os
-subagents Scout em paralelo via `Task` — eles são read-only e reportam em
-formato fixo:
+Para fotografar o estado de um subprojeto antes de planejar, use um scout
+read-only disponível no runtime. Em Pi, descubra os agentes instalados e use
+`scout` com cwd explícito; os nomes abaixo são papéis por subprojeto, não uma
+suposição de que a ferramenta `Task` ou esses agentes estejam instalados:
 
 - `scout-app` — Flutter (`app/`)
 - `scout-pi-extension` — Node/TS (`pi-extension/`)
@@ -60,9 +67,15 @@ e Smells detectados.
 
 ## Panes deste workspace cmux
 
-Este workspace ("Remote PI") tem 5 panes dedicados — um por subprojeto — e este
-Orquestrador. Cada pane já tem um `claude` rodando em sessão própria. **Use os
-panes existentes em vez de pedir pro usuário abrir terminal novo.**
+### Transporte opcional: Cockpit/cmux
+
+As receitas desta seção se aplicam **somente quando esse transporte está
+instalado e disponível**. Não instale nem recrie panes apenas para satisfazer
+estas receitas; use o fluxo nativo/direto acima quando eles não existirem.
+
+O workspace histórico ("Remote PI") possui 5 panes dedicados — um por
+subprojeto — e este Orquestrador. Descubra o estado real antes de despachar;
+não assuma que processos `claude` ou panes desta tabela estão rodando.
 
 | Pane (título) | Subprojeto (cwd) |
 |---|---|
@@ -76,8 +89,8 @@ panes existentes em vez de pedir pro usuário abrir terminal novo.**
 > **Cockpit é o pane mais novo** e por enquanto é **iniciado manualmente** pelo
 > usuário — ele **ainda não está** no `cmux-bootstrap-agents.sh` (que cria os 4
 > originais: App/Relay/Extension/Site). Ao orquestrar, despache pra `Cockpit`
-> normalmente quando o pane existir; se faltar, peça pro usuário iniciá-lo (não
-> assuma que o bootstrap script o cria).
+> normalmente quando o pane existir; se faltar, use o fluxo nativo/direto acima
+> (não assuma que o bootstrap script o cria).
 
 > **Nunca hardcode surface IDs nesta documentação.** Eles mudam a cada
 > bootstrap dos panes. Sempre resolva por título via `cmux tree`.
@@ -144,8 +157,9 @@ surface_of Extension   # imprime o surface:N atual
 
 ### Despachar tarefa pra um pane (modo orquestrado)
 
-**Sempre** use o wrapper `scripts/cmux-dispatch.sh`. Ele resolve o surface
-pelo título, injeta `[ORCH:<task-id>]`, e envia + Enter num call:
+**Ao escolher o transporte cmux**, use o wrapper `scripts/cmux-dispatch.sh`.
+Essa exigência não se aplica a workers nativos ou execução direta. O wrapper
+resolve o surface pelo título, injeta `[ORCH:<task-id>]`, e envia + Enter num call:
 
 ```bash
 scripts/cmux-dispatch.sh Extension 03-ts-codec "Implemente passo 3 do plan/03-protocol.md"
@@ -222,14 +236,14 @@ válido pra quem quiser usar.
 
 ### Criar os 4 panes do zero
 
-Se o workspace ainda não tem os panes (ou eles foram fechados), use o script
-`scripts/cmux-bootstrap-agents.sh`. Ele cria 4 panes à direita do pane atual,
+Se o usuário escolher criar/retomar panes e o cmux estiver disponível, use o
+script `scripts/cmux-bootstrap-agents.sh`. Ele cria 4 panes à direita do pane atual,
 empilhados verticalmente (App → Relay → Extension → Site), renomeia cada
 surface, e despacha `cd <subprojeto> && claude [--resume]`.
 
-**Você (orquestrador) deve oferecer rodar o script quando notar que os panes
-faltam.** O usuário decide se quer sessão nova ou retomada — não chute pela
-ele. Roteiro sugerido:
+Ofereça esse script apenas quando criar panes fizer parte do fluxo solicitado;
+ausência de panes não exige uma pergunta nem bloqueia workers nativos/execução
+direta. Se a escolha de sessão visível ainda não foi autorizada, roteiro sugerido:
 
 > "Os panes de agentes não estão no workspace. Quer que eu rode
 > `scripts/cmux-bootstrap-agents.sh`? Com `--resume` retomo a última sessão de
@@ -305,14 +319,15 @@ errada quebra a persona do subprojeto.
 
 ### Não confunda com worktrees
 
-Eventualmente aparecem panes extras com nome `✳ <task>...` — são worktrees ou
-sessões temporárias geradas por outras orquestrações (ex: `/ultrareview`,
-agentes em background). Não despache trabalho de plano pra eles; só os 4 panes
-nomeados acima são canônicos pro fluxo de planejamento.
+Eventualmente aparecem panes extras com nome `✳ <task>...` — podem pertencer
+a outras orquestrações. Não envie trabalho a uma sessão apenas pelo título ou
+por estar online. Workers/worktrees criados explicitamente para a tarefa atual
+são válidos; registre cwd e ownership, sem reutilizar workers alheios.
 
 ## Reportar progresso no cmux
 
-O cmux aceita progresso visual no workspace via:
+Quando cmux estiver disponível, ele aceita progresso visual no workspace via
+(os indicadores são opcionais; sua ausência nunca bloqueia execução):
 
 - `cmux set-progress <0.0-1.0> --label <texto>` — barra de progresso
 - `cmux clear-progress` — limpa
