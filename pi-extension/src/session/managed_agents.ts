@@ -254,7 +254,7 @@ export class ManagedAgents {
           const managed = parseManagedFrame(line);
           if (managed !== undefined) {
             const kind = (managed as { type?: unknown }).type;
-            if (kind !== "remote_pi_managed_ready" && kind !== "managed_event") throw new Error("Invalid child frame direction");
+            if (kind !== "remote_pi_managed_ready" && kind !== "managed_event" && kind !== "managed_metadata") throw new Error("Invalid child frame direction");
             child.emit("message", managed);
           } else consume(Buffer.from(line));
         }); } catch { finish(new AgentFailure("invalid_message", "Invalid managed pipe frame")); child.kill("SIGKILL"); }

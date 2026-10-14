@@ -21,6 +21,7 @@ test("real sandbox Pi + parent-only signing/rooms, gated dispatch, direct child 
   await new Promise<void>(ok => server.once("listening", ok));
   const address = server.address(); if (!address || typeof address === "string") throw new Error("No loopback address");
   const rooms = new Map<string, WebSocket>(); const replies: ServerMessage[] = [];
+  const metadata: { room_id: string; meta: { working: boolean; model?: string; thinking?: string } }[] = [];
   server.on("connection", ws => {
     const nonce = randomBytes(32); let room: string | undefined;
     ws.on("message", data => {
@@ -31,7 +32,8 @@ test("real sandbox Pi + parent-only signing/rooms, gated dispatch, direct child 
       } else if (frame.type === "auth") {
         expect(ed25519Verify(keypair.publicKey, nonce, Buffer.from(frame.sig, "base64"))).toBe(true);
         if (room) rooms.set(room, ws);
-      } else if (frame.ct) replies.push(JSON.parse(Buffer.from(frame.ct, "base64").toString("utf8")));
+      } else if (frame.type === "room_meta_update") metadata.push(frame);
+      else if (frame.ct) replies.push(JSON.parse(Buffer.from(frame.ct, "base64").toString("utf8")));
     });
     ws.on("close", () => { if (room) rooms.delete(room); });
   });
@@ -64,6 +66,7 @@ test("real sandbox Pi + parent-only signing/rooms, gated dispatch, direct child 
     expect(launched, JSON.stringify(launched)).toMatchObject({ type: "agent_launch_result", agent: { state: "running", cwd: project } });
     if (launched.type !== "agent_launch_result") throw new Error(JSON.stringify(launched));
     await expect.poll(() => rooms.has(launched.agent.room_id)).toBe(true);
+    await expect.poll(() => metadata.some(m => m.room_id === launched.agent.room_id && m.meta.working === false && typeof m.meta.model === "string" && typeof m.meta.thinking === "string")).toBe(true);
     const ws = rooms.get(launched.agent.room_id)!;
     const send = (inner: unknown, peer = "owner-a") => ws.send(JSON.stringify({ peer, ct: Buffer.from(JSON.stringify(inner)).toString("base64") }));
     send({ type: "ping", id: "direct" });

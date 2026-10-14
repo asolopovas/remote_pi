@@ -31,7 +31,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { childBridge } from "./session/managed_pipe.js";
+import { childBridge, decodeManagedMetadata } from "./session/managed_pipe.js";
 import { decodeManagedControl } from "./session/managed_transport.js";
 import { SecureLauncher } from "./session/secure_launcher.js";
 import { decodeLauncherRequest, LAUNCHER_REQUEST_TYPES } from "./protocol/codec.js";
@@ -282,6 +282,7 @@ let _meshJoinGeneration = 0;
 let _disposed = false;
 let _secureLauncher: SecureLauncher | null = null;
 let _childEpoch = "";
+let _managedWorking = false;
 let _childSequence = 0;
 let _childTransportDispose: (() => void) | null = null;
 // True once the auto-init has run on the first session_start for this
@@ -331,6 +332,14 @@ function _currentModelName(): string | undefined {
   return _currentModel;
 }
 
+function _publishManagedMetadata(): void {
+  const bridge = childBridge();
+  if (process.env.REMOTE_PI_SANDBOX_CHILD !== "1" || !bridge?.connected || !_childEpoch) return;
+  const meta = { working: _managedWorking, ...(_currentModel ? { model: _currentModel } : {}), ...(_currentThinking ? { thinking: _currentThinking } : {}) };
+  // Invalid project-controlled labels never enter the private metadata channel.
+  try { decodeManagedMetadata(meta); bridge.send({ type: "managed_metadata", epoch: _childEpoch, meta }); } catch { /* omit invalid metadata */ }
+}
+
 /**
  * Cache the active model name and fan it out to subscribed apps via a
  * `room_meta_update`. The relay push is a no-op when the room isn't up yet —
@@ -342,6 +351,7 @@ function _currentModelName(): string | undefined {
  */
 function _setCurrentModel(name: string): void {
   _currentModel = name;
+  _publishManagedMetadata();
   if (_myRoomMeta) _myRoomMeta = { ..._myRoomMeta, model: name };
   if (_relay && _myRoomId) {
     _relay.sendControl({ type: "room_meta_update", room_id: _myRoomId, meta: { model: name } });
@@ -356,6 +366,8 @@ function _setCurrentModel(name: string): void {
  * so room_meta.working must be bracketed manually around compaction.
  */
 function _publishWorking(working: boolean): void {
+  _managedWorking = working;
+  _publishManagedMetadata();
   if (_myRoomMeta) _myRoomMeta = { ..._myRoomMeta, working };
   if (_relay && _myRoomId) {
     _relay.sendControl({ type: "room_meta_update", room_id: _myRoomId, meta: { working } });
@@ -2174,9 +2186,11 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
         owner = m.owner; _childEpoch = m.epoch; _myRoomId = m.room_id as string;
         const channel = new PlainPeerChannel(ipc, owner, _myRoomId, () => {});
         _attachPeerChannel(owner, channel);
+        _publishManagedMetadata();
       } else if (m.type === "managed_revoke" && typeof m.epoch === "string") {
         _childEpoch = m.epoch;
         _clearQueuedItems();
+        _publishManagedMetadata();
       } else if (m.type === "managed_control" && owner && m.epoch === _childEpoch && Number.isSafeInteger(m.sequence) && Number(m.sequence) > _childSequence) {
         let message: ClientMessage;
         try { message = decodeManagedControl(m.message); } catch { return; }
@@ -2274,6 +2288,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     const level = event?.level as ThinkingLevel | undefined;
     if (!level) return;
     _currentThinking = level;
+    _publishManagedMetadata();
     if (_myRoomMeta) _myRoomMeta = { ..._myRoomMeta, thinking: level };
     if (!_relay || !_myRoomId) return;
     _relay.sendControl({
@@ -2403,17 +2418,11 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     }
     // Plan/32 Part B: publish working=true as room_meta (raw, no debounce —
     // the debounce lives in the app). Same shape as the model/thinking updates.
-    if (_myRoomMeta) _myRoomMeta = { ..._myRoomMeta, working: true };
-    if (_relay && _myRoomId) {
-      _relay.sendControl({ type: "room_meta_update", room_id: _myRoomId, meta: { working: true } });
-    }
+    _publishWorking(true);
   });
   pi.on("turn_end", () => {
     // Plan/32 Part B: publish working=false as room_meta (raw, no debounce).
-    if (_myRoomMeta) _myRoomMeta = { ..._myRoomMeta, working: false };
-    if (_relay && _myRoomId) {
-      _relay.sendControl({ type: "room_meta_update", room_id: _myRoomId, meta: { working: false } });
-    }
+    _publishWorking(false);
     _maybeDrainQueuedItem();
   });
 
@@ -2480,6 +2489,12 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     if (process.env.REMOTE_PI_SANDBOX_CHILD === "1") {
       _disposed = false;
       const name = loadLocalConfig(ctx.cwd).agent_name;
+      const c = ctx as Partial<ExtensionContext> & { getModel?: () => { name?: string; id?: string } | undefined };
+      const model = c.getModel?.() ?? c.model;
+      _currentModel = model?.name ?? model?.id;
+      _currentThinking = _pi?.getThinkingLevel() as ThinkingLevel | undefined;
+      _managedWorking = false;
+      _publishManagedMetadata();
       childBridge()?.send({ type: "remote_pi_managed_ready", name, room_id: roomIdFor(ctx.cwd, name), ok: true });
       return;
     }

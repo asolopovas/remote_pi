@@ -4,7 +4,16 @@ import type { ChildProcess } from "node:child_process";
 import type { Writable } from "node:stream";
 export const PIPE_FRAME = "remote_pi_managed_frame";
 export const PIPE_LIMIT = 6_000_000;
-const KINDS = new Set(["managed_init", "managed_revoke", "managed_control", "remote_pi_managed_ready", "managed_event"]);
+const KINDS = new Set(["managed_init", "managed_revoke", "managed_control", "remote_pi_managed_ready", "managed_event", "managed_metadata"]);
+export interface ManagedMetadata { working: boolean; model?: string; thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" }
+export function decodeManagedMetadata(value: unknown): ManagedMetadata {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid managed metadata");
+  const m = value as Record<string, unknown>;
+  if (Object.keys(m).some(k => !["working", "model", "thinking"].includes(k)) || typeof m.working !== "boolean" ||
+      m.model !== undefined && (typeof m.model !== "string" || m.model.length < 1 || m.model.length > 256 || /[\x00-\x1f\x7f-\x9f]/.test(m.model)) ||
+      m.thinking !== undefined && (typeof m.thinking !== "string" || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(m.thinking))) throw new Error("Invalid managed metadata");
+  return { working: m.working, ...(m.model !== undefined ? { model: m.model as string } : {}), ...(m.thinking !== undefined ? { thinking: m.thinking as ManagedMetadata["thinking"] } : {}) };
+}
 export function validateManagedMessage(value: unknown): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid private managed message");
   const m = value as Record<string, unknown>;
@@ -14,6 +23,7 @@ export function validateManagedMessage(value: unknown): void {
     case "managed_init": keys = ["type", "owner", "room_id", "epoch"]; if (!text(m.owner) || !text(m.room_id) || !text(m.epoch)) throw new Error("Invalid managed init"); break;
     case "managed_revoke": keys = ["type", "epoch"]; if (!text(m.epoch)) throw new Error("Invalid managed revocation"); break;
     case "managed_control": keys = ["type", "epoch", "sequence", "message"]; if (!text(m.epoch) || !Number.isSafeInteger(m.sequence) || Number(m.sequence) < 1 || !m.message || typeof m.message !== "object") throw new Error("Invalid managed control frame"); break;
+    case "managed_metadata": keys = ["type", "epoch", "meta"]; if (!text(m.epoch)) throw new Error("Invalid managed metadata epoch"); decodeManagedMetadata(m.meta); break;
     case "managed_event": keys = ["type", "epoch", "message"]; if (!text(m.epoch) || !m.message || typeof m.message !== "object") throw new Error("Invalid managed event"); break;
     case "remote_pi_managed_ready": keys = ["type", "name", "room_id", "ok"]; if (!text(m.name) || !text(m.room_id) || typeof m.ok !== "boolean") throw new Error("Invalid managed ready"); break;
     default: throw new Error("Unknown private managed message");

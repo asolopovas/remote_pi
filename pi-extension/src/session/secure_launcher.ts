@@ -41,7 +41,9 @@ export class SecureLauncher {
         if (this.closing || !opts.current()) throw new Error("Host closed");
         const room = new ManagedRoom({ agent, owner, child, keypair, url: toWebSocketUrl(resolveRelayUrl().url),
           currentEpoch: () => this.security.epoch,
-          paired: () => opts.paired(owner),
+          paired: async () => !this.closing && opts.current() && await opts.paired(owner),
+          current: () => !this.closing && opts.current(),
+          hasGrant: epoch => !this.closing && !this.shuttingDown && opts.current() && this.security.hasGrant(owner, epoch),
           authorized: async epoch => {
             if (!await opts.paired(owner)) { this.lock(); return false; }
             return !this.closing && !this.shuttingDown && opts.current() && await this.security.authorized(owner, epoch);

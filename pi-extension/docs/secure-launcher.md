@@ -103,9 +103,15 @@ Bubblewrap 0.9.0 closes inherited Node IPC fd3 (`--preserve-fds` is unavailable 
 
 Managed child rooms support bounded existing text/image messages, queue set/clear, cancel, ping, session history, model/thinking selection, model listing and simple extension UI replies. Structured `ask` replies, session-new/compact and arbitrary session/file operations are not enabled by this narrow bridge. The proxy does not automatically restart children or recreate a dropped child-room Relay connection; use the still-owned host list/stop surface after connectivity recovery. Ordinary unrelated Pi rooms keep their prior transport behavior.
 
-### Managed output bounds
+### Managed output bounds and observational metadata
 
 All managed Relay writes (hello/auth, event envelopes, denials and metadata controls) use a **12,000,000-byte** cap. Admission conservatively sums WebSocket `bufferedAmount`, bytes reserved until send callbacks complete, and the next UTF8 frame plus 14 bytes of WS framing. Event accounting includes base64/JSON expansion. There is no retry queue. Overflow, send exceptions, callback errors or lost transport terminate that room immediately and SIGKILL only its assigned managed child; accepted queued output is not drained after failure. Ordinary interactive `send`/`sendControl` semantics are unchanged. This is a bridge queue bound, not a general child compute/disk/network quota.
+
+The private `managed_metadata` frame carries only an epoch and an exact snapshot of `working:boolean`, optional control-free `model:string` (1–256 characters), and optional enumerated `thinking`. It has no room, Owner, signing, arbitrary-field or remote interface. Startup seeds the SDK snapshot; turn_start/turn_end and model/thinking selection update it. The parent selects the assigned room and retains at most one latest snapshot, coalescing/rate-limiting publication to at most ten updates/second through the same bounded send surface. Brief turns may be coalesced.
+
+**Locked metadata policy:** only a currently paired launching Owner/current live child may publish `working` while locked; no updated model/thinking or other project-controlled strings, protected events/output/history are sent. This allows Home to reflect already-accepted work continuing after Lock. With a valid current grant, model/thinking may also be published. A fresh unlock can republish the latest full snapshot only after renewed admission. Final asynchronous pairing/authorization checks are followed by synchronous epoch/grant/lifecycle/child checks. Lock does not erase metadata already disclosed and cached by Relay/App, or recall frames already admitted before revocation. Working patches do not replace cached previously-disclosed model/thinking values in the existing Relay contract.
+
+These are private host changes only: Relay uses its existing `room_meta_update` → `room_meta_updated` contract and frozen App Home consumes `meta.working` through ConnectionManager, independently of the active chat. No App wire types change.
 
 ## Validation provenance / limitations
 

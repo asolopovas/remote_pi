@@ -18,10 +18,19 @@ test("private managed framing preserves split multibyte RPC interleaving and bou
   const truncated = new ManagedLineDecoder(); truncated.push(Buffer.from("{"), () => {}); expect(() => truncated.end()).toThrow("Truncated");
 });
 
+test("private metadata has exact approved fields and validated bounded values", () => {
+  const frame = { type: "managed_metadata", epoch: "e", meta: { working: true, model: "model", thinking: "high" } };
+  expect(parseManagedFrame(managedFrame(frame))).toEqual(frame);
+  for (const meta of [{ working: "yes" }, { working: true, cwd: "/secret" }, { working: true, model: "x".repeat(257) }, { working: true, model: "bad\nlabel" }, { working: true, thinking: "unknown" }, { working: true, thinking: ["low"] }, { working: true, thinking: null }]) {
+    expect(() => managedFrame({ ...frame, meta })).toThrow();
+  }
+  expect(() => managedFrame({ ...frame, room_id: "arbitrary-room" })).toThrow();
+});
+
 test("real preload pipes init/control/revoke and RPC independently; malformed, oversized and EOF fail closed", async () => {
   const root = await mkdtemp(join(tmpdir(), "managed-pipe-test-")); const fixture = join(root, "fixture.mjs");
   const children: ChildProcess[] = [];
-  await writeFile(fixture, `import { childBridge } from '${resolve("dist/session/managed_pipe.js")}'; const b = childBridge(); b.send({type:'remote_pi_managed_ready',name:'fixture',room_id:'room',ok:true}); b.events.on('message', m => { if(m.type === 'managed_control') b.send({type:'managed_event',epoch:m.epoch,message:{type:'pong',in_reply_to:m.message.id}}); }); process.stdin.on('data', chunk => process.stdout.write(chunk)); setInterval(() => {}, 1000);`);
+  await writeFile(fixture, `import { childBridge } from '${resolve("dist/session/managed_pipe.js")}'; const b = childBridge(); b.send({type:'remote_pi_managed_ready',name:'fixture',room_id:'room',ok:true}); b.events.on('message', m => { if(m.type === 'managed_init') b.send({type:'managed_metadata',epoch:m.epoch,meta:{working:false,model:'fixture',thinking:'low'}}); if(m.type === 'managed_control') b.send({type:'managed_event',epoch:m.epoch,message:{type:'pong',in_reply_to:m.message.id}}); }); process.stdin.on('data', chunk => process.stdout.write(chunk)); setInterval(() => {}, 1000);`);
   const start = () => {
     const child = spawn(process.execPath, ["--import", resolve("dist/session/managed_preload.js"), fixture], { env: { ...process.env, REMOTE_PI_SANDBOX_CHILD: "1" }, stdio: ["pipe", "pipe", "pipe"] });
     children.push(child); child.stderr?.on("data", () => {}); return child;
@@ -34,6 +43,7 @@ test("real preload pipes init/control/revoke and RPC independently; malformed, o
     const bytes = Buffer.from(managedFrame({ type: "managed_init", owner: "owner", room_id: "room", epoch: "e" }) + rpc + managedFrame({ type: "managed_control", epoch: "e", sequence: 1, message: { type: "ping", id: "control" } }));
     for (let i = 0; i < bytes.length; i++) child.stdin!.write(bytes.subarray(i, i + 1));
     await expect.poll(() => lines.includes(rpc)).toBe(true);
+    await expect.poll(() => lines.some(line => (parseManagedFrame(line) as { type?: string } | undefined)?.type === "managed_metadata")).toBe(true);
     await expect.poll(() => lines.some(line => (parseManagedFrame(line) as { message?: { in_reply_to?: string } } | undefined)?.message?.in_reply_to === "control")).toBe(true);
     child.stdin!.write(managedFrame({ type: "managed_revoke", epoch: "new" }));
     child.stdin!.end(); await expect.poll(() => child.exitCode !== null || child.signalCode !== null).toBe(true);

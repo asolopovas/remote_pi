@@ -6525,6 +6525,42 @@ describe("phone agent request routing", () => {
   });
 });
 
+describe("sandbox private metadata producers", () => {
+  test("startup snapshot and SDK turn/model/thinking events use only the private metadata frame", async () => {
+    const { installChildBridge } = await import("./session/managed_pipe.js");
+    const { roomIdFor } = await import("./rooms.js");
+    const key = Symbol.for("remote-pi.private-managed-bridge");
+    const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+    const events = new EventEmitter(); const send = vi.fn();
+    vi.stubEnv("REMOTE_PI_SANDBOX_CHILD", "1"); vi.stubEnv("REMOTE_PI_MANAGED_CHILD", "1");
+    vi.stubEnv("REMOTE_PI_DIRECT_CONFIG", JSON.stringify({ agent_name: "private-metadata-fixture" }));
+    installChildBridge({ events, send, connected: true });
+    const harness = captureEventHarness();
+    _setPiForTest({ getThinkingLevel: () => "low" } as unknown as ExtensionAPI);
+    const ctx = { ...makeMockCtx(process.cwd()), model: { id: "initial", name: "initial-model" } };
+    const snapshots = () => send.mock.calls.map(c => c[0]).filter(m => m.type === "managed_metadata");
+    try {
+      (harness.handler("session_start") as (event: AnyEvent, ctx: unknown) => unknown)({ type: "session_start" }, ctx);
+      events.emit("message", { type: "managed_init", owner: OWNER_STANDARD_FIXTURE, room_id: roomIdFor(process.cwd(), "private-metadata-fixture"), epoch: "e" });
+      expect(snapshots().at(-1)).toEqual({ type: "managed_metadata", epoch: "e", meta: { working: false, model: "initial-model", thinking: "low" } });
+      harness.handler("turn_start")({ type: "turn_start" });
+      expect(snapshots().at(-1).meta.working).toBe(true);
+      harness.handler("model_select")({ type: "model_select", model: { id: "next", name: "next-model" } });
+      harness.handler("thinking_level_select")({ type: "thinking_level_select", level: "high" });
+      expect(snapshots().at(-1).meta).toEqual({ working: true, model: "next-model", thinking: "high" });
+      harness.handler("turn_end")({ type: "turn_end" });
+      expect(snapshots().at(-1).meta.working).toBe(false);
+      events.emit("message", { type: "managed_revoke", epoch: "new" });
+      expect(snapshots().at(-1)).toEqual({ type: "managed_metadata", epoch: "new", meta: { working: false, model: "next-model", thinking: "high" } });
+      expect(snapshots().every(m => Object.keys(m).sort().join() === "epoch,meta,type")).toBe(true);
+    } finally {
+      await harness.handler("session_shutdown")({ type: "session_shutdown" });
+      if (previous) Object.defineProperty(globalThis, key, previous); else Reflect.deleteProperty(globalThis, key);
+      vi.unstubAllEnvs(); _setDisposedForTest(false); _setCurrentModelForTest(undefined);
+    }
+  });
+});
+
 describe("managed phone child startup and orphan guard", () => {
   test("IPC readiness requires independent identity, local admission and an open published relay room", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "managed-ready-"));

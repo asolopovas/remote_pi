@@ -1,4 +1,4 @@
-import { sendToManagedChild, managedChildConnected } from "./managed_pipe.js";
+import { sendToManagedChild, managedChildConnected, decodeManagedMetadata, type ManagedMetadata } from "./managed_pipe.js";
 import type { ChildProcess } from "node:child_process";
 import type { ClientMessage, ManagedAgent, ServerMessage } from "../protocol/types.js";
 import { RelayClient } from "../transport/relay_client.js";
@@ -40,6 +40,8 @@ interface Options {
   currentEpoch(): string;
   authorized(epoch: string): Promise<boolean>;
   paired(): Promise<boolean>;
+  current(): boolean;
+  hasGrant(epoch: string): boolean;
 }
 /** Parent owns the WS signing identity and routes only one assigned room/Owner.
  * No private key, pair record, arbitrary destination or mesh operation reaches IPC. */
@@ -50,6 +52,10 @@ export class ManagedRoom {
   private used = new Set<string>();
   private inflight = 0;
   private outboundInflight = 0;
+  private metadata: ManagedMetadata | undefined;
+  private metadataTimer: ReturnType<typeof setTimeout> | undefined;
+  private metadataBusy = false;
+  private metadataDirty = false;
   constructor(private readonly opts: Options) { this.relay = new RelayClient(opts.url, opts.keypair); }
   async connect(): Promise<void> {
     this.relay.on("message", this.receive);
@@ -62,7 +68,33 @@ export class ManagedRoom {
       sendToManagedChild(this.opts.child, { type: "managed_init", owner: this.opts.owner, room_id: this.opts.agent.room_id, epoch: this.opts.currentEpoch() });
     } catch (error) { this.close(); throw error; }
   }
-  revoke(): void { if (!this.closed && managedChildConnected(this.opts.child)) sendToManagedChild(this.opts.child, { type: "managed_revoke", epoch: this.opts.currentEpoch() }); }
+  revoke(): void {
+    if (!this.closed && managedChildConnected(this.opts.child)) sendToManagedChild(this.opts.child, { type: "managed_revoke", epoch: this.opts.currentEpoch() });
+    this.scheduleMetadata();
+  }
+  private live(): boolean { return !this.closed && this.opts.current() && managedChildConnected(this.opts.child); }
+  private scheduleMetadata(): void {
+    if (!this.live() || !this.metadata) return;
+    this.metadataDirty = true;
+    if (this.metadataTimer || this.metadataBusy) return;
+    // One latest snapshot, at most ten updates/sec; no per-event retry queue.
+    this.metadataTimer = setTimeout(() => { this.metadataTimer = undefined; void this.flushMetadata(); }, 100);
+    this.metadataTimer.unref();
+  }
+  private async flushMetadata(): Promise<void> {
+    this.metadataBusy = true; this.metadataDirty = false;
+    const epoch = this.opts.currentEpoch();
+    try {
+      if (!await this.opts.paired() || !this.live()) return;
+      const authorized = await this.opts.authorized(epoch);
+      const paired = await this.opts.paired();
+      if (!paired || !this.live() || epoch !== this.opts.currentEpoch() || !this.metadata) return;
+      // After the final await only synchronous authority/child checks remain.
+      const meta = authorized && this.opts.hasGrant(epoch) ? this.metadata : { working: this.metadata.working };
+      this.send(JSON.stringify({ type: "room_meta_update", room_id: this.opts.agent.room_id, meta }));
+    } catch { this.fail(); }
+    finally { this.metadataBusy = false; if (this.metadataDirty) this.scheduleMetadata(); }
+  }
   private receive = (line: string): void => {
     if (this.closed || Buffer.byteLength(line) > 6_000_000 || this.inflight >= 8) return;
     let outer: { peer?: unknown; ct?: unknown };
@@ -76,7 +108,7 @@ export class ManagedRoom {
     this.inflight++;
     void (async () => {
       try {
-        if (!await this.opts.authorized(epoch) || this.closed || epoch !== this.opts.currentEpoch() || !managedChildConnected(this.opts.child)) {
+        if (!await this.opts.authorized(epoch) || !this.live() || epoch !== this.opts.currentEpoch() || !this.opts.hasGrant(epoch) || !managedChildConnected(this.opts.child)) {
           if (!this.closed && await this.opts.paired()) this.send(JSON.stringify({ peer: this.opts.owner, ct: Buffer.from(JSON.stringify({ type: "error", in_reply_to: message.id, code: "invalid_message", message: "Launcher locked, expired or unavailable; unlock the launching host" })).toString("base64") }));
           return;
         }
@@ -91,7 +123,12 @@ export class ManagedRoom {
   };
   private publish = (raw: unknown): void => {
     if (this.closed || this.outboundInflight >= 8 || !raw || typeof raw !== "object") return;
-    const envelope = raw as { type?: unknown; epoch?: unknown; message?: unknown };
+    const envelope = raw as { type?: unknown; epoch?: unknown; message?: unknown; meta?: unknown };
+    if (envelope.type === "managed_metadata") {
+      if (Object.keys(envelope).some(k => !["type", "epoch", "meta"].includes(k)) || envelope.epoch !== this.opts.currentEpoch()) return;
+      try { this.metadata = decodeManagedMetadata(envelope.meta); this.scheduleMetadata(); } catch { this.fail(); }
+      return;
+    }
     if (envelope.type !== "managed_event" || typeof envelope.epoch !== "string") return;
     const message = envelope.message as ServerMessage | undefined;
     if (!message || !OUTBOUND.has(message.type)) return;
@@ -101,7 +138,7 @@ export class ManagedRoom {
     this.outboundInflight++;
     void (async () => {
       try {
-        if (!await this.opts.authorized(epoch) || this.closed || epoch !== this.opts.currentEpoch()) return;
+        if (!await this.opts.authorized(epoch) || !this.live() || epoch !== this.opts.currentEpoch() || !this.opts.hasGrant(epoch)) return;
         // Child cannot select Owner, room or arbitrary relay control frame.
         this.send(JSON.stringify({ peer: this.opts.owner, ct: Buffer.from(serialized).toString("base64") }));
       } finally { this.outboundInflight--; }
@@ -109,5 +146,5 @@ export class ManagedRoom {
   };
   private send(line: string): void { if (!this.closed) this.relay.sendManaged(line, this.fail); }
   private fail = (): void => { if (this.closed) return; this.close(); this.opts.child.kill("SIGKILL"); };
-  close = (): void => { this.closed = true; this.opts.child.off("exit", this.close); this.relay.off("message", this.receive); this.relay.off("close", this.fail); this.opts.child.off("message", this.publish); this.relay.terminateManaged(); }
+  close = (): void => { this.closed = true; if (this.metadataTimer) clearTimeout(this.metadataTimer); this.metadataTimer = undefined; this.opts.child.off("exit", this.close); this.relay.off("message", this.receive); this.relay.off("close", this.fail); this.opts.child.off("message", this.publish); this.relay.terminateManaged(); }
 }
