@@ -11,6 +11,12 @@ import 'package:highlight/languages/json.dart';
 import 'package:highlight/languages/css.dart';
 import 'package:highlight/languages/xml.dart';
 import 'package:highlight/languages/yaml.dart';
+import 'package:highlight/languages/go.dart';
+import 'package:highlight/languages/rust.dart';
+import 'package:highlight/languages/sql.dart';
+import 'package:highlight/languages/java.dart';
+import 'package:highlight/languages/kotlin.dart';
+import 'package:highlight/languages/swift.dart';
 
 /// Only mounted disclosed source is parsed; each viewport caches one bounded tree.
 class SourceCode extends StatefulWidget {
@@ -27,7 +33,15 @@ class SourceCode extends StatefulWidget {
     'py' || 'python' => 'python',
     'html' || 'xml' => 'xml',
     'yml' || 'yaml' => 'yaml',
-    'dart' || 'json' || 'css' => name.toLowerCase(),
+    'rs' || 'rust' => 'rust',
+    'kt' || 'kts' || 'kotlin' => 'kotlin',
+    'dart' ||
+    'json' ||
+    'css' ||
+    'go' ||
+    'sql' ||
+    'java' ||
+    'swift' => name.toLowerCase(),
     _ => null,
   };
 
@@ -41,7 +55,13 @@ class SourceCode extends StatefulWidget {
     ..registerLanguage('json', json)
     ..registerLanguage('css', css)
     ..registerLanguage('xml', xml)
-    ..registerLanguage('yaml', yaml);
+    ..registerLanguage('yaml', yaml)
+    ..registerLanguage('go', go)
+    ..registerLanguage('rust', rust)
+    ..registerLanguage('sql', sql)
+    ..registerLanguage('java', java)
+    ..registerLanguage('kotlin', kotlin)
+    ..registerLanguage('swift', swift);
 
   @override
   State<SourceCode> createState() => _SourceCodeState();

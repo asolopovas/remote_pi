@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'compact_output_header.dart';
 import 'accordion_viewport.dart';
+import 'accordion_expansion.dart';
 
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/agent_markdown.dart';
@@ -179,17 +180,18 @@ class _SubagentPanelState extends State<SubagentPanel> {
                       ),
                     ),
                   ),
-                  TextButton(
-                    onPressed: () => onCollapsedChanged(!collapsed),
-                    style: TextButton.styleFrom(
-                      textStyle: context.typo.monoSmall,
-                      foregroundColor: colors.muted2,
-                      minimumSize: const Size(48, 48),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                  if (AccordionExpansion.commandOf(context) == null)
+                    TextButton(
+                      onPressed: () => onCollapsedChanged(!collapsed),
+                      style: TextButton.styleFrom(
+                        textStyle: context.typo.monoSmall,
+                        foregroundColor: colors.muted2,
+                        minimumSize: const Size(48, 48),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        padding: const EdgeInsets.symmetric(horizontal: 6),
+                      ),
+                      child: Text(collapsed ? 'Expand all' : 'Collapse all'),
                     ),
-                    child: Text(collapsed ? 'Expand all' : 'Collapse all'),
-                  ),
                   if (onClose != null)
                     IconButton(
                       tooltip: 'Close subagents',
@@ -234,15 +236,28 @@ class _SubagentCard extends StatefulWidget {
 class _SubagentCardState extends State<_SubagentCard>
     with AutomaticKeepAliveClientMixin {
   @override
-  bool get wantKeepAlive => _expanded != null;
+  bool get wantKeepAlive => _touched;
+  bool _touched = false;
   bool? _expanded;
+  (int, bool?)? _accordionCommand;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final command = AccordionExpansion.commandOf(context);
+    if (command != _accordionCommand) {
+      _accordionCommand = command;
+      if (command?.$2 != null) _expanded = command!.$2!;
+    }
+  }
 
   @override
   void didUpdateWidget(_SubagentCard oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.collapsed != widget.collapsed ||
         oldWidget.invocation.tool.id != widget.invocation.tool.id) {
-      _expanded = null;
+      _expanded = _accordionCommand?.$2;
+      _touched = false;
       updateKeepAlive();
     }
   }
@@ -255,9 +270,13 @@ class _SubagentCardState extends State<_SubagentCard>
     final expanded = _expanded ?? !widget.collapsed;
     final color = invocation.statusColor(colors);
     return AccordionAnchor(
+      bulkCommand: _accordionCommand,
       expanded: expanded,
       onCollapse: () {
-        setState(() => _expanded = false);
+        setState(() {
+          _expanded = false;
+          _touched = true;
+        });
         updateKeepAlive();
       },
       header: CompactOutputHeader(
@@ -266,7 +285,10 @@ class _SubagentCardState extends State<_SubagentCard>
         expanded: expanded,
         disclosureKey: ValueKey('subagent-${invocation.tool.id}'),
         onToggle: () {
-          setState(() => _expanded = !expanded);
+          setState(() {
+            _expanded = !expanded;
+            _touched = true;
+          });
           updateKeepAlive();
         },
         status: invocation.status,

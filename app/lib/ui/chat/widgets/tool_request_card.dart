@@ -4,6 +4,7 @@ import 'compact_output_header.dart';
 import 'source_code.dart';
 import 'codemode_preview.dart';
 import 'tool_presentation.dart';
+import 'accordion_expansion.dart';
 
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
@@ -38,6 +39,18 @@ class ToolRequestCard extends StatefulWidget {
 class _ToolRequestCardState extends State<ToolRequestCard>
     with AutomaticKeepAliveClientMixin {
   bool _expanded = false;
+  (int, bool?)? _accordionCommand;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final command = AccordionExpansion.commandOf(context);
+    if (command != _accordionCommand) {
+      _accordionCommand = command;
+      if (command?.$2 != null) _expanded = command!.$2!;
+    }
+  }
+
   // Retain explicit choices, not every default collapsed row in the lazy list.
   bool _touched = false;
   String? _parsedScript;
@@ -59,7 +72,7 @@ class _ToolRequestCardState extends State<ToolRequestCard>
     super.didUpdateWidget(oldWidget);
     if (oldWidget.tool.id != tool.id ||
         oldWidget.tool.toolCallId != tool.toolCallId) {
-      _expanded = false;
+      _expanded = _accordionCommand?.$2 ?? false;
       _touched = false;
       _parsedScript = null;
       _embedded = const [];
@@ -268,7 +281,7 @@ class _ToolRequestCardState extends State<ToolRequestCard>
                       if (tool.result != null) ...[
                         const SizedBox(height: 8),
                         Text('Output', style: context.typo.monoSmall),
-                        SourceCode(output, language: _outputLanguage(toolName)),
+                        SourceCode(output, language: _outputLanguage()),
                       ],
                       if (tool.error?.isNotEmpty ?? false) ...[
                         const SizedBox(height: 8),
@@ -375,10 +388,16 @@ class _ToolRequestCardState extends State<ToolRequestCard>
     return toolFields(args);
   }
 
-  String _outputLanguage(String toolName) {
-    if (toolName != 'read' || tool.args is! Map) return '';
-    final path = _stringArg(tool.args as Map, const ['file_path', 'path']);
-    return path.split('.').last;
+  String _outputLanguage() {
+    if (tool.args is! Map) return '';
+    final args = tool.args as Map;
+    final explicit = _stringArg(args, const ['language', 'lang']);
+    final language = SourceCode.normalizeLanguage(explicit);
+    if (language != null) return language;
+    final path = _stringArg(args, const ['file_path', 'path', 'file']);
+    final name = path.split(RegExp(r'[/\\]')).last;
+    if (!name.contains('.')) return '';
+    return SourceCode.normalizeLanguage(name.split('.').last) ?? '';
   }
 
   static String _toolName(String name) {

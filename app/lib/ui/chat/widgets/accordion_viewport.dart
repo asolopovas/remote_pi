@@ -233,7 +233,10 @@ class AccordionAnchor extends StatefulWidget {
     required this.header,
     required this.body,
     this.onCollapse,
+    this.bulkCommand,
   });
+  // Bulk commands must not align/return every row to a competing bookmark.
+  final Object? bulkCommand;
   final bool expanded;
   final Widget header;
   final Widget body;
@@ -274,7 +277,11 @@ class _AccordionAnchorState extends State<AccordionAnchor> {
   @override
   void didUpdateWidget(AccordionAnchor oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!oldWidget.expanded && widget.expanded) {
+    if (oldWidget.bulkCommand != widget.bulkCommand) {
+      _bookmark = null;
+      if (_owner?._align == this) _owner?._align = null;
+      if (_owner?._return == this) _owner?._return = null;
+    } else if (!oldWidget.expanded && widget.expanded) {
       // didUpdateWidget still sees the collapsed render tree, before the new
       // body changes layout or the one-time expansion alignment runs.
       _owner?._capture(this);

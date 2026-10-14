@@ -20,6 +20,12 @@ void main() {
           'js': '// comment\nconst x = "hello";\nconsole.log(x);\n',
           'ts': '// comment\nconst x: number = 42;\n',
           'py': '# comment\nprint("hello")\n',
+          'rs': 'fn example() -> i32 { 42 }\n',
+          'go': 'package main\nfunc main() { println("hello") }\n',
+          'kt': 'fun main() { val message = "hello" }\n',
+          'java': 'class Example { static int value = 42; }\n',
+          'sql': "SELECT 'hello' FROM users WHERE id = 42;\n",
+          'swift': 'let message = "hello"\n',
         }.entries) {
           await tester.pumpWidget(
             MaterialApp(

@@ -50,13 +50,65 @@ void main() {
       await tester.tap(find.byKey(const Key('tool-disclosure')));
       await tester.pump();
       final output = tester.widget<SourceCode>(find.byType(SourceCode));
-      expect(output.language, 'py');
+      expect(output.language, 'python');
       expect(output.source, source);
       expect(find.text('path: example.py\noffset: 1'), findsOneWidget);
       await tester.tap(find.byTooltip('Copy output'));
       await tester.pump();
       expect(copied, source);
       expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'symbol/enclosing/custom read outputs infer syntax from the file path, not tool name',
+    (tester) async {
+      const output =
+          'method example (1 match)\n\nasync def example():\n    return "synthetic"\n';
+      for (final tool in [
+        'functions.read_symbol',
+        'read_enclosing',
+        'custom_source_reader',
+      ]) {
+        for (final path in ['source.py', r'C:\src\source.PY']) {
+          await tester.pumpWidget(
+            MaterialApp(
+              theme: ThemeData.dark(),
+              home: Scaffold(
+                body: ToolRequestCard(
+                  key: ValueKey((tool, path)),
+                  tool: ToolEvent(
+                    id: tool,
+                    toolCallId: tool,
+                    tool: tool,
+                    args: {'path': path, 'symbol': 'example'},
+                    result: output,
+                  ),
+                ),
+              ),
+            ),
+          );
+          await tester.tap(find.byKey(const Key('tool-disclosure')));
+          await tester.pump();
+          final code = tester.widget<SourceCode>(find.byType(SourceCode));
+          expect(code.language, 'python');
+          expect(code.source, output);
+          final text = tester.widget<Text>(
+            find.descendant(
+              of: find.byType(SourceCode),
+              matching: find.byType(Text),
+            ),
+          );
+          Set<Color> colors(InlineSpan span) => {
+            ?span.style?.color,
+            if (span is TextSpan)
+              for (final child in span.children ?? <InlineSpan>[])
+                ...colors(child),
+          };
+          expect(text.textSpan!.toPlainText(), output);
+          expect(colors(text.textSpan!).length, greaterThan(2));
+        }
+      }
     },
   );
 

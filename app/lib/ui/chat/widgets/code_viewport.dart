@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'compact_output_header.dart';
 import 'accordion_viewport.dart';
+import 'accordion_expansion.dart';
 
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/ui/core/themes/themes.dart';
@@ -50,6 +51,20 @@ class _CodeViewportState extends State<CodeViewport>
     with AutomaticKeepAliveClientMixin {
   final _scroll = ScrollController();
   bool _expanded = false;
+  (int, bool?)? _accordionCommand;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final command = AccordionExpansion.commandOf(context);
+    if (command != _accordionCommand) {
+      _accordionCommand = command;
+      if (widget.collapsible && command?.$2 != null) {
+        _expanded = command!.$2!;
+      }
+    }
+  }
+
   // Disclosure/copy do not pin the default; only Wrap/Scroll sets this.
   bool? _wrapOverride;
   bool _copied = false;
@@ -184,6 +199,7 @@ class _CodeViewportState extends State<CodeViewport>
       margin: standalone ? const EdgeInsets.symmetric(vertical: 4) : null,
       decoration: standalone ? frame : null,
       child: AccordionAnchor(
+        bulkCommand: _accordionCommand,
         expanded: standalone ? _expanded : widget.headerExpanded,
         onCollapse: standalone
             ? () {

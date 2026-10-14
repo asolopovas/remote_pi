@@ -16,6 +16,7 @@ import 'package:app/ui/chat/widgets/message_bubble.dart';
 import 'package:app/ui/chat/widgets/streaming_bubble.dart';
 import 'package:app/ui/chat/widgets/subagent_panel.dart';
 import 'package:app/ui/chat/widgets/accordion_viewport.dart';
+import 'package:app/ui/chat/widgets/accordion_expansion.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:app/ui/chat/widgets/extension_ui_sheet.dart';
 import 'package:app/ui/core/session_label.dart';
@@ -67,6 +68,8 @@ class ChatPage extends StatefulWidget {
 
 class _ChatPageState extends State<ChatPage> {
   bool _subagents = false;
+  bool _accordionsExpanded = false;
+  int _accordionRevision = 0;
   Object? _session;
   final Set<_SessionInfoLease> _infoDialogs = {};
   bool _infoOwnerActive = true;
@@ -114,6 +117,8 @@ class _ChatPageState extends State<ChatPage> {
     if (_session != session) {
       _session = session;
       _subagents = false;
+      _accordionsExpanded = false;
+      _accordionRevision = 0;
     }
 
     // ChatReady messages are already scoped by the ViewModel to this peer/room.
@@ -141,7 +146,13 @@ class _ChatPageState extends State<ChatPage> {
             // surfaces those, and stacking duplicates noise the surface.
             if (state is ChatReady && state.pairingRevoked)
               _RevokedBanner(onRePair: () => context.go('/pair')),
-            Expanded(child: _buildBody(context, state, vm)),
+            Expanded(
+              child: AccordionExpansion(
+                revision: _accordionRevision,
+                expanded: _accordionRevision == 0 ? null : _accordionsExpanded,
+                child: _buildBody(context, state, vm),
+              ),
+            ),
             if (hasSubagents)
               Padding(
                 padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
@@ -324,6 +335,24 @@ class _ChatPageState extends State<ChatPage> {
                 ),
               ],
             ),
+          ),
+          IconButton(
+            key: const Key('toggle-all-accordions'),
+            tooltip: _accordionsExpanded
+                ? 'Collapse all accordions'
+                : 'Expand all accordions',
+            constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+            icon: Icon(
+              _accordionsExpanded ? Icons.unfold_less : Icons.unfold_more,
+              size: 20,
+              color: colors.muted2,
+            ),
+            onPressed: () {
+              setState(() {
+                _accordionsExpanded = !_accordionsExpanded;
+                ++_accordionRevision;
+              });
+            },
           ),
           // Plan/32g follow-up: ALWAYS render the info button. Gating it on the
           // async PeerRecord made it pop in on load → an AppBar layout shift

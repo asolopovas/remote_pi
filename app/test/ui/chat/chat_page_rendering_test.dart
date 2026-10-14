@@ -920,6 +920,171 @@ void main() {
   );
 
   testWidgets(
+    'header toggles tools, nested code and subagents together without pinning or changing preferences',
+    (tester) async {
+      tester.view.physicalSize = const Size(320, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final conn = ConnectionManager(
+        factory: (_, _) async => _FakeChannel(),
+        storage: _FakeStorage(),
+      );
+      final boxes = LocalBoxes();
+      final sync = SyncService(conn, boxes);
+      final prefs = Preferences(_FakeSecureStorage());
+      final actions = ActionsRepository(conn);
+      final vm = _SessionVM(
+        SessionReadRepository(boxes),
+        sync,
+        conn,
+        prefs,
+        _FakeStorage(),
+      );
+      final voice = VoiceInputViewModel(_FakeSpeech());
+      final attach = AttachmentViewModel(_FakePicker(), actions);
+      final sel = SessionSelection();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildDarkTheme(),
+          home: MultiProvider(
+            providers: [
+              ChangeNotifierProvider<ChatViewModel>.value(value: vm),
+              ChangeNotifierProvider<VoiceInputViewModel>.value(value: voice),
+              ChangeNotifierProvider<AttachmentViewModel>.value(value: attach),
+              ChangeNotifierProvider<Preferences>.value(value: prefs),
+              ChangeNotifierProvider<SessionSelection>.value(value: sel),
+            ],
+            child: Builder(
+              builder: (context) => MediaQuery(
+                data: MediaQuery.of(
+                  context,
+                ).copyWith(textScaler: const TextScaler.linear(2)),
+                child: const ChatPage(initialOnline: true),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      final messages = <ChatMessage>[
+        const ToolEvent(
+          id: 'agent-bulk',
+          toolCallId: 'agent-bulk',
+          tool: 'subagent',
+          args: {'agent': 'scout', 'task': 'Synthetic task'},
+          result: '```python\nprint("synthetic child")\n```',
+        ),
+        const AssistantMsg(
+          id: 'code-bulk',
+          text: '```python\nprint("synthetic code")\n```',
+        ),
+        const ToolEvent(
+          id: 'tool-bulk',
+          toolCallId: 'tool-bulk',
+          tool: 'read_symbol',
+          args: {'path': 'example.py', 'symbol': 'example'},
+          result: 'def example():\n    return 42\n',
+        ),
+      ];
+      vm.emit(ChatReady(messages: messages));
+      await tester.pumpAndSettle();
+      final button = find.byKey(const Key('toggle-all-accordions'));
+      expect(tester.getSize(button).shortestSide, greaterThanOrEqualTo(48));
+      expect(find.byTooltip('Expand all accordions'), findsOneWidget);
+      final list = find.byWidgetPredicate((w) => w is ListView && w.reverse);
+      final scroll = tester.widget<ListView>(list).controller!;
+      final initialOffset = scroll.offset;
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Collapse all accordions'), findsOneWidget);
+      expect(
+        tester.widgetList<AccordionAnchor>(
+          find.byType(AccordionAnchor, skipOffstage: false),
+        ),
+        everyElement(
+          isA<AccordionAnchor>().having((w) => w.expanded, 'expanded', true),
+        ),
+      );
+      expect(scroll.offset, closeTo(initialOffset, 1));
+      messages.add(
+        const ToolEvent(
+          id: 'new-bulk',
+          toolCallId: 'new-bulk',
+          tool: 'read',
+          args: {'path': 'new.py'},
+          result: 'print("new row")',
+        ),
+      );
+      vm.emit(ChatReady(messages: messages.toList()));
+      await tester.pumpAndSettle();
+      expect(find.text('print("new row")'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('thread-toggle')));
+      await tester.pumpAndSettle();
+      expect(find.text('Synthetic task'), findsOneWidget);
+      expect(
+        find.text('Collapse all'),
+        findsNothing,
+      ); // header owns the bulk action
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+      expect(find.text('Synthetic task'), findsNothing);
+      expect(
+        tester.widgetList<AccordionAnchor>(
+          find.byType(AccordionAnchor, skipOffstage: false),
+        ),
+        everyElement(
+          isA<AccordionAnchor>().having((w) => w.expanded, 'expanded', false),
+        ),
+      );
+      expect(prefs.collapseSubagents, isTrue);
+      await tester.tap(find.byKey(const Key('thread-toggle')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const Key('tool-disclosure')).hitTestable().first,
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widgetList<AccordionAnchor>(find.byType(AccordionAnchor))
+            .any((w) => w.expanded),
+        isTrue,
+      );
+      await tester.tap(
+        button,
+      ); // expand again overrides local choices and includes nested rows
+      await tester.pumpAndSettle();
+      vm.testPeer = const PeerRecord(
+        remoteEpk: 'new-peer',
+        roomId: 'new-room',
+        sessionName: 'New',
+        relayUrl: 'ws://example',
+        pairedAt: 'today',
+      );
+      vm.emit(ChatReady(messages: messages.toList()));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Expand all accordions'), findsOneWidget);
+      expect(
+        tester.widgetList<AccordionAnchor>(
+          find.byType(AccordionAnchor, skipOffstage: false),
+        ),
+        everyElement(
+          isA<AccordionAnchor>().having((w) => w.expanded, 'expanded', false),
+        ),
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      vm.dispose();
+      attach.dispose();
+      voice.dispose();
+      actions.dispose();
+      sync.dispose();
+      sel.dispose();
+      conn.dispose();
+    },
+  );
+
+  testWidgets(
     'reverse separated history with retained tool survives streaming and reload',
     (tester) async {
       final conn = ConnectionManager(
