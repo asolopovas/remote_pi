@@ -50,7 +50,7 @@ class _AgentsPageState extends State<AgentsPage> {
         title: Text(id == null ? 'Start agent?' : 'Stop $name?'),
         content: Text(
           id == null
-              ? 'Host: ${widget.target.host}\nSession: ${widget.target.session}\nDirectory: $cwd\n\nOnly start in a project whose local code you trust. This fresh Pi process survives phone disconnects but stops when the launching host Pi shuts down. No initial prompt is sent.'
+              ? 'Host: ${widget.target.host}\nSession: ${widget.target.session}\nDirectory: $cwd\n\nOnly start in a project whose local code you trust. This fresh Pi process survives phone disconnects but stops when the launching Pi closes, or its session is replaced, resumed or reloaded. No initial prompt is sent.'
               : 'Stop this managed Pi process on ${widget.target.host}? Its session will no longer be online.',
         ),
         actions: [
@@ -143,7 +143,10 @@ class _AgentsPageState extends State<AgentsPage> {
               subtitle: Text(
                 '${agent.cwd}\n${agent.state}${agent.error == null ? '' : ': ${agent.error}'}\nRoom: ${agent.roomId}',
               ),
-              trailing: agent.state == 'running' || agent.state == 'starting'
+              trailing:
+                  agent.state == 'running' ||
+                      agent.state == 'starting' ||
+                      agent.state == 'failed'
                   ? TextButton(
                       onPressed: disabled
                           ? null

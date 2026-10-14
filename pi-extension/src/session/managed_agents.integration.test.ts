@@ -1,5 +1,5 @@
 import { test, expect, vi } from "vitest";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -37,8 +37,10 @@ test("real Pi children publish distinct authenticated rooms, create fresh same-c
   });
   const cli = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "cli.js");
   const sessionIds: string[] = [];
+  const children: ChildProcess[] = [];
   const realSpawn = vi.fn<ManagedSpawn>().mockImplementation((_command, args, options) => {
     const child = spawn(process.execPath, [cli, ...args], options);
+    children.push(child);
     let buffer = "";
     child.stdout?.on("data", (chunk: Buffer) => {
       buffer += chunk.toString();
@@ -71,6 +73,13 @@ test("real Pi children publish distinct authenticated rooms, create fresh same-c
     expect(new Set(sessionIds).size).toBe(2);
     const stopped = await manager.handle("fixture-owner", { type: "agent_stop", id: "stop", agent_id: first.agent.agent_id }, async () => true);
     expect(stopped).toMatchObject({ type: "agent_stop_result", agent: { state: "stopped" } });
+    // Closing the real IPC channel exercises the same child-side orphan guard
+    // as launcher loss, without killing the test process or touching live Pis.
+    const remaining = children.find(child => child.exitCode === null && child.signalCode === null);
+    if (!remaining) throw new Error("Second Pi unexpectedly exited before launcher-loss probe");
+    remaining.disconnect();
+    await expect.poll(() => remaining.exitCode !== null || remaining.signalCode !== null,
+      { timeout: 8_000 }).toBe(true);
     await manager.shutdown();
     await expect.poll(() => server.clients.size).toBe(0);
   } finally {

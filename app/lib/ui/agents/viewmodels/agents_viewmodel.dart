@@ -79,7 +79,9 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
         !old.agents.any(
           (a) =>
               a.agentId == id &&
-              (a.state == 'running' || a.state == 'starting'),
+              (a.state == 'running' ||
+                  a.state == 'starting' ||
+                  a.state == 'failed'),
         )) {
       return;
     }

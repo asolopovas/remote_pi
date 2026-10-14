@@ -37,6 +37,9 @@ class AgentFailure implements Exception {
 abstract class AgentRepository extends Repository {
   Future<void> bind(String peer, String room);
   Stream<void> get invalidations;
+
+  /// Settles any uncertain mutation using its original idempotency key before
+  /// returning a fresh list. An empty snapshot alone is not reconciliation.
   Future<AgentAvailability> list();
   Future<ManagedAgent> launch(String cwd, String? name);
   Future<ManagedAgent> stop(String agentId);
@@ -44,12 +47,13 @@ abstract class AgentRepository extends Repository {
 }
 
 String? validateAgentInput(String cwd, String? name) {
-  final controls = RegExp(r'[\x00-\x1f\x7f]');
+  final controls = RegExp(r'[\x00-\x1f\x7f-\x9f]');
   if (cwd.trim().isEmpty || cwd.length > 4096 || controls.hasMatch(cwd)) {
     return 'Enter an existing directory (up to 4096 characters, no control characters).';
   }
-  if (name != null && (name.length > 128 || controls.hasMatch(name))) {
-    return 'Name must be at most 128 characters with no control characters.';
+  if (name != null &&
+      (name.trim().isEmpty || name.length > 80 || controls.hasMatch(name))) {
+    return 'Name must be 1–80 characters, not blank, with no control characters.';
   }
   return null;
 }

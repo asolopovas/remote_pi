@@ -4,6 +4,16 @@ import { decodeAgentRequest, decodeServer, encodeClient } from "./codec.js";
 import type { AgentRequest, ManagedAgent, ServerMessage } from "./types.js";
 
 describe("agent request codec (plan 94 frozen contract)", () => {
+  test("Dart input boundaries match strict host validation", () => {
+    const cases: Array<{ cwd: string; name?: string; valid: boolean }> = JSON.parse(readFileSync(new URL(
+      "../../../app/test/protocol/fixtures/agent_input_validation.json", import.meta.url,
+    ), "utf8"));
+    for (const { valid, ...input } of cases) {
+      const parse = () => decodeAgentRequest({ type: "agent_launch", id: "boundary", ...input });
+      if (valid) expect(parse).not.toThrow();
+      else expect(parse).toThrow();
+    }
+  });
   test("Dart consumer fixture agrees with the typed host wire contract", () => {
     // This exact file is also exercised by app/test/agents/agent_repository_test.dart.
     const fixture: unknown = JSON.parse(readFileSync(new URL(

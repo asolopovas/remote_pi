@@ -56,6 +56,25 @@ function agent(result: ServerMessage) {
 }
 
 describe("ManagedAgents lifecycle", () => {
+  test("replaying original ID settles delayed admission without a duplicate after an empty snapshot", async () => {
+    const h = harness();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let checks = 0;
+    const auth = async () => { if (++checks === 2) await gate; return true; };
+    const request = { type: "agent_launch", id: "delayed", cwd: h.cwd } as const;
+    const original = h.request(request, "owner-a", auth);
+    await vi.waitFor(() => expect(checks).toBe(2));
+    expect(await h.request({ type: "agent_list", id: "not-proof-of-completion" })).toMatchObject({ agents: [] });
+    let settled = false;
+    const replay = h.request(request).then(result => { settled = true; return result; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(h.spawnMock).not.toHaveBeenCalled();
+    release();
+    expect(await replay).toEqual(await original);
+    expect(h.spawnMock).toHaveBeenCalledTimes(1);
+  });
   test("fresh, unique same-cwd identities; parallel dedupe and conflicting payload IDs", async () => {
     const h = harness();
     const [a, replay] = await Promise.all([h.launch("one", "review"), h.launch("one", "review")]);

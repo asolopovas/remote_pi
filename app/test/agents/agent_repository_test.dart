@@ -86,6 +86,23 @@ const available = AgentAvailability(
 );
 Future<void> tick() => Future<void>.delayed(Duration.zero);
 void main() {
+  test('input boundaries match the shared host validation fixture', () {
+    final cases =
+        jsonDecode(
+              File(
+                'test/protocol/fixtures/agent_input_validation.json',
+              ).readAsStringSync(),
+            )
+            as List;
+    for (final input in cases.cast<Map<String, dynamic>>()) {
+      expect(
+        validateAgentInput(input['cwd'] as String, input['name'] as String?) ==
+            null,
+        input['valid'],
+        reason: input.toString(),
+      );
+    }
+  });
   test('frozen wire fixtures encode exact requests and parse replies', () {
     final fixture =
         jsonDecode(
@@ -110,66 +127,54 @@ void main() {
     expect((replies[3] as AgentMutationResult).agent.state, 'stopped');
     expect((replies[4] as ErrorMessage).inReplyTo, 'launch-2');
   });
-  test('default mutation deadlines exceed host readiness and cleanup', () {
-    fakeAsync((clock) {
-      final channel = Channel(), conn = Connection(Channel());
-      conn.current = channel;
-      final repo = AgentRepositoryImpl(conn, Storage());
-      repo.bind(peer.remoteEpk, 'launcher');
-      clock.flushMicrotasks();
-      AgentFailure? listFailure, launchFailure, stopFailure;
-      repo.list().then(
-        (_) {},
-        onError: (Object error) {
-          listFailure = error as AgentFailure;
-        },
-      );
-      repo
-          .launch('/p', null)
-          .then(
-            (_) {},
-            onError: (Object error) {
-              launchFailure = error as AgentFailure;
-            },
-          );
-      repo
-          .stop('managed')
-          .then(
-            (_) {},
-            onError: (Object error) {
-              stopFailure = error as AgentFailure;
-            },
-          );
-      clock.flushMicrotasks();
-      clock.elapse(const Duration(seconds: 20));
-      clock.flushMicrotasks();
-      expect(listFailure, isNotNull);
-      expect(launchFailure, isNull);
-      expect(stopFailure, isNull);
-      clock.elapse(const Duration(seconds: 6));
-      clock.flushMicrotasks();
-      expect(launchFailure, isNull);
-      expect(stopFailure, isNull);
-      clock.elapse(const Duration(seconds: 9));
-      clock.flushMicrotasks();
-      expect(launchFailure!.outcomeUnknown, true);
-      expect(stopFailure!.outcomeUnknown, true);
-      repo.dispose();
-      conn.dispose();
-      clock.flushMicrotasks();
+  for (final kind in ['list', 'launch', 'stop']) {
+    test('$kind deadline respects host readiness and cleanup', () {
+      fakeAsync((clock) {
+        final channel = Channel(), conn = Connection(Channel());
+        conn.current = channel;
+        final repo = AgentRepositoryImpl(
+          conn,
+          Storage(),
+          AgentMutationJournal(),
+        );
+        repo.bind(peer.remoteEpk, 'launcher');
+        clock.flushMicrotasks();
+        AgentFailure? failure;
+        final operation = switch (kind) {
+          'list' => repo.list(),
+          'launch' => repo.launch('/p', null),
+          _ => repo.stop('managed'),
+        };
+        operation.then(
+          (_) {},
+          onError: (Object error) {
+            failure = error as AgentFailure;
+          },
+        );
+        clock.elapse(const Duration(seconds: 26));
+        expect(failure != null, kind == 'list');
+        clock.elapse(const Duration(seconds: 9));
+        expect(failure!.outcomeUnknown, kind != 'list');
+        repo.dispose();
+        conn.dispose();
+        clock.flushMicrotasks();
+      });
     });
-  });
+  }
 
   group('pinned repository', () {
     late Channel channel;
     late Connection conn;
     late AgentRepositoryImpl repo;
+    late AgentMutationJournal journal;
     setUp(() async {
       channel = Channel();
       conn = Connection(channel);
+      journal = AgentMutationJournal();
       repo = AgentRepositoryImpl(
         conn,
         Storage(),
+        journal,
         timeout: const Duration(milliseconds: 40),
         mutationTimeout: const Duration(milliseconds: 40),
       );
@@ -231,6 +236,117 @@ void main() {
             ),
           ),
         );
+      },
+    );
+    test(
+      'refresh replays original launch before accepting even an empty list',
+      () async {
+        await expectLater(
+          repo.launch('/delayed', 'Original'),
+          throwsA(isA<AgentFailure>()),
+        );
+        final original = channel.sent.single as AgentLaunch;
+        final refresh = repo.list();
+        expect((channel.sent.last as AgentLaunch).toJson(), original.toJson());
+        // A snapshot, even with the pending request ID, is not a mutation result.
+        channel.messages.add(AgentListResult(original.id, available));
+        await tick();
+        await expectLater(
+          repo.launch('/different', null),
+          throwsA(isA<AgentFailure>()),
+        );
+        expect(channel.sent.whereType<AgentList>(), isEmpty);
+        channel.messages.add(
+          AgentMutationResult(
+            'agent_launch_result',
+            original.id,
+            const ManagedAgent(
+              agentId: 'created-once',
+              name: 'Original',
+              cwd: '/delayed',
+              roomId: 'created-room',
+              state: 'running',
+            ),
+          ),
+        );
+        await tick();
+        final list = channel.sent.last as AgentList;
+        channel.messages.add(AgentListResult(list.id, available));
+        expect(await refresh, available);
+        expect(channel.sent.whereType<AgentLaunch>().map((r) => r.id).toSet(), {
+          original.id,
+        });
+      },
+    );
+    test(
+      'reopening after disconnect retains original key and payload for reconciliation',
+      () async {
+        final launch = repo.launch('/original', 'Keep this payload');
+        final original = channel.sent.single as AgentLaunch;
+        final failed = expectLater(
+          launch,
+          throwsA(
+            isA<AgentFailure>().having(
+              (e) => e.outcomeUnknown,
+              'unknown after disconnect',
+              true,
+            ),
+          ),
+        );
+        conn.current = null;
+        conn.statuses.add(const StatusNoPeer());
+        await failed;
+        repo.dispose();
+        await channel.messages.close();
+        channel = Channel();
+        conn.current = channel;
+        repo = AgentRepositoryImpl(conn, Storage(), journal);
+        await repo.bind(peer.remoteEpk, 'launcher');
+        final refresh = repo.list();
+        expect(
+          (channel.sent.single as AgentLaunch).toJson(),
+          original.toJson(),
+        );
+        // A definitive error settles the original request before the fresh list.
+        channel.messages.add(
+          ErrorMessage(
+            inReplyTo: original.id,
+            code: 'invalid_message',
+            message: 'Original directory unavailable',
+          ),
+        );
+        await tick();
+        final list = channel.sent.last as AgentList;
+        channel.messages.add(AgentListResult(list.id, available));
+        expect(await refresh, available);
+        final next = repo.launch('/new', null);
+        final nextRequest = channel.sent.last as AgentLaunch;
+        expect(nextRequest.id, isNot(original.id));
+        channel.messages.add(
+          ErrorMessage(
+            inReplyTo: nextRequest.id,
+            code: 'invalid_message',
+            message: 'Known failure',
+          ),
+        );
+        await expectLater(next, throwsA(isA<AgentFailure>()));
+      },
+    );
+    test(
+      'uncertain launch is never replayed on a different target room',
+      () async {
+        await expectLater(
+          repo.launch('/original', null),
+          throwsA(isA<AgentFailure>()),
+        );
+        repo.dispose();
+        repo = AgentRepositoryImpl(conn, Storage(), journal);
+        await repo.bind(peer.remoteEpk, 'other-room');
+        final refresh = repo.list();
+        final list = channel.sent.last as AgentList;
+        channel.messages.add(AgentListResult(list.id, available));
+        expect(await refresh, available);
+        expect(channel.sent.whereType<AgentLaunch>().length, 1);
       },
     );
     test('correlated error is human readable', () async {

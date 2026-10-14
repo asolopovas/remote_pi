@@ -54,6 +54,35 @@ class Repo extends AgentRepository {
 
 void main() {
   test(
+    'owned failed records can retry Stop but still require confirmation',
+    () async {
+      final repo = Repo();
+      repo.availability = const AgentAvailability(
+        available: true,
+        cwd: '/p',
+        maxAgents: 4,
+        agents: [
+          ManagedAgent(
+            agentId: 'failed-live',
+            name: 'Failed Pi',
+            cwd: '/p',
+            roomId: 'failed-room',
+            state: 'failed',
+            error: 'Cleanup failed',
+          ),
+        ],
+      );
+      final vm = AgentsViewModel(repo);
+      await vm.initialize('peer', 'room');
+      await vm.stop('failed-live', confirmed: false);
+      await vm.stop('not-owned', confirmed: true);
+      expect(repo.stops, 0);
+      await vm.stop('failed-live', confirmed: true);
+      expect(repo.stops, 1);
+      vm.dispose();
+    },
+  );
+  test(
     'unknown launch outcome requires successful list before a new request',
     () async {
       final repo = Repo();

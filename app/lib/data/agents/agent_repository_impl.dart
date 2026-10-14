@@ -6,16 +6,27 @@ import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/protocol/uuid7.dart';
 
+typedef _AgentMutation = ({String id, String type, ClientMessage message});
+
+/// App-lifetime request journal: page disposal or reconnect must not forget an
+/// accepted mutation's idempotency key. Never evict an uncertain request.
+class AgentMutationJournal {
+  final _entries = <(String, String), _AgentMutation>{};
+  static const _limit = 32;
+}
+
 /// Each page owns one pinned channel lease. Reconnect never renews it silently.
 class AgentRepositoryImpl extends AgentRepository {
   AgentRepositoryImpl(
     this._conn,
-    this._storage, {
+    this._storage,
+    this._journal, {
     this.timeout = const Duration(seconds: 20),
     this.mutationTimeout = const Duration(seconds: 35),
   });
   final ConnectionManager _conn;
   final PairingStorage _storage;
+  final AgentMutationJournal _journal;
   final Duration timeout;
 
   /// Host readiness (20s) plus failed-child cleanup (up to 6s), with margin.
@@ -82,8 +93,9 @@ class AgentRepositoryImpl extends AgentRepository {
     for (final p in _pending.values) {
       p.timer.cancel();
       p.completer.completeError(
-        const AgentFailure(
+        AgentFailure(
           'Host disconnected or session changed. Return home and select it again.',
+          outcomeUnknown: p.type != 'agent_list_result',
         ),
       );
     }
@@ -113,6 +125,8 @@ class AgentRepositoryImpl extends AgentRepository {
     }
     _pending.remove(id);
     p.timer.cancel();
+    final key = (_peer!, _room!);
+    if (_journal._entries[key]?.id == id) _journal._entries.remove(key);
     if (message is ErrorMessage) {
       p.completer.completeError(AgentFailure(message.message));
     } else {
@@ -122,15 +136,37 @@ class AgentRepositoryImpl extends AgentRepository {
 
   Future<ServerMessage> _request(
     String type,
-    ClientMessage Function(String) create,
-  ) async {
+    ClientMessage Function(String) create, {
+    _AgentMutation? replay,
+  }) async {
     if (!_valid) {
       _invalidate();
       throw const AgentFailure(
         'Host disconnected or session changed. Return home and select it again.',
       );
     }
-    final id = uuid7();
+    final key = (_peer!, _room!);
+    final id = replay?.id ?? uuid7();
+    final mutation = type != 'agent_list_result';
+    final previous = _journal._entries[key];
+    if (mutation && previous != null && previous.id != id) {
+      throw const AgentFailure(
+        'Refresh to settle the previous operation before starting another.',
+        outcomeUnknown: true,
+      );
+    }
+    final pending = _pending[id];
+    if (pending != null) return pending.completer.future;
+    final request = replay?.message ?? create(id);
+    if (mutation) {
+      if (previous == null &&
+          _journal._entries.length >= AgentMutationJournal._limit) {
+        throw const AgentFailure(
+          'Resolve pending agent operations before managing more hosts.',
+        );
+      }
+      _journal._entries[key] = (id: id, type: type, message: request);
+    }
     final completer = Completer<ServerMessage>();
     final deadline = type == 'agent_list_result' ? timeout : mutationTimeout;
     final timer = Timer(deadline, () {
@@ -147,7 +183,10 @@ class AgentRepositoryImpl extends AgentRepository {
     _pending[id] = (completer: completer, timer: timer, type: type);
     // Send synchronously against the captured channel, never after an async target lookup.
     unawaited(
-      _channel!.send(create(id)).catchError((Object error, StackTrace stack) {
+      Future<void>.sync(() => _channel!.send(request)).catchError((
+        Object error,
+        StackTrace stack,
+      ) {
         final p = _pending.remove(id);
         if (p != null) {
           p.timer.cancel();
@@ -164,9 +203,28 @@ class AgentRepositoryImpl extends AgentRepository {
   }
 
   @override
-  Future<AgentAvailability> list() async =>
-      ((await _request('agent_list_result', AgentList.new)) as AgentListResult)
-          .availability;
+  Future<AgentAvailability> list() async {
+    final mutation = _journal._entries[(_peer, _room)];
+    if (mutation != null) {
+      // An empty snapshot cannot settle a launch still awaiting admission.
+      // Replay the exact original request, also after reopening/reconnecting.
+      try {
+        await _request(
+          mutation.type,
+          (_) => mutation.message,
+          replay: mutation,
+        );
+      } on AgentFailure catch (error) {
+        if (error.outcomeUnknown || !_valid) rethrow;
+        // A correlated host error is a settled outcome. Now fetch its records.
+      }
+      refreshDiscovery();
+    }
+    return ((await _request('agent_list_result', AgentList.new))
+            as AgentListResult)
+        .availability;
+  }
+
   @override
   Future<ManagedAgent> launch(String cwd, String? name) async {
     final error = validateAgentInput(cwd, name);

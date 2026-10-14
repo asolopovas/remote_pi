@@ -9,6 +9,47 @@ import 'package:provider/provider.dart';
 import 'agents_viewmodel_test.dart' show Repo;
 
 void main() {
+  testWidgets('failed agent exposes confirmed cleanup retry', (tester) async {
+    final repo = Repo();
+    repo.availability = const AgentAvailability(
+      available: true,
+      cwd: '/p',
+      maxAgents: 4,
+      agents: [
+        ManagedAgent(
+          agentId: 'failed-live',
+          name: 'Failed Pi',
+          cwd: '/p',
+          roomId: 'failed-room',
+          state: 'failed',
+          error: 'Cleanup failed',
+        ),
+      ],
+    );
+    final vm = AgentsViewModel(repo);
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: vm,
+        child: MaterialApp(
+          theme: buildDarkTheme(),
+          home: const AgentsPage(
+            target: AgentsTarget('peer', 'room', 'Laptop', 'Project'),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.widgetWithText(TextButton, 'Stop'));
+    await tester.tap(find.widgetWithText(TextButton, 'Stop'));
+    await tester.pumpAndSettle();
+    expect(find.text('Stop Failed Pi?'), findsOneWidget);
+    expect(repo.stops, 0);
+    await tester.tap(find.widgetWithText(FilledButton, 'Stop'));
+    await tester.pumpAndSettle();
+    expect(repo.stops, 1);
+    await tester.pumpWidget(const SizedBox());
+    vm.dispose();
+  });
   testWidgets('unknown outcome disables Start until list refresh succeeds', (
     tester,
   ) async {
@@ -93,6 +134,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.textContaining('local code you trust'), findsOneWidget);
       expect(find.textContaining('survives phone disconnects'), findsOneWidget);
+      expect(
+        find.textContaining('session is replaced, resumed or reloaded'),
+        findsOneWidget,
+      );
       expect(repo.launches, 0);
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
