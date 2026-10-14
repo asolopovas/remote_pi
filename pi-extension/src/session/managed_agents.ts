@@ -75,9 +75,20 @@ export class ManagedAgents {
       return Promise.resolve(error("invalid_message", "Launching session changed; refresh and confirm a new Start"));
     }
     const key = JSON.stringify([owner, request.id]);
-    const payload = JSON.stringify(request.type === "agent_launch"
-      ? [request.type, request.launcher_id, request.cwd, request.name ?? null]
-      : request.type === "agent_stop" ? [request.type, request.agent_id] : [request.type]);
+    let payload: string;
+    switch (request.type) {
+      case "agent_launch":
+        payload = JSON.stringify([request.type, request.launcher_id, request.cwd, request.name ?? null]);
+        break;
+      case "agent_stop":
+        payload = JSON.stringify([request.type, request.agent_id]);
+        break;
+      case "agent_list":
+        payload = JSON.stringify([request.type]);
+        break;
+      default:
+        return error("invalid_message", "Unsupported agent request type");
+    }
     try {
       if (this.closing || !await authorized()) return error("invalid_message", "Launcher closed or Owner no longer paired");
     } catch { return error("internal_error", "Could not verify Owner pairing"); }
@@ -89,15 +100,14 @@ export class ManagedAgents {
     if (request.type === "agent_list") return {
       type: "agent_list_result", in_reply_to: request.id, available: true, launcher_id: this.launcherId,
       cwd: this.opts.cwd, max_agents: MAX_MANAGED_AGENTS,
-      agents: [...this.entries.values()].filter(e => e.owner === owner).map(e => ({ ...e.agent })),
+      agents: [...this.entries.values()].flatMap(e => e.owner === owner ? [{ ...e.agent }] : []),
     };
     const stopEntry = request.type === "agent_stop" ? this.entries.get(request.agent_id) : undefined;
     if (request.type === "agent_stop" && (!stopEntry || stopEntry.owner !== owner)) {
       return error("invalid_message", "Unknown agent or not owned by this Owner");
     }
     if (stopEntry && !stopEntry.child && stopEntry.agent.state !== "starting") {
-      stopEntry.agent.state = "stopped";
-      delete stopEntry.agent.error;
+      this.markStopped(stopEntry);
       return { type: "agent_stop_result", in_reply_to: request.id, agent: { ...stopEntry.agent } };
     }
     // Preserve cleanup capacity after normal history fills. Invalid/unowned
@@ -152,15 +162,15 @@ export class ManagedAgents {
       await this.start(entry);
       if (this.closing || !await authorized()) throw new AgentFailure("invalid_message", "Launcher closed or Owner revoked during startup");
       if (!entry.child || entry.stopRequested) throw new AgentFailure("internal_error", "Pi stopped or exited during startup");
-      agent.state = "running";
-      return agent;
+      entry.agent.state = "running";
+      return entry.agent;
     } catch (err) {
       if (!entry.stopRequested) {
-        agent.state = "failed";
-        agent.error = err instanceof AgentFailure ? err.message : "Could not start Pi; verify that pi is on PATH and the extension is built";
+        entry.agent.state = "failed";
+        entry.agent.error = err instanceof AgentFailure ? err.message : "Could not start Pi; verify that pi is on PATH and the extension is built";
       }
-      try { await this.stop(entry, false); } catch { agent.error = (agent.error ?? "Startup stopped") + "; cleanup failed — host shutdown will retry"; }
-      throw err instanceof AgentFailure ? err : new AgentFailure("internal_error", agent.error ?? "Startup stopped");
+      try { await this.cleanupChild(entry); } catch { entry.agent.error = (entry.agent.error ?? "Startup stopped") + "; cleanup failed — host shutdown will retry"; }
+      throw err instanceof AgentFailure ? err : new AgentFailure("internal_error", entry.agent.error ?? "Startup stopped");
     }
   }
 
@@ -233,29 +243,44 @@ export class ManagedAgents {
     });
   }
 
-  private stop(entry: Entry, markStopped = true): Promise<void> {
-    if (markStopped) entry.stopRequested = true;
+  private markStopped(entry: Entry): void {
+    const { error: _error, ...agent } = entry.agent;
+    entry.agent = { ...agent, state: "stopped" };
+  }
+
+  private async stop(entry: Entry): Promise<void> {
+    entry.stopRequested = true;
+    await this.cleanupChild(entry);
+    this.markStopped(entry);
+  }
+
+  /** Terminate without changing the record; only successful explicit Stop finalizes it. */
+  private cleanupChild(entry: Entry): Promise<void> {
     if (entry.stop) return entry.stop;
-    if (!entry.child) { if (markStopped) { entry.agent.state = "stopped"; delete entry.agent.error; } return Promise.resolve(); }
-    const child = entry.child;
-    entry.stop = (async () => {
-      const delay = this.opts.stopMs ?? 3_000;
-      const wait = async () => {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const exited = await Promise.race([entry.exited.then(() => true), new Promise<false>(r => { timer = setTimeout(() => r(false), delay); })]);
-        clearTimeout(timer); return exited;
-      };
-      child.stdin?.end();
-      child.kill("SIGTERM");
-      if (!await wait()) { child.kill("SIGKILL"); if (!await wait()) throw new AgentFailure("timeout", "Pi did not exit after SIGKILL; host shutdown will retry cleanup"); }
-      if (markStopped) { entry.agent.state = "stopped"; delete entry.agent.error; }
-    })().finally(() => { entry.stop = undefined; });
+    if (!entry.child) return Promise.resolve();
+    entry.stop = this.terminateChild(entry, entry.child)
+      .finally(() => { entry.stop = undefined; });
     return entry.stop;
+  }
+
+  private async terminateChild(entry: Entry, child: ChildProcess): Promise<void> {
+    const delay = this.opts.stopMs ?? 3_000;
+    const wait = async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const result = await Promise.race([entry.exited, new Promise<false>(r => { timer = setTimeout(() => r(false), delay); })]);
+      clearTimeout(timer); return result !== false;
+    };
+    child.stdin?.end();
+    child.kill("SIGTERM");
+    if (!await wait()) { child.kill("SIGKILL"); if (!await wait()) throw new AgentFailure("timeout", "Pi did not exit after SIGKILL; host shutdown will retry cleanup"); }
   }
 
   async shutdown(): Promise<void> {
     this.closing = true;
-    await Promise.all([...this.entries.values()].map(e => this.stop(e).catch(() => { /* exit hook + IPC disconnect remain last-resort guards */ })));
+    await Promise.all([...this.entries.values()].map(async entry => {
+      try { await this.stop(entry); } catch { /* exit hook + IPC disconnect remain last-resort guards */ }
+      return undefined;
+    }));
     if (![...this.entries.values()].some(e => e.child)) process.off("exit", this.killAtExit);
   }
 }

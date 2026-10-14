@@ -90,18 +90,33 @@ production publish, service changes or device installation were performed.
   worktree; SHA-256 `f6c4c6179f4e20b5ce8f89bf8c9f44bc187ee56b8da9e364b42d65d8e518a217`.
   This is a debug artifact, not a signed release or an installed update.
 
-Runtime disclosure: two early worker extension tests lacked a temporary
-REMOTE_PI_HOME and could refresh default skill/cache/audit files or briefly join
-the local broker. Peers/credentials were mocked; no explicit live pairing or
+Runtime disclosure: early `pnpm test src/extension.test.ts` (2026-10-14
+01:29:37–01:29:54 UTC; 202 passed/9 worker-marker baseline failures) and
+`env -u PI_SUBAGENT_CHILD pnpm test src/extension.test.ts` (01:30:01–01:30:11 UTC;
+211 passed) lacked temporary HOME/REMOTE_PI_HOME. Source-reachable effects include
+default skill copy, conditional deletion of the legacy flat `agent-network.md`,
+directory creation and local broker/audit/lock activity. Actual writes, deletion,
+join/lead or cache changes are unverified: no before/after runtime snapshot exists. Peers/credentials were mocked; no explicit live pairing or
 service mutation was performed. Prior runtime state is unknown; no speculative
 restoration was attempted. Later tests were isolated. This caveat was disclosed
 to the operator and other coordinator.
 
 ### Remaining release verification
 
-- [ ] Coordinate integration with the other task after its writer releases the shared checkout.
+- [x] Coordinate integration with the other task after its writer releases the shared checkout. Full reviewed handoff `e3386f6e` merged at `60e608cc` after the App writer released ownership. Combined App candidate code37 built; actual-main release reaches the emulator sync/security gate with explicit ARM64 selection, not paired agent-launch end-to-end acceptance. See plan 93 for precise tests, artifact/runtime evidence and remaining diagnostic work.
 - [ ] Install coordinated host/app builds and verify phone launch → discovery → chat → stop on a device.
 - [ ] Native macOS/Windows launch smoke, if those platforms are release targets (Linux validated).
+
+## Post-integration diagnostic and lifecycle correction
+
+The shared checkout initially lacked `pi-extension/node_modules`; offline frozen-lock installation restored 264 cached dependencies with no downloads, lifecycle scripts or lockfile changes. Node/Vitest/ws type-resolution findings disappeared without changing imports, types or checking scope. Narrow `managed_agents.ts` refactors resolve the identified style findings while preserving owner filtering, idempotency payloads, omitted error properties, termination bounds and current-record visibility.
+
+Parent review then found an inherited Stop/startup-cleanup race: explicit Stop joining an in-flight cleanup could return a failed record after successful child exit. A deterministic fake-timer/signal regression reproduced **expected stopped / received failed** before correction. Explicit Stop now awaits shared cleanup and marks stopped only on success; rejection retains the live failed record and permits a new-request retry. Tests cover success, rejection/retry, error-property omission, replay and no duplicate termination. Unsupported runtime requests receive a structured correlated error, not an uncaught exception.
+
+- Current affected source validation: strict production and feature-test compilation pass; **242 tests across managed-agent and full Extension routing/lifecycle files pass**, zero skipped. The 28-case managed-agent file also passed three complete repeats. All test/compiler invocations isolate HOME, USERPROFILE, REMOTE_PI_HOME and PI_CODING_AGENT_DIR before imports, with PI_SUBAGENT_CHILD unset.
+- Earlier post-integration validation: build and **274 tests** passed, including two real installed Pi processes with distinct same-cwd identities/authenticated loopback rooms, explicit Stop and IPC-loss exit. These build/real-Pi results precede the final joined-cleanup correction; they were not rerun or relabeled as final-source runtime evidence.
+- The last callback change is a behavior-neutral explicit `return undefined`; the exact installed AST rule was verified failing before and clear after, and typecheck passes. Parent inspected final source/tests and matched worker source hashes.
+- Final targeted active all-server scan across four Extension paths and the corrected App fixture: **0 diagnostics, 3 confirmed clean, 2 inconclusive**. Compiler success and an empty finding set do not establish complete LSP coverage. No diagnostic suppression, protocol/dependency/config change, deployment, active extension reload or App rebuild was used for these corrections.
 
 ## Next
 

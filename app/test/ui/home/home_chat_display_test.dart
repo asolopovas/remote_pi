@@ -276,6 +276,8 @@ void main() {
               routerConfig: router,
               builder: (_, child) => MediaQuery(
                 data: const MediaQueryData(
+                  // Navigation fixtures settle; rotation has dedicated coverage.
+                  disableAnimations: true,
                   size: Size(320, 1100),
                   textScaler: TextScaler.linear(2),
                 ),
@@ -487,7 +489,15 @@ void main() {
                 value: update,
               ),
             ],
-            child: MaterialApp(theme: buildDarkTheme(), home: const HomePage()),
+            child: MaterialApp(
+              theme: buildDarkTheme(),
+              builder: (context, child) => MediaQuery(
+                // Preserve viewport/text scale while settling metadata fixtures.
+                data: MediaQuery.of(context).copyWith(disableAnimations: true),
+                child: child!,
+              ),
+              home: const HomePage(),
+            ),
           ),
         );
         await tester.pumpAndSettle();

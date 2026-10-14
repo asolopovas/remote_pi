@@ -131,6 +131,129 @@ describe("ManagedAgents lifecycle", () => {
     expect(await h.launch()).toEqual(result); expect(h.children).toHaveLength(1);
     if (!["enoent", "crash"].includes(mode)) expect(h.children[0].kill).toHaveBeenCalled();
   });
+  test.each(["SIGTERM", "never"])("stopping a failed child (%s) removes the error without changing earlier snapshots or replay", async killOn => {
+    const h = harness("timeout", killOn);
+    const failedLaunch = await h.launch();
+    const before = await h.request({ type: "agent_list", id: "before-stop" });
+    if (before.type !== "agent_list_result") throw new Error("missing list");
+    const failed = before.agents[0];
+    expect(failed.state).toBe("failed");
+    expect(Object.hasOwn(failed, "error")).toBe(true);
+    if (killOn === "never") {
+      h.children[0].kill = vi.fn().mockImplementation((signal: string) => {
+        queueMicrotask(() => h.children[0].emit("exit", null, signal));
+        return true;
+      });
+    }
+    const stop = { type: "agent_stop", id: "stop-failed", agent_id: failed.agent_id } as const;
+    const stopped = await h.request(stop);
+    expect(agent(stopped).state).toBe("stopped");
+    expect(Object.hasOwn(agent(stopped), "error")).toBe(false);
+    expect(JSON.parse(JSON.stringify(agent(stopped)))).not.toHaveProperty("error");
+    const after = await h.request({ type: "agent_list", id: "after-stop" });
+    if (after.type !== "agent_list_result") throw new Error("missing list");
+    expect(after.agents).toEqual([agent(stopped)]);
+    expect(Object.hasOwn(after.agents[0], "error")).toBe(false);
+    expect(failed.state).toBe("failed");
+    expect(Object.hasOwn(failed, "error")).toBe(true);
+    expect(await h.launch()).toEqual(failedLaunch);
+    expect(await h.request(stop)).toEqual(stopped);
+    const terminal = agent(await h.request({ ...stop, id: "terminal-stop" }));
+    expect(terminal).toEqual(agent(stopped));
+    expect(Object.hasOwn(terminal, "error")).toBe(false);
+  });
+  test("explicit Stop during startup leaves the current record stopped without a stale failure", async () => {
+    const h = harness("timeout");
+    const launch = h.launch();
+    await vi.waitFor(() => expect(h.children).toHaveLength(1), { interval: 1 });
+    const list = await h.request({ type: "agent_list", id: "starting" });
+    if (list.type !== "agent_list_result") throw new Error("missing list");
+    expect(list.agents[0].state).toBe("starting");
+    const stopped = await h.request({ type: "agent_stop", id: "stop-starting", agent_id: list.agents[0].agent_id });
+    expect(agent(stopped).state).toBe("stopped");
+    expect(await launch).toMatchObject({ type: "error" });
+    const after = await h.request({ type: "agent_list", id: "after-stop" });
+    if (after.type !== "agent_list_result") throw new Error("missing list");
+    expect(after.agents).toEqual([agent(stopped)]);
+    expect(Object.hasOwn(after.agents[0], "error")).toBe(false);
+  });
+  test.each(["exit", "timeout"] as const)("explicit Stop joining startup cleanup (%s) finalizes only after successful exit", async outcome => {
+    vi.useFakeTimers();
+    const h = harness("timeout", "never");
+    let signalSpawned!: () => void;
+    const spawned = new Promise<void>(resolve => { signalSpawned = resolve; });
+    let signalCleanup!: () => void;
+    const cleanupStarted = new Promise<void>(resolve => { signalCleanup = resolve; });
+    const spawnChild = h.spawnMock.getMockImplementation()!;
+    h.spawnMock.mockImplementation((command, args, options) => {
+      const child = spawnChild(command, args, options);
+      child.kill = vi.fn().mockImplementation((signal: string) => {
+        if (signal === "SIGTERM") signalCleanup();
+        return true;
+      });
+      signalSpawned();
+      return child;
+    });
+    try {
+      const launch = h.launch();
+      await spawned;
+      await vi.advanceTimersByTimeAsync(25);
+      await cleanupStarted;
+      const before = await h.request({ type: "agent_list", id: "cleanup-pending" });
+      if (before.type !== "agent_list_result") throw new Error("missing list");
+      const failed = before.agents[0];
+      expect(failed.state).toBe("failed");
+      expect(Object.hasOwn(failed, "error")).toBe(true);
+      const request = { type: "agent_stop", id: "join-cleanup", agent_id: failed.agent_id } as const;
+      const stop = h.request(request);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.children[0].kill).toHaveBeenCalledTimes(1);
+      expect(await h.request({ type: "agent_list", id: "stop-pending" })).toMatchObject({ agents: [{ state: "failed" }] });
+      if (outcome === "exit") {
+        h.children[0].emit("exit", null, "SIGTERM");
+      } else {
+        await vi.advanceTimersByTimeAsync(20);
+        const rejected = await stop;
+        expect(rejected).toMatchObject({ type: "error", code: "timeout" });
+        expect(await h.request(request)).toEqual(rejected);
+        const live = await h.request({ type: "agent_list", id: "cleanup-rejected" });
+        if (live.type !== "agent_list_result") throw new Error("missing list");
+        expect(live.agents[0].state).toBe("failed");
+        expect(Object.hasOwn(live.agents[0], "error")).toBe(true);
+        expect(h.children[0].kill).toHaveBeenCalledTimes(2);
+      }
+      const failedLaunch = await launch;
+      expect(failedLaunch).toMatchObject({ type: "error", code: "timeout" });
+      if (outcome === "timeout") {
+        const retry = h.request({ ...request, id: "retry-cleanup" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.children[0].kill).toHaveBeenCalledTimes(3);
+        h.children[0].emit("exit", null, "SIGTERM");
+        expect(agent(await retry).state).toBe("stopped");
+      } else {
+        const stopped = agent(await stop);
+        expect(stopped.state).toBe("stopped");
+        expect(Object.hasOwn(stopped, "error")).toBe(false);
+        expect(await h.request(request)).toEqual({ type: "agent_stop_result", in_reply_to: request.id, agent: stopped });
+        expect(h.children[0].kill).toHaveBeenCalledTimes(1);
+      }
+      const after = await h.request({ type: "agent_list", id: "cleanup-complete" });
+      if (after.type !== "agent_list_result") throw new Error("missing list");
+      expect(after.agents[0].state).toBe("stopped");
+      expect(Object.hasOwn(after.agents[0], "error")).toBe(false);
+      expect(await h.launch()).toEqual(failedLaunch);
+      expect(h.spawnMock).toHaveBeenCalledTimes(1);
+    } finally {
+      h.children[0]?.emit("exit", null, "SIGTERM");
+      vi.useRealTimers();
+    }
+  });
+  test("unsupported runtime request returns a structured error without spawning", async () => {
+    const h = harness();
+    await expect(h.manager.handle("owner-a", { type: "unsupported", id: "unknown" } as unknown as AgentRequest, allowed))
+      .resolves.toMatchObject({ type: "error", in_reply_to: "unknown", code: "invalid_message" });
+    expect(h.spawnMock).not.toHaveBeenCalled();
+  });
   test("post-readiness crash is retained as failed and never restarted", async () => {
     const h = harness(); await h.launch(); h.children[0].emit("exit", 2, null);
     expect(await h.request({ type: "agent_list", id: "list" })).toMatchObject({ agents: [{ state: "failed", error: expect.stringContaining("code 2") }] });
@@ -220,4 +343,9 @@ test("managedChildEnv strips inherited worker/session/display identities but kee
   const env = managedChildEnv({ PATH: "/bin", PI_SUBAGENT_CHILD: "1", PI_WORKER_ID: "worker", PI_SESSION_ID: "parent", PI_AGENT_ID: "a", PI_PARENT_SESSION: "p", PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT: "parent-package", PI_ASYNC_NATIVE_RUNNER: "worker", PI_SESSION_FILE: "parent.jsonl",
     COCKPIT_PANE_ID: "pane", TUIOS_WINDOW_ID: "window", CMUX_SURFACE_ID: "surface", REMOTE_PI_DIRECT_CONFIG: "parent-config", REMOTE_PI_RELAY: "https://test.invalid" }, "new-child");
   expect(env).toEqual({ PATH: "/bin", REMOTE_PI_RELAY: "https://test.invalid", REMOTE_PI_DAEMON: "1", REMOTE_PI_MANAGED_CHILD: "1", REMOTE_PI_DIRECT_CONFIG: JSON.stringify({ agent_name: "new-child", auto_start_relay: true }) });
+  for (const key of ["PI_SUBAGENT_CHILD", "PI_WORKER_ID", "PI_SESSION_ID", "PI_AGENT_ID", "PI_PARENT_SESSION",
+    "PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT", "PI_ASYNC_NATIVE_RUNNER", "PI_SESSION_FILE",
+    "COCKPIT_PANE_ID", "TUIOS_WINDOW_ID", "CMUX_SURFACE_ID"]) {
+    expect(Object.hasOwn(env, key)).toBe(false);
+  }
 });
