@@ -21,12 +21,20 @@ Parent is the sole App writer; fresh read-only reviewer checks the UI lifecycle.
 - [x] Real-phone plain symbol output inspected; syntax inference and common language coverage implemented.
 - [x] Header toggle covers tools/code/nested/subagent disclosures with lazy/local-state safeguards.
 - [x] Final affected tests/analysis and independent review pass.
-- [ ] Verified higher-version update committed, pushed and installed in place.
-- [ ] Actual device shows colored code and functioning header action.
+- [x] Verified higher-version update committed, pushed and installed in place.
+- [x] Actual device shows colored code and functioning header action (see exact inspection limits below).
 
 ## Validation and limits
 
-All220 chat Flutter tests passed, including real ChatPage320px/2x, lazy-row disposal/manual choices, global nested/new-row expansion and exact colored symbol output. Scoped Dart analysis reports no issues; formatting and diff checks pass. Final active LSP confirmed seven paths clean with four timeouts; no all-path LSP claim. Fresh read-only reviewer72879d76 found no issues and returned OK. No acoustic behavior or completed device update claimed yet.
+All220 chat Flutter tests passed, including real ChatPage320px/2x, lazy-row disposal/manual choices, global nested/new-row expansion and exact colored symbol output. Scoped Dart analysis reports no issues; formatting and diff checks pass. Final active LSP confirmed seven paths clean with four timeouts; no all-path LSP claim. Fresh read-only reviewer72879d76 found no issues and returned OK. No acoustic behavior claimed; verified delivery is recorded below.
+
+## Delivery and device inspection — build40
+
+Source commit `cb86d251657746068584d459b108c32780f541c1` pushed to `origin/readable-android-fonts`. New archive: `app/build/releases/code40/`. Fresh ARM64 real-main kernel/AOT, full source/compiler closure/cache hashes, package/activity/version and unchanged signer gates passed. Native source and packaged DEX are byte-identical to verified build39, so its segmented/local-only native proof is reused rather than relabeled as a new native test run.
+
+APK SHA256: `0f049fefed406c7e6e75e5bae621c0cc06442490ee3aec9326f270cd86017d0f`. Samsung `R5CXB2PGC2H` updated39→40 using targeted `install -r --user 0`: Success. Pulled installed base APK is byte-identical; app ID10054 and original first-install time remain unchanged. App launched and stayed alive during the12-second crash-only smoke with zero crash entries. Setup0.4s, build76.8s, artifact gate2.3s; these are build-lane stages, not a complete coordination benchmark.
+
+Authorized read-only UI inspection confirmed the new header icon, bulk expansion including nested Details, subsequent bulk collapse, and visible syntax-colored JavaScript source on the phone. The original plain Python symbol result was inspected before updating; its precise output-language/color regression is covered by host tests, not falsely claimed as the same old block re-inspected on the handset after history moved. Temporary screenshots remain outside the repository. Returned the client to the user's preceding `andrius` conversation. No messages, host process-stop/launch commands, microphone capture, permission changes, uninstall or data clearing were performed.
 
 ## Next plans
 
