@@ -79,6 +79,8 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
 
   late final StreamSubscription<void> _subscription, _changes;
   bool _disposed = false, _started = false;
+  bool _reconcilingSelection = false;
+  bool get reconcilingSelection => _reconcilingSelection && state.busy;
   Future<void> initialize(String peer, String room) async {
     if (_started) return;
     _started = true;
@@ -171,6 +173,7 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
     String? message,
     bool reconciles = false,
   }) async {
+    _reconcilingSelection = reconciles;
     final wasUncertain = state.needsReconciliation;
     final previous = state.availability;
     emit(

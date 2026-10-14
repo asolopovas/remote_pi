@@ -20,6 +20,7 @@ class AgentsPage extends StatefulWidget {
 class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
   final _pin = TextEditingController(), _name = TextEditingController();
   String? _selected, _identity, _projectDefinition;
+  ({String id, String identity, String definition})? _selectionCandidate;
   String _definition(LauncherProject project) =>
       '${project.projectId}:${project.name}:${project.cwd}:${project.allowedFolders.join('\u0000')}';
   bool _confirming = false, _targetChanged = false;
@@ -58,6 +59,7 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
         oldWidget.target.room != widget.target.room) {
       _pin.clear();
       _selected = null;
+      _selectionCandidate = null;
       _targetChanged = true;
       final vm = context.read<AgentsViewModel>();
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -169,17 +171,49 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
     final state = vm.state, availability = state.availability;
     final identity =
         '${widget.target.peer}:${widget.target.room}:${vm.security?.launcherId}:${vm.security?.epoch}';
-    if (_identity != identity ||
-        _selected != null &&
-            !vm.projects.any(
-              (p) =>
-                  p.projectId == _selected &&
-                  _definition(p) == _projectDefinition,
-            )) {
+    if (vm.reconcilingSelection && !state.invalid && !_targetChanged) {
+      if (_selected != null &&
+          _identity != null &&
+          _projectDefinition != null) {
+        _selectionCandidate = (
+          id: _selected!,
+          identity: _identity!,
+          definition: _projectDefinition!,
+        );
+      }
+      // Only a definition candidate survives: never selection authority or PIN.
       _selected = null;
       _pin.clear();
-      _identity = identity;
+    } else {
+      final candidate = _selectionCandidate;
+      _selectionCandidate = null;
+      if (candidate != null &&
+          !state.invalid &&
+          !state.needsReconciliation &&
+          !_targetChanged &&
+          vm.unlocked &&
+          candidate.identity == identity &&
+          vm.projects.any(
+            (p) =>
+                p.projectId == candidate.id &&
+                _definition(p) == candidate.definition,
+          )) {
+        _selected = candidate.id;
+        _projectDefinition = candidate.definition;
+        _identity = identity;
+      }
+      if (_identity != identity ||
+          _selected != null &&
+              !vm.projects.any(
+                (p) =>
+                    p.projectId == _selected &&
+                    _definition(p) == _projectDefinition,
+              )) {
+        _selected = null;
+        _pin.clear();
+      }
     }
+    _identity = identity;
     if (state.invalid) _pin.clear();
     final disabled =
         state.busy || state.invalid || _confirming || _targetChanged;

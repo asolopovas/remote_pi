@@ -34,7 +34,7 @@ class WsTransportError implements Exception {
   String toString() => 'WsTransportError: $message';
 }
 
-class WsTransport implements PeerTransport, IControlLink {
+class WsTransport implements PeerTransport, IControlLink, IScopedPeerTransport {
   final WebSocketChannel _ws;
   final _queue = _MsgQueue();
   final _controlController = StreamController<ControlInbound>.broadcast();
@@ -159,6 +159,7 @@ class WsTransport implements PeerTransport, IControlLink {
             transport._queue.add((
               bytes: bytes,
               roomEpoch: transport._roomEpoch,
+              room: senderRoom,
             ));
             return;
           }
@@ -299,11 +300,18 @@ class WsTransport implements PeerTransport, IControlLink {
 
   @override
   Future<Uint8List> receive() async {
+    return (await receiveScoped()).bytes;
+  }
+
+  @override
+  Future<ScopedPeerPayload> receiveScoped() async {
     while (true) {
       final payload = await _queue.next();
       // Includes legacy payloads without sender room: they belong to the
       // selection at ingress, not a later room that drains the same queue.
-      if (payload.roomEpoch == _roomEpoch) return payload.bytes;
+      if (payload.roomEpoch == _roomEpoch) {
+        return (bytes: payload.bytes, peer: _peerPubkey, room: payload.room);
+      }
     }
   }
 
@@ -330,7 +338,7 @@ class WsTransport implements PeerTransport, IControlLink {
 
 // ---------------------------------------------------------------------------
 
-typedef _QueuedPayload = ({Uint8List bytes, int roomEpoch});
+typedef _QueuedPayload = ({Uint8List bytes, int roomEpoch, String? room});
 
 class _MsgQueue {
   final _buf = <_QueuedPayload>[];

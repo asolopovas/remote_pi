@@ -254,10 +254,14 @@ void main() {
         );
         final request = channel.sent.last as LauncherRequest;
         channel.messages.add(
-          ErrorMessage(
-            inReplyTo: request.id,
-            code: 'invalid_message',
-            message: 'Wrong PIN',
+          ScopedPeerError(
+            ErrorMessage(
+              inReplyTo: request.id,
+              code: 'invalid_message',
+              message: 'Wrong PIN',
+            ),
+            peer: peer.remoteEpk,
+            room: 'launcher',
           ),
         );
         await assertion;
@@ -365,6 +369,165 @@ void main() {
         expect(repo.hasUnknownLaunch, false);
       },
     );
+    test(
+      'global capacity includes historical attempts across targets',
+      () async {
+        for (var i = 0; i < 32; i++) {
+          repo.dispose();
+          repo = AgentRepositoryImpl(
+            conn,
+            Storage(),
+            journal,
+            timeout: const Duration(milliseconds: 100),
+            mutationTimeout: const Duration(milliseconds: 1),
+          );
+          await repo.bind(peer.remoteEpk, 'target-$i');
+          await refresh();
+          await expectLater(
+            repo.launch('project', null),
+            throwsA(isA<AgentFailure>()),
+          );
+          await refresh();
+          if (i < 31) {
+            final replacement = repo.launch(
+              'project',
+              null,
+              acknowledgeUnknown: true,
+            );
+            channel.messages.add(
+              AgentMutationResult(
+                'agent_launch_result',
+                (channel.sent.last as LauncherRequest).id,
+                managed,
+              ),
+            );
+            await replacement;
+            expect(repo.hasUnknownLaunch, true);
+          } else {
+            final count = channel.sent.length;
+            await expectLater(
+              repo.launch('project', null, acknowledgeUnknown: true),
+              throwsA(isA<AgentFailure>()),
+            );
+            expect(channel.sent.length, count);
+          }
+        }
+        // The first historical outcome was not silently evicted.
+        repo.dispose();
+        repo = AgentRepositoryImpl(conn, Storage(), journal);
+        await repo.bind(peer.remoteEpk, 'target-0');
+        await refresh();
+        expect(repo.hasUnknownLaunch, true);
+        await expectLater(
+          repo.launch('project', null),
+          throwsA(isA<AgentFailure>()),
+        );
+      },
+    );
+
+    test(
+      'authoritative incarnation reconciliation retires history without replay',
+      () async {
+        for (var i = 0; i < 32; i++) {
+          await refresh();
+          await expectLater(
+            repo.launch('project', null, acknowledgeUnknown: i > 0),
+            throwsA(isA<AgentFailure>()),
+          );
+        }
+        final sent = channel.sent
+            .whereType<LauncherRequest>()
+            .where((r) => r.type == 'project_launch')
+            .length;
+        await refresh(value: security(epoch: 'epoch-2'));
+        expect(repo.hasUnknownLaunch, false);
+        expect(
+          channel.sent
+              .whereType<LauncherRequest>()
+              .where((r) => r.type == 'project_launch')
+              .length,
+          sent,
+        );
+        final next = repo.launch('project', null);
+        channel.messages.add(
+          AgentMutationResult(
+            'agent_launch_result',
+            (channel.sent.last as LauncherRequest).id,
+            managed,
+          ),
+        );
+        await next;
+        // Old-incarnation late replies cannot restore authority or old warnings.
+        final read = repo.status();
+        expect(repo.launcherStatus, null);
+        channel.messages.add(
+          AgentMutationResult(
+            'agent_launch_result',
+            channel.sent
+                .whereType<LauncherRequest>()
+                .firstWhere((r) => r.type == 'project_launch')
+                .id,
+            managed,
+          ),
+        );
+        await tick();
+        expect(repo.launcherStatus, null);
+        await replyStatus(security(epoch: 'epoch-2'));
+        await read;
+        await refresh(value: security(epoch: 'epoch-1'));
+        expect(repo.hasUnknownLaunch, false);
+      },
+    );
+
+    test(
+      'settled historical attempts free global capacity across many targets',
+      () async {
+        for (var i = 0; i < 40; i++) {
+          repo.dispose();
+          repo = AgentRepositoryImpl(
+            conn,
+            Storage(),
+            journal,
+            mutationTimeout: const Duration(milliseconds: 1),
+          );
+          await repo.bind(peer.remoteEpk, 'settled-$i');
+          await refresh();
+          await expectLater(
+            repo.launch('project', null),
+            throwsA(isA<AgentFailure>()),
+          );
+          final original = channel.sent.last as LauncherRequest;
+          await refresh();
+          final replacement = repo.launch(
+            'project',
+            null,
+            acknowledgeUnknown: true,
+          );
+          channel.messages.add(
+            AgentMutationResult(
+              'agent_launch_result',
+              (channel.sent.last as LauncherRequest).id,
+              managed,
+            ),
+          );
+          await replacement;
+          channel.messages.add(
+            ScopedPeerError(
+              ErrorMessage(
+                inReplyTo: original.id,
+                code: 'failed',
+                message: 'late',
+              ),
+              peer: peer.remoteEpk,
+              room: 'settled-$i',
+            ),
+          );
+          await tick();
+          expect(repo.hasUnknownLaunch, false);
+        }
+      },
+    );
+
     test('expiry immediately revokes authority and project cache', () async {
       await refresh(
         value: security(expiry: DateTime.now().millisecondsSinceEpoch + 100),

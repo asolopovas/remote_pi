@@ -15,7 +15,10 @@ disposal. It is not saved or journaled. Current machine status, expiry, launcher
 identity/epoch, paired host and room govern control. Cooldown and incorrect-PIN
 errors come from the host. Disconnects/lease changes require selecting the host
 again; expiry clears local authority. A project selection survives refresh only
-if its full definition and host/launcher incarnation remain unchanged.
+if its full definition and host/launcher incarnation remain unchanged. During
+refresh only a non-authoritative definition candidate is retained; controls stay
+disabled until the complete security/project/agent reconciliation succeeds.
+Neither PIN nor permission is restored from that candidate.
 
 Launch starts a fresh sandboxed background agent without an initial prompt.
 It survives phone disconnect but not launcher close/session replacement/reload.
@@ -34,7 +37,16 @@ attempts retain only IDs/type/incarnation, never payloads. Refresh is read-only.
 After reliable security/project/agent reconciliation, a distinct confirmed Start
 warns that the previous agent may still appear and another Start may duplicate
 it. Only that explicit acknowledgement permits a new request ID. A later real
-correlated result settles its own attempt, not a newer attempt.
+correlated result settles its own attempt, not a newer attempt. Errors must carry
+locally verified authenticated outer host/room scope to settle management work,
+even after reconnect or transport request-cache eviction. Legacy unscoped chat
+errors cannot settle management requests.
+
+The App-lifetime journal is bounded to 32 combined active/historical unknown
+attempts across all targets. At capacity, new launches are blocked rather than
+silently forgetting uncertain outcomes. Exact late replies free their own record;
+complete authoritative reconciliation retires records from obsolete incarnations
+of that same target. Empty history keys are removed.
 
 Local automated tests cover wire shape, authenticated host/room scoping, locked
 and setup gates, cooldown/errors, expiry and target invalidation, no replay,

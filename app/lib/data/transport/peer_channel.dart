@@ -73,7 +73,9 @@ class PlainPeerChannel implements IChannel, IControlLink {
 
   @override
   Future<void> send(ClientMessage msg) async {
-    final bytes = Uint8List.fromList(utf8.encode(encodeClient(msg).trimRight()));
+    final bytes = Uint8List.fromList(
+      utf8.encode(encodeClient(msg).trimRight()),
+    );
     await _transport.send(bytes);
   }
 
@@ -88,23 +90,35 @@ class PlainPeerChannel implements IChannel, IControlLink {
   Future<void> _receiveLoop() async {
     try {
       while (!_closed) {
-        final bytes = await _transport.receive();
-        _handleFrame(bytes);
+        final transport = _transport;
+        if (transport is IScopedPeerTransport) {
+          final payload = await (transport as IScopedPeerTransport)
+              .receiveScoped();
+          _handleFrame(payload.bytes, scope: payload);
+        } else {
+          _handleFrame(await transport.receive());
+        }
       }
     } catch (_) {
       if (!_controller.isClosed) await _controller.close();
     }
   }
 
-  void _handleFrame(Uint8List bytes) {
+  void _handleFrame(Uint8List bytes, {ScopedPeerPayload? scope}) {
     try {
-      final msg = decodeServer(utf8.decode(bytes));
+      var msg = decodeServer(utf8.decode(bytes));
+      if (msg is ErrorMessage && scope != null) {
+        msg = ScopedPeerError(msg, peer: scope.peer, room: scope.room);
+      }
       if (!_controller.isClosed) _controller.add(msg);
     } on UnsupportedTypeException {
       // Forward-compat: surface unknown server types as ErrorMessage.
       if (!_controller.isClosed) {
         _controller.add(
-          ErrorMessage(code: 'unsupported_type', message: 'unknown server type'),
+          ErrorMessage(
+            code: 'unsupported_type',
+            message: 'unknown server type',
+          ),
         );
       }
     } catch (_) {

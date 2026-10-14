@@ -25,13 +25,13 @@ Map<String, dynamic> _pong(
   ),
 };
 
-class _LocalRelay {
+class LocalRelay {
   final HttpServer server;
   final authenticated = Completer<WebSocket>();
   WebSocket? socket;
   final outbound = StreamController<Map<String, dynamic>>.broadcast();
 
-  _LocalRelay._(this.server) {
+  LocalRelay._(this.server) {
     server.listen((request) async {
       final ws = await WebSocketTransformer.upgrade(request);
       socket = ws;
@@ -54,8 +54,8 @@ class _LocalRelay {
     });
   }
 
-  static Future<_LocalRelay> start() async =>
-      _LocalRelay._(await HttpServer.bind(InternetAddress.loopbackIPv4, 0));
+  static Future<LocalRelay> start() async =>
+      LocalRelay._(await HttpServer.bind(InternetAddress.loopbackIPv4, 0));
 
   Future<WsTransport> connect() async {
     final transport = await WsTransport.connect(
@@ -86,7 +86,7 @@ void main() {
   test(
     'launcher transport scopes all security requests and nested replies to exact paired host and room',
     () async {
-      final relay = await _LocalRelay.start();
+      final relay = await LocalRelay.start();
       final ch = PlainPeerChannel(transport: await relay.connect());
       final messages = <ServerMessage>[];
       final sub = ch.serverMessages.listen(messages.add);
@@ -193,7 +193,7 @@ void main() {
   test(
     'agent replies and correlated errors require exact authenticated room',
     () async {
-      final relay = await _LocalRelay.start();
+      final relay = await LocalRelay.start();
       final ch = PlainPeerChannel(transport: await relay.connect());
       final messages = <ServerMessage>[];
       final sub = ch.serverMessages.listen(messages.add);
@@ -243,7 +243,7 @@ void main() {
   test(
     'WsTransport accepts expected standard/url-safe sender and scopes outgoing probe',
     () async {
-      final relay = await _LocalRelay.start();
+      final relay = await LocalRelay.start();
       final transport = await relay.connect();
       final ch = PlainPeerChannel(transport: transport);
       final messages = <ServerMessage>[];
@@ -286,7 +286,7 @@ void main() {
   test(
     'WsTransport rejects different same-room sender, malformed identity and wrong room',
     () async {
-      final relay = await _LocalRelay.start();
+      final relay = await LocalRelay.start();
       final ch = PlainPeerChannel(transport: await relay.connect());
       final messages = <ServerMessage>[];
       final sub = ch.serverMessages.listen(messages.add);
@@ -319,7 +319,7 @@ void main() {
   test(
     'WsTransport retains expected legacy sender without room and other-peer control snapshots',
     () async {
-      final relay = await _LocalRelay.start();
+      final relay = await LocalRelay.start();
       final transport = await relay.connect();
       final ch = PlainPeerChannel(transport: transport);
       final message = ch.serverMessages.first;
@@ -339,7 +339,7 @@ void main() {
   test(
     'WsTransport cannot misattribute queued old-room payload after selection changes',
     () async {
-      final relay = await _LocalRelay.start();
+      final relay = await LocalRelay.start();
       final transport = await relay.connect();
       try {
         final drained = transport.controlFrames.first;

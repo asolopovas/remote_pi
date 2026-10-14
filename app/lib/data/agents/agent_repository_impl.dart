@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
+import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/domain/contracts/agent_repository.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
@@ -18,6 +19,18 @@ class AgentMutationJournal {
   final _entries = <(String, String), _AgentMutation>{};
   final _history = <(String, String), List<_AgentMutation>>{};
   static const _limit = 32;
+  int get _retainedCount =>
+      _entries.length +
+      _history.values.fold(0, (count, entries) => count + entries.length);
+
+  void _pruneHistory(
+    (String, String) key,
+    bool Function(_AgentMutation) remove,
+  ) {
+    final history = _history[key];
+    history?.removeWhere(remove);
+    if (history != null && history.isEmpty) _history.remove(key);
+  }
 }
 
 /// Each page owns one pinned channel lease. Reconnect never renews it silently.
@@ -240,6 +253,14 @@ class AgentRepositoryImpl extends AgentRepository {
       _invalidate();
       return;
     }
+    // Legacy chat errors may still arrive without a room. They must never
+    // complete or settle management work, even after request-cache eviction.
+    if (message is ErrorMessage &&
+        (message is! ScopedPeerError ||
+            toStandardB64(message.peer) != toStandardB64(_peer!) ||
+            message.room != _room)) {
+      return;
+    }
     final id = switch (message) {
       LauncherStatusResult() => message.inReplyTo,
       ProjectListResult() => message.inReplyTo,
@@ -256,7 +277,7 @@ class AgentRepositoryImpl extends AgentRepository {
               (message as AgentMutationResult).type == entry.type);
       final entry = _journal._entries[key];
       if (entry != null && settles(entry)) _journal._entries.remove(key);
-      _journal._history[key]?.removeWhere(settles);
+      _journal._pruneHistory(key, settles);
       if (!_changes.isClosed) _changes.add(null);
     }
     final p = _pending[id];
@@ -324,7 +345,7 @@ class AgentRepositoryImpl extends AgentRepository {
         ].contains(request.type);
     if (type == 'agent_launch_result') {
       if (previous == null &&
-          _journal._entries.length >= AgentMutationJournal._limit) {
+          _journal._retainedCount >= AgentMutationJournal._limit) {
         throw const AgentFailure(
           'Resolve pending agent operations before managing more hosts.',
         );
@@ -387,6 +408,7 @@ class AgentRepositoryImpl extends AgentRepository {
       _journal._entries.remove(key);
     }
     _requireUnlocked();
+    _journal._pruneHistory(key, (entry) => entry.incarnation != _incarnation);
     _reconciled = true;
     return snapshot;
   }
@@ -437,13 +459,13 @@ class AgentRepositoryImpl extends AgentRepository {
         outcomeUnknown: true,
       );
     }
+    if (_journal._retainedCount >= AgentMutationJournal._limit) {
+      throw const AgentFailure(
+        'Resolve pending agent operations before managing more hosts.',
+      );
+    }
     if (previous != null) {
       final history = _journal._history.putIfAbsent(key, () => []);
-      if (history.length >= AgentMutationJournal._limit) {
-        throw const AgentFailure(
-          'Too many unresolved attempts. Check the host.',
-        );
-      }
       history.add(previous);
       _journal._entries.remove(key);
     }
