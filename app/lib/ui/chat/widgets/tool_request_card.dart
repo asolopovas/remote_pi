@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'compact_output_header.dart';
 import 'source_code.dart';
 import 'codemode_preview.dart';
+import 'tool_presentation.dart';
 
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
@@ -142,7 +143,7 @@ class _ToolRequestCardState extends State<ToolRequestCard>
                 ClipboardData(
                   text:
                       readableToolOutput(_toolName(tool.tool), tool.result) ??
-                      _fullText(tool.result),
+                      toolFields(tool.result),
                 ),
               ),
               icon: Icon(Icons.copy, color: context.colors.muted2),
@@ -188,7 +189,7 @@ class _ToolRequestCardState extends State<ToolRequestCard>
         ? _fullText(tool.result)
         : '';
     final output = _expanded && tool.result != null
-        ? readableToolOutput(toolName, tool.result) ?? originalOutput
+        ? readableToolOutput(toolName, tool.result) ?? toolFields(tool.result)
         : '';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -267,7 +268,7 @@ class _ToolRequestCardState extends State<ToolRequestCard>
                       if (tool.result != null) ...[
                         const SizedBox(height: 8),
                         Text('Output', style: context.typo.monoSmall),
-                        Text(output, style: context.typo.mono),
+                        SourceCode(output, language: _outputLanguage(toolName)),
                       ],
                       if (tool.error?.isNotEmpty ?? false) ...[
                         const SizedBox(height: 8),
@@ -288,12 +289,17 @@ class _ToolRequestCardState extends State<ToolRequestCard>
             text: originalOutput,
             copyTooltip: 'Copy original output',
             child: SelectionArea(
-              child: Text(originalOutput, style: context.typo.mono),
+              child: SourceCode(
+                originalOutput,
+                language: tool.result is String ? '' : 'json',
+              ),
             ),
           ),
         // Original source/metadata and complete output remain optional, not primary.
         if (_expanded &&
             (source != null ||
+                tool.args is Map ||
+                tool.args is List ||
                 _formatToolDisplay(tool.tool, tool.args) != null))
           CodeViewport(
             key: ValueKey('tool-args-${tool.id}'),
@@ -301,7 +307,7 @@ class _ToolRequestCardState extends State<ToolRequestCard>
             copyTooltip: 'Copy full details',
             text: fullDetails,
             child: SelectionArea(
-              child: Text(fullDetails, style: context.typo.mono),
+              child: SourceCode(fullDetails, language: 'json'),
             ),
           ),
       ],
@@ -366,7 +372,13 @@ class _ToolRequestCardState extends State<ToolRequestCard>
 
   static String _formatArgs(String tool, dynamic args) {
     if (args == null) return '';
-    return _fullText(args);
+    return toolFields(args);
+  }
+
+  String _outputLanguage(String toolName) {
+    if (toolName != 'read' || tool.args is! Map) return '';
+    final path = _stringArg(tool.args as Map, const ['file_path', 'path']);
+    return path.split('.').last;
   }
 
   static String _toolName(String name) {
@@ -414,7 +426,27 @@ class _ToolRequestCardState extends State<ToolRequestCard>
     final filePath = _stringArg(args, const ['file_path', 'path']);
     final lines = <_DiffLine>[];
     final hunks = args['hunks'];
-    if (hunks is! Iterable) return null;
+    if (hunks is! Iterable) {
+      final edits = args['edits'];
+      if (edits is! Iterable) return null;
+      for (final edit in edits) {
+        if (edit is! Map ||
+            edit['oldText'] is! String ||
+            edit['newText'] is! String) {
+          return null;
+        }
+        if (lines.isNotEmpty) lines.add(_DiffLine.context('…'));
+        for (final text in (edit['oldText'] as String).split('\n')) {
+          lines.add(_DiffLine.removed('- $text'));
+        }
+        for (final text in (edit['newText'] as String).split('\n')) {
+          lines.add(_DiffLine.added('+ $text'));
+        }
+      }
+      return lines.isEmpty
+          ? null
+          : _ToolDisplay(command: 'edit $filePath', lines: lines);
+    }
 
     for (final hunk in hunks) {
       if (hunk is! Map || hunk['lines'] is! Iterable) continue;

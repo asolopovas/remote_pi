@@ -5,6 +5,7 @@ import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:app/ui/chat/widgets/codemode_preview.dart';
 import 'package:app/ui/chat/widgets/source_code.dart';
+import 'package:app/ui/chat/widgets/tool_presentation.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
@@ -71,7 +72,7 @@ void main() {
         await tester.pump();
         expect(find.text(source), findsOneWidget);
         expect(find.byTooltip('Copy decoded embedded string'), findsNothing);
-        expect(find.textContaining('Result metadata:'), findsOneWidget);
+        expect(find.textContaining('Result metadata:'), findsNothing);
         expect(find.text(readableCodemodeOutput(device)), findsOneWidget);
         await tester.tap(find.byTooltip('Copy source'));
         await tester.pump();
@@ -339,9 +340,14 @@ void main() {
             await tester.tap(find.byKey(const Key('tool-disclosure')));
             await tester.pump();
             final expected = tool == 'unknown'
-                ? original
-                : entry['expected'] ?? original;
-            expect(find.text(expected as String), findsOneWidget);
+                ? toolFields(value)
+                : entry['expected'] ?? toolFields(value);
+            expect(
+              find.byWidgetPredicate(
+                (widget) => widget is SourceCode && widget.source == expected,
+              ),
+              findsOneWidget,
+            );
             expect(find.text('Output'), findsOneWidget);
             if (expected != original) {
               final disclosure = find.descendant(
@@ -450,7 +456,7 @@ void main() {
         );
         await tester.tap(find.byKey(const Key('tool-disclosure')));
         await tester.pump();
-        expect(find.byType(SourceCode), findsNothing);
+        expect(find.byType(SourceCode), findsOneWidget);
         expect(find.text(readableCodemodeOutput(result)), findsOneWidget);
         await tester.tap(find.byTooltip('Copy source'));
         await tester.pump();

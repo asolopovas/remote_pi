@@ -168,6 +168,8 @@ class SpeechToText {
   /// True as soon as the platform reports it has started listening which
   /// happens some time after the listen method is called.
   bool _listening = false;
+  // Set only by a capture-fenced Android segmented-result callback.
+  bool _segmented = false;
   bool _cancelOnError = false;
 
   /// True if the user has requested to cancel recognition when a permanent
@@ -475,6 +477,7 @@ class SpeechToText {
     _lastError = null;
     _lastRecognized = '';
     _userEnded = false;
+    _segmented = false;
     _lastSpeechResult = null;
     _cancelOnError = listenOptions?.cancelOnError ?? cancelOnError;
     _recognized = false;
@@ -513,7 +516,9 @@ class SpeechToText {
               _listening)) {
         _listenStartedAt = clock.now().millisecondsSinceEpoch;
         _lastSpeechEventAt = _listenStartedAt;
-        _setupListenAndPause(usedOptions.pauseFor, usedOptions.listenFor);
+        if (!_segmented) {
+          _setupListenAndPause(usedOptions.pauseFor, usedOptions.listenFor);
+        }
       }
     } on PlatformException catch (e) {
       throw ListenFailedException(e.message, e.details, e.stacktrace);
@@ -544,6 +549,7 @@ class SpeechToText {
       {bool ignoreElapsedPause = false}) {
     _pauseFor = null;
     _listenFor = null;
+    if (_segmented) return;
     if (null == initialPauseFor && null == initialListenFor) {
       return;
     }
@@ -736,6 +742,18 @@ class SpeechToText {
   }
 
   void _onNotifyStatus(String status) {
+    if (status == 'segmented' &&
+        SpeechToTextPlatform.instance is LocalAndroidSpeechToText) {
+      // A provider actually returned a segment; cancel both Dart limits. This
+      // can arrive synchronously before listen() acknowledges, so retain the
+      // flag to avoid installing a timer after that acknowledgment.
+      _segmented = true;
+      _listenTimer?.cancel();
+      _listenTimer = null;
+      _pauseFor = null;
+      _listenFor = null;
+      return; // capability is not a change in microphone/listening state
+    }
     // print('status $status');
     switch (status) {
       case doneStatus:

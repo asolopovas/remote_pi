@@ -127,7 +127,7 @@ public class SpeechToTextPluginTest {
         }
     }
     static void endsErrorsCapsAndDispose() throws Exception {
-        Fixture f=fresh(); f.initialize(); f.listen(1); SpeechRecognizer r=f.recognizer();
+        Fixture f=fresh(); Build.VERSION.SDK_INT=32; f.initialize(); f.listen(1); SpeechRecognizer r=f.recognizer();
         r.listener.onEndOfSpeech(); check(f.status("notListening"),"early end honest");
         Handler.advance(1999); check(r.destroys==0,"bounded final window remains open");
         Handler.advance(1); check(r.destroys==1 && f.status("doneNoResult"),"empty/silence finalization closes");
@@ -145,7 +145,7 @@ public class SpeechToTextPluginTest {
         int size=f.channel.events.size(); latest.listener.onResults(words("disposed"));
         check(f.channel.events.size()==size,"dispose rejects late results");
         for(boolean error:new boolean[]{false,true}) {
-            f=fresh(); f.initialize();
+            f=fresh(); Build.VERSION.SDK_INT=32; f.initialize();
             SpeechRecognizer.endOnStart=!error; SpeechRecognizer.errorOnStart=error;
             f.listen(1); check(!f.status("listening"),"synchronous early end/error never overwritten");
             Handler.advance(2000); check(f.recognizer().destroys==1,"startup termination closes");
@@ -186,8 +186,64 @@ public class SpeechToTextPluginTest {
             check(f.get("activeBluetooth")==null,"segment release leaves Bluetooth route alone");
         }
     }
+    static void segmentedCaptureAndStop() throws Exception {
+        Fixture f=fresh(); f.initialize(); f.listen(1);
+        SpeechRecognizer first=f.recognizer();
+        check(first.intent.extras.get("android.speech.extra.SEGMENTED_SESSION")
+            .equals("android.speech.extras.SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS"),"requests documented segmented selector");
+        check(first.intent.extras.get("android.speech.extras.SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS")
+            .equals(1500L),"paired silence extra uses milliseconds as long");
+        first.listener.onEndOfSpeech();
+        check(!f.status("notListening"),"first phrase boundary is not capture end");
+        first.listener.onSegmentResults(words("repeat"));
+        check(f.status("segmented"),"callback establishes support");
+        Handler.advance(65000);
+        check(first.stops==0 && first.destroys==0,"segment cancels provisional finalization and 60s cap");
+        first.listener.onEndOfSpeech();
+        first.listener.onPartialResults(words("repea"));
+        first.listener.onPartialResults(words("repeat"));
+        first.listener.onSegmentResults(words("repeat"));
+        check(f.payloads("textRecognition").get(3).toString().contains("repeat repeat"),"identical legitimate phrases are retained");
+        check(!f.status("notListening"),"multiple phrases stay on one recognizer");
+        f.call("stop",Map.of()); f.call("stop",Map.of());
+        check(first.stops==1,"explicit Stop is idempotent");
+        first.listener.onSegmentResults(words("last words"));
+        first.listener.onEndOfSegmentedSession();
+        String finalText=f.payloads("textRecognition").get(5).toString();
+        check(finalText.contains("repeat repeat last words") && finalText.contains("resultType=2"),"Stop-time final contains all segments");
+        check(first.destroys==1,"terminal segmented callback releases once");
+        f.listen(2); int size=f.channel.events.size();
+        first.listener.onSegmentResults(words("stale")); first.listener.onEndOfSegmentedSession();
+        check(size==f.channel.events.size(),"both segmented callbacks are identity fenced");
+        f.call("cancel",Map.of());
+
+        f=fresh(); f.initialize(); f.listen(1); SpeechRecognizer fallback=f.recognizer();
+        fallback.listener.onEndOfSpeech(); fallback.listener.onResults(words("ordinary fallback"));
+        check(fallback.destroys==1 && !f.status("segmented"),"ignored extra retains ordinary final path");
+        f.listen(2); fallback=f.recognizer(); Handler.advance(60000);
+        f.call("stop",Map.of()); f.call("stop",Map.of());
+        check(fallback.stops==1,"cap and repeated Stop cannot overlap native stops");
+        Handler.advance(2000); check(fallback.destroys==1,"finalization remains bounded");
+        f.listen(3); fallback=f.recognizer(); fallback.listener.onEndOfSpeech();
+        Handler.advance(2000); check(fallback.destroys==1,"ignored segmentation without results closes boundedly");
+        f=fresh(); f.initialize(); f.listen(1); SpeechRecognizer delayed=f.recognizer();
+        delayed.listener.onEndOfSpeech(); Handler.advance(1900);
+        f.call("stop",Map.of()); f.call("stop",Map.of()); Handler.advance(100);
+        check(delayed.stops==1 && delayed.destroys==0,"Stop replaces provisional watchdog with its full final-result window");
+        delayed.listener.onSegmentResults(words("corrected delayed words"));
+        delayed.listener.onEndOfSegmentedSession();
+        check(f.payloads("textRecognition").get(1).toString().contains("corrected delayed words"),"delayed first segment is retained after Stop");
+        check(delayed.destroys==1,"delayed terminal closes once");
+        f.listen(2); delayed=f.recognizer(); delayed.listener.onEndOfSpeech(); Handler.advance(1900);
+        f.call("stop",Map.of()); Handler.advance(1999);
+        check(delayed.destroys==0,"Stop finalization remains open for 1999ms");
+        Handler.advance(1); check(delayed.destroys==1,"Stop finalization still closes at 2000ms");
+        f=fresh(); Build.VERSION.SDK_INT=32; f.initialize(); f.listen(1);
+        check(!f.recognizer().intent.extras.containsKey("android.speech.extra.SEGMENTED_SESSION"),"API32 retains legacy capture");
+        f.call("cancel",Map.of());
+    }
     public static void main(String[] args) throws Exception {
-        privacyAndCapability(); finalAndGeneration(); endsErrorsCapsAndDispose(); localesAndPermission(); handsetBluetoothOptOut();
+        privacyAndCapability(); finalAndGeneration(); endsErrorsCapsAndDispose(); localesAndPermission(); handsetBluetoothOptOut(); segmentedCaptureAndStop();
         System.out.println("PASS actual SpeechToTextPlugin JVM lifecycle: "+assertions+" assertions (Android/Flutter doubles; NOT device/acoustic proof)");
     }
 }

@@ -25,18 +25,15 @@ void main() {
       const prefix = 'Script completed\nWall time 0.1 seconds\nOutput:\n';
       final body = input.substring(prefix.length);
       const rendered =
-          'Result metadata: {"truncated":false,"exit_code":0,"wall_time_seconds":0.1}\nplan75 harmless preview line1\nplan75 harmless preview line2\n';
-      expect(readableToolOutput('codemode', input), '$prefix$rendered');
+          'plan75 harmless preview line1\nplan75 harmless preview line2\n';
+      expect(readableToolOutput('codemode', input), rendered);
       for (final gap in ['\n', '\n\n']) {
         final envelope = 'Script completed\nWall time 0.1 seconds\nOutput:$gap';
         for (final validBody in [
           body,
           '${const JsonEncoder.withIndent('  ').convert(jsonDecode(body))}\n',
         ]) {
-          expect(
-            readableCodemodeOutput('$envelope$validBody'),
-            '$envelope$rendered',
-          );
+          expect(readableCodemodeOutput('$envelope$validBody'), rendered);
         }
       }
       for (final invalidBody in [
@@ -65,7 +62,7 @@ void main() {
     },
   );
   test(
-    'device codemode envelope accepts exactly one or two LF without changing prefix or plain sections',
+    'device codemode envelope accepts exactly one or two LF and compacts headers without changing plain sections',
     () {
       final device = File(
         'test/ui/chat/fixtures/75/75-device-codemode-result.txt',
@@ -87,14 +84,17 @@ void main() {
               original.substring(firstMarker);
           final readable = readableCodemodeOutput(input);
           expect(readable, isNot(input));
-          expect(readable, startsWith(input.substring(0, gapStart) + gap));
+          expect(readable, startsWith('Output 1\n'));
           if (original == device) {
-            final secondMarker = input.indexOf('==> text 2/2 <==\n');
-            expect(readable, startsWith(input.substring(0, secondMarker)));
+            final firstBody = input.substring(
+              input.indexOf('==> text 1/2 <==\n') + '==> text 1/2 <==\n'.length,
+              input.indexOf('==> text 2/2 <==\n'),
+            );
+            expect(readable, startsWith('Output 1\n$firstBody'));
             expect(
               readable,
               contains(
-                '==> text 2/2 <==\nResult metadata: {"truncated":false,"exit_code":0,"wall_time_seconds":1.6}\n',
+                'Output 2\nada9775762faaa67f59314d3ec58aa460829f345253a58e64b5ce47202e64068',
               ),
             );
             expect(
@@ -106,10 +106,10 @@ void main() {
           } else {
             expect(
               readable,
-              contains('==> text 2/4 <==\nSuccessfully replaced 2 block(s)'),
+              contains('Output 2\nSuccessfully replaced 2 block(s)'),
             );
             expect(readable, contains('Installed 1 package in 11ms\nHEY PC'));
-            expect('Result metadata:'.allMatches(readable).length, 2);
+            expect(readable, isNot(contains('Result metadata:')));
           }
         }
         for (final gap in [
@@ -207,7 +207,7 @@ void main() {
     },
   );
   test(
-    'known shell output wrappers preserve metadata and reject other data/repr',
+    'known shell wrappers show essential warnings, preserve contents and reject other data/repr',
     () {
       final cases =
           jsonDecode(
@@ -236,8 +236,8 @@ void main() {
         expect(
           readableCodemodeOutput('$prefix${entry['raw']}'),
           expected == null
-              ? '$prefix${entry['raw']}'
-              : '$prefix$expected${expected.endsWith('\n') ? '' : '\n'}',
+              ? '${entry['raw']}'
+              : '$expected${expected.endsWith('\n') ? '' : '\n'}',
         );
         for (final unknown in ['unknown', 'write', 'edit', 'notbash']) {
           expect(readableToolOutput(unknown, entry['raw']), isNull);
@@ -329,28 +329,20 @@ void main() {
   test('codemode output unwraps only complete known sections in order', () {
     expect(result.length, 2961);
     final readable = readableCodemodeOutput(result);
-    expect('Result metadata:'.allMatches(readable).length, 2);
-    expect(readable, contains('"wall_time_seconds":5.3'));
-    expect(readable, contains('"wall_time_seconds":6.1'));
+    expect(readable, isNot(contains('Result metadata:')));
+    expect(readable, isNot(contains('wall_time_seconds')));
+    expect(readable, isNot(contains('Script completed')));
     expect(readable, contains("Installed 1 package in 11ms\nHEY PC"));
+    expect(readable, contains('Output 2\nSuccessfully replaced 2 block(s)'));
+    expect(readable, contains('Output 3\nSuccessfully replaced 1 block(s)'));
     expect(
       readable,
-      contains('==> text 2/4 <==\nSuccessfully replaced 2 block(s)'),
-    );
-    expect(
-      readable,
-      contains('==> text 3/4 <==\nSuccessfully replaced 1 block(s)'),
-    );
-    expect(
-      readable,
-      contains(
-        '==> text 4/4 <==\nResult metadata: {"truncated":false,"exit_code":0,"wall_time_seconds":6.1}\n?   \tai-pc/cmd/ai-pc\t[no test files]',
-      ),
+      contains('Output 4\n?   \tai-pc/cmd/ai-pc\t[no test files]'),
     );
     for (var i = 1; i < 4; i++) {
       expect(
-        readable.indexOf('text $i/4'),
-        lessThan(readable.indexOf('text ${i + 1}/4')),
+        readable.indexOf('Output $i\n'),
+        lessThan(readable.indexOf('Output ${i + 1}\n')),
       );
     }
     const prefix =
@@ -363,7 +355,7 @@ void main() {
       '{"output":"x","output":"y","truncated":false,"exit_code":0,"wall_time_seconds":1}',
       'plain literal \\n',
     ]) {
-      expect(readableCodemodeOutput('$prefix$body'), '$prefix$body');
+      expect(readableCodemodeOutput('$prefix$body'), body);
     }
     final wrapper = jsonEncode({
       'output': 'a\n${r'\n C:\tmp'}',
@@ -371,10 +363,7 @@ void main() {
       'exit_code': 0,
       'wall_time_seconds': 1,
     });
-    expect(
-      readableCodemodeOutput('$prefix$wrapper'),
-      '${prefix}Result metadata: {"truncated":false,"exit_code":0,"wall_time_seconds":1}\na\n${r'\n C:\tmp'}\n',
-    );
+    expect(readableCodemodeOutput('$prefix$wrapper'), 'a\n${r'\n C:\tmp'}\n');
     expect(readableCodemodeOutput(wrapper), wrapper);
     final unordered = result.replaceFirst('text 2/4', 'text 3/4');
     expect(readableCodemodeOutput(unordered), unordered);

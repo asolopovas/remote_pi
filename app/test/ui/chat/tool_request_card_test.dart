@@ -161,13 +161,16 @@ void main() {
         expect(find.textContaining('"timeout"'), findsNothing);
         expect(find.text('Output'), findsOneWidget);
         expect(find.text('Error'), findsOneWidget);
-        expect(find.textContaining('"raw"'), findsOneWidget);
+        expect(find.text('raw: JSON output'), findsOneWidget);
         await tester.tap(find.byTooltip('Copy command'));
         await tester.pump();
         expect(copied, source);
-        await tester.tap(find.byKey(const Key('code-disclosure')));
+        await tester.tap(find.byKey(const Key('code-disclosure')).last);
         await tester.pump();
-        expect(find.textContaining('"timeout": 120'), findsOneWidget);
+        expect(
+          find.textContaining('"timeout": 120', findRichText: true),
+          findsOneWidget,
+        );
         await tester.tap(find.byTooltip('Copy full details'));
         await tester.pump();
         expect(copied, contains('"command"'));
@@ -231,7 +234,7 @@ void main() {
         await tester.tap(find.byKey(const Key('tool-disclosure')));
         await tester.pump();
         expect(find.byTooltip('Copy command'), findsNothing);
-        expect(find.textContaining('"command"'), findsOneWidget);
+        expect(find.textContaining('command: '), findsOneWidget);
       }
     },
   );
@@ -279,7 +282,7 @@ void main() {
         await tester.pump();
         expect(
           find.textContaining(
-            args.containsKey('content') ? 'second line' : 'newText',
+            args.containsKey('content') ? 'second line' : '+ after',
           ),
           findsOneWidget,
         );

@@ -30,6 +30,7 @@ void main() {
   late List<Map> listenOptions;
   late List<Map> initializeOptions;
   bool earlyFinal = false;
+  bool earlySegmented = false;
 
   Future<void> event(String method, Object payload, {int? captureId}) =>
       platform.processMethodCall(
@@ -46,6 +47,7 @@ void main() {
     listenOptions = [];
     initializeOptions = [];
     earlyFinal = false;
+    earlySegmented = false;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_channel, (call) async {
           calls.add(call.method);
@@ -69,6 +71,7 @@ void main() {
                 );
                 await event('notifyStatus', 'done');
               } else {
+                if (earlySegmented) await event('notifyStatus', 'segmented');
                 await event('notifyStatus', 'listening');
               }
               return true;
@@ -377,6 +380,68 @@ void main() {
       expect(newStatuses, 2);
       expect(errors.single.code, 'error_client');
       expect(errors.single.permanent, isTrue);
+    },
+  );
+
+  for (final beforeAck in [false, true]) {
+    testWidgets(
+      'segmented capability ${beforeAck ? 'before' : 'after'} acknowledgment removes the Dart cap without ending dictation',
+      (tester) async {
+        earlySegmented = beforeAck;
+        final service = SpeechToTextService(SttPluginImpl(speech));
+        final vm = VoiceInputViewModel(service);
+        final texts = <String>[];
+        vm.transcripts.listen(texts.add);
+        await vm.startRecording();
+        final capture = id;
+        if (!beforeAck) await event('notifyStatus', 'segmented');
+        await event('textRecognition', _words('repeat'));
+        await event('textRecognition', _words('repeat repea'));
+        await event('textRecognition', _words('repeat repeat'));
+        await tester.pump(const Duration(seconds: 65));
+        expect(id, capture);
+        expect(calls.where((call) => call == 'listen'), hasLength(1));
+        expect(calls.where((call) => call == 'stop'), isEmpty);
+        expect(vm.state, isA<VoiceRecording>());
+        expect(texts.last, 'repeat repeat');
+        final stopping = vm.stopAndTranscribe();
+        await tester.pump();
+        await event(
+          'textRecognition',
+          _words('repeat repeat last words', finalResult: true),
+        );
+        await event('notifyStatus', 'done');
+        await tester.pump();
+        expect(await stopping, 'repeat repeat last words');
+        expect(vm.state, isA<VoiceIdle>());
+        await tester.pump(const Duration(seconds: 3));
+        expect(calls.where((call) => call == 'listen'), hasLength(1));
+        vm.dispose();
+        service.dispose();
+      },
+    );
+  }
+
+  testWidgets(
+    'stale segmented capability cannot disable the next legacy capture cap',
+    (tester) async {
+      final service = SpeechToTextService(SttPluginImpl(speech));
+      await service.init(preferredLocaleId: 'en_US');
+      await service.start(
+        localeId: 'en_US',
+        maxDuration: const Duration(seconds: 60),
+      );
+      final oldId = id;
+      await service.cancel();
+      await service.start(
+        localeId: 'en_US',
+        maxDuration: const Duration(seconds: 60),
+      );
+      await event('notifyStatus', 'segmented', captureId: oldId);
+      await tester.pump(const Duration(seconds: 61));
+      expect(calls.where((call) => call == 'stop'), hasLength(1));
+      await service.cancel();
+      service.dispose();
     },
   );
 

@@ -267,7 +267,19 @@ String? _wrappedOutput(Object? result) {
     }
   }
   if (decoded is! Map ||
-      decoded.length != 4 ||
+      decoded.keys.any(
+        (key) => !{
+          'output',
+          'truncated',
+          'exit_code',
+          'wall_time_seconds',
+          'full_output_path',
+        }.contains(key),
+      ) ||
+      (decoded.containsKey('full_output_path') &&
+          (decoded['full_output_path'] is! String ||
+              (decoded['full_output_path'] as String).isEmpty ||
+              (decoded['full_output_path'] as String).length > 4096)) ||
       decoded['output'] is! String ||
       (decoded['output'] as String).length > 96000 ||
       decoded['truncated'] is! bool ||
@@ -277,19 +289,28 @@ String? _wrappedOutput(Object? result) {
       (decoded['wall_time_seconds'] as num) < 0) {
     return null;
   }
-  if (result is String && !_uniqueScalarPropertyKeys(result)) return null;
-  final metadata = {
-    'truncated': decoded['truncated'],
-    'exit_code': decoded['exit_code'],
-    'wall_time_seconds': decoded['wall_time_seconds'],
-  };
-  return 'Result metadata: ${jsonEncode(metadata)}\n${decoded['output']}';
+  if (result is String && !_uniqueScalarPropertyKeys(result, decoded.length)) {
+    return null;
+  }
+  final notices = <String>[
+    if (decoded['exit_code'] != 0) 'Exit code ${decoded['exit_code']}',
+    if (decoded['truncated'] == true) 'Output truncated',
+  ];
+  final output = decoded['output'] as String;
+  final summary = notices.isEmpty ? '' : notices.join(' · ');
+  final path = decoded['full_output_path'];
+  final body = [
+    if (summary.isNotEmpty) summary,
+    if (path != null) 'Full output: $path',
+    if (output.isNotEmpty) output,
+  ].join('\n');
+  return body.isEmpty ? 'Completed.' : body;
 }
 
-/// Used only AFTER JSON decoding and the four-scalar-field schema validation.
+/// Used only AFTER JSON decoding and the known scalar-field schema validation.
 /// Detects duplicate top-level keys without interpreting JSON values. Quoted
 /// output tokens are skipped whole so embedded braces/commas/keys stay content.
-bool _uniqueScalarPropertyKeys(String source) {
+bool _uniqueScalarPropertyKeys(String source, int expectedKeys) {
   var pos = 0;
   void space() {
     while (pos < source.length && ' \t\r\n'.contains(source[pos])) {
@@ -338,7 +359,7 @@ bool _uniqueScalarPropertyKeys(String source) {
     final separator = source[pos++];
     if (separator == '}') {
       space();
-      return pos == source.length && keys.length == 4;
+      return pos == source.length && keys.length == expectedKeys;
     }
     if (separator != ',') return false;
   }
@@ -365,16 +386,14 @@ String readableCodemodeOutput(String original) {
     // Body starts immediately: never absorb a third LF or arbitrary padding.
     if (!body.startsWith('{')) return original;
     final readable = _wrappedOutput(body);
-    return readable == null
-        ? original
-        : original.substring(0, prefix.end) + readable;
+    return readable ?? original;
   }
   if (sections.length > 32 || sections.first.start != prefix.end) {
     return original;
   }
   final total = int.tryParse(sections.first[2]!);
   if (total != sections.length) return original;
-  final out = StringBuffer(original.substring(0, prefix.end));
+  final out = StringBuffer();
   for (var i = 0; i < sections.length; i++) {
     final section = sections[i];
     if (section[1] != '${i + 1}' || section[2] != '$total') return original;
@@ -382,7 +401,7 @@ String readableCodemodeOutput(String original) {
         ? sections[i + 1].start
         : original.length;
     final body = original.substring(section.end, end);
-    out.write(section[0]);
+    if (sections.length > 1) out.writeln('Output ${i + 1}');
     final readable = _wrappedOutput(body);
     if (readable != null) {
       out.write(readable);

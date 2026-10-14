@@ -3,4 +3,5 @@ public class Intent { public final Map<String,Object> extras=new HashMap<>();pub
  public Intent putExtra(String k,String v){extras.put(k,v);return this;}
  public Intent putExtra(String k,boolean v){extras.put(k,v);return this;}
  public Intent putExtra(String k,int v){extras.put(k,v);return this;}
+ public Intent putExtra(String k,long v){extras.put(k,v);return this;}
 }

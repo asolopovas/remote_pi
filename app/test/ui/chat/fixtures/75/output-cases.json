@@ -8,7 +8,7 @@
       "exit_code": 0,
       "wall_time_seconds": 1.5
     },
-    "expected": "Result metadata: {\"truncated\":false,\"exit_code\":0,\"wall_time_seconds\":1.5}\nfirst\n  second\tindent\n\\n C:\\Users\\name"
+    "expected": "first\n  second\tindent\n\\n C:\\Users\\name"
   },
   {
     "name": "reported-truncation-and-failure",
@@ -19,7 +19,7 @@
       "exit_code": 2,
       "wall_time_seconds": 2
     },
-    "expected": "Result metadata: {\"truncated\":true,\"exit_code\":2,\"wall_time_seconds\":2}\navailable\npartial output"
+    "expected": "Exit code 2 · Output truncated\navailable\npartial output"
   },
   {
     "name": "unknown-json",
@@ -60,17 +60,17 @@
   {
     "name": "pretty-equivalent",
     "raw": "{\n  \"output\": \"first\\n  second\\tindent\\n\\\\n C:\\\\Users\\\\name\",\n  \"truncated\": false,\n  \"exit_code\": 0,\n  \"wall_time_seconds\": 1.5\n}",
-    "expected": "Result metadata: {\"truncated\":false,\"exit_code\":0,\"wall_time_seconds\":1.5}\nfirst\n  second\tindent\n\\n C:\\Users\\name"
+    "expected": "first\n  second\tindent\n\\n C:\\Users\\name"
   },
   {
     "name": "spaced-equivalent",
     "raw": " \n{\"output\": \"first\\n  second\\tindent\\n\\\\n C:\\\\Users\\\\name\", \"truncated\": false, \"exit_code\": 0, \"wall_time_seconds\": 1.5}\t\n",
-    "expected": "Result metadata: {\"truncated\":false,\"exit_code\":0,\"wall_time_seconds\":1.5}\nfirst\n  second\tindent\n\\n C:\\Users\\name"
+    "expected": "first\n  second\tindent\n\\n C:\\Users\\name"
   },
   {
     "name": "unicode-key-and-newline-equivalent",
     "raw": "{\"\\u006futput\":\"first\\u000a  second\\tindent\\n\\\\n C:\\\\Users\\\\name\",\"truncated\":false,\"exit_code\":0,\"wall_time_seconds\":1.5}",
-    "expected": "Result metadata: {\"truncated\":false,\"exit_code\":0,\"wall_time_seconds\":1.5}\nfirst\n  second\tindent\n\\n C:\\Users\\name"
+    "expected": "first\n  second\tindent\n\\n C:\\Users\\name"
   },
   {
     "name": "escaped-equivalent-duplicate-key",
@@ -79,6 +79,6 @@
   {
     "name": "fake-property-text-and-escaped-slash",
     "raw": "{\"output\":\"text }, {\\\"output\\\":\\\"fake\\\",\\\"exit_code\\\":2}, \\\\\\\"quoted\\\\\\\" literal \\\\n C:\\\\tmp\\nnext dir\\/file\",\"truncated\":false,\"exit_code\":0,\"wall_time_seconds\":1}",
-    "expected": "Result metadata: {\"truncated\":false,\"exit_code\":0,\"wall_time_seconds\":1}\ntext }, {\"output\":\"fake\",\"exit_code\":2}, \\\"quoted\\\" literal \\n C:\\tmp\nnext dir/file"
+    "expected": "text }, {\"output\":\"fake\",\"exit_code\":2}, \\\"quoted\\\" literal \\n C:\\tmp\nnext dir/file"
   }
 ]

@@ -111,6 +111,11 @@ public class SpeechToTextPlugin :
     private var captureId: Int? = null
     private var captureListener: CaptureListener? = null
     private var finalization: Runnable? = null
+    private var captureStopping = false
+    private var segmentedRequested = false
+    private var segmentedActive = false
+    private var committedText = ""
+    private var latestText = ""
     private var captureCap: Runnable? = null
     private var speechRecognizer: SpeechRecognizer? = null
     private var recognizerIntent: Intent? = null
@@ -283,6 +288,11 @@ public class SpeechToTextPlugin :
         retireCapture()
         captureId = id
         resultSent = false
+        captureStopping = false
+        segmentedRequested = Build.VERSION.SDK_INT >= 33 && listenModeIndex == ListenMode.dictation.ordinal
+        segmentedActive = false
+        committedText = ""
+        latestText = ""
         minRms = 1000.0F
         maxRms = -100.0F
         try {
@@ -300,8 +310,8 @@ public class SpeechToTextPlugin :
             speechStartTime = System.currentTimeMillis()
             recognizer.startListening(recognizerIntent)
             // Synchronous engine failures/end must not be overwritten by Listening.
-            if (captureId == id && finalization == null) notifyListening(true)
-            if (captureId == id && finalization == null) {
+            if (captureId == id && !captureStopping && (finalization == null || segmentedRequested)) notifyListening(true)
+            if (captureId == id && !captureStopping && !segmentedActive && (finalization == null || segmentedRequested)) {
                 val cap = Runnable { if (captureId == id) stopCapture() }
                 captureCap = cap
                 handler.postDelayed(cap, (listenFor ?: 60000).coerceIn(1, 60000).toLong())
@@ -320,6 +330,31 @@ public class SpeechToTextPlugin :
         override fun onResults(results: Bundle?) {
             if (!current()) return
             updateResults(results, true)
+            finishCapture()
+        }
+        override fun onSegmentResults(results: Bundle) {
+            if (!current() || !segmentedRequested) return
+            // A callback, not SDK level or language availability, proves support.
+            if (!captureStopping) {
+                finalization?.let { handler.removeCallbacks(it) }
+                finalization = null
+                captureCap?.let { handler.removeCallbacks(it) }
+                captureCap = null
+                if (!segmentedActive) emit(SpeechToTextCallbackMethods.notifyStatus, "segmented")
+            }
+            segmentedActive = true
+            updateResults(results, false)
+            val words = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+            if (!words.isNullOrBlank()) committedText = cumulative(words)
+        }
+        override fun onEndOfSegmentedSession() {
+            if (!current() || !segmentedRequested) return
+            // Terminal final seals the capture, not each phrase within it.
+            if (latestText.isNotEmpty()) {
+                val final = Bundle()
+                final.putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf(latestText))
+                updateResults(final, true, false)
+            }
             finishCapture()
         }
         override fun onError(error: Int) { if (current()) this@SpeechToTextPlugin.onError(error) }
@@ -345,7 +380,14 @@ public class SpeechToTextPlugin :
     }
 
     private fun stopCapture() {
-        if (captureId == null) return
+        if (captureId == null || captureStopping) return
+        captureStopping = true // before status delivery can re-enter Stop
+        captureCap?.let { handler.removeCallbacks(it) }
+        captureCap = null
+        // The first Stop gets its own full window, not the remaining time on
+        // a provisional phrase-boundary watchdog. Repeated Stop never resets it.
+        finalization?.let { handler.removeCallbacks(it) }
+        finalization = null
         awaitFinal()
         notifyListening(false)
         try { speechRecognizer?.stopListening() }
@@ -474,9 +516,13 @@ public class SpeechToTextPlugin :
         }
     }
     
-    private fun updateResults(speechBundle: Bundle?, isFinal: Boolean) {
+    private fun cumulative(words: String): String =
+        listOf(committedText, words.trim()).filter { it.isNotEmpty() }.joinToString(" ")
+
+    private fun updateResults(speechBundle: Bundle?, isFinal: Boolean, includeCommitted: Boolean = true) {
         val userSaid = speechBundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
         if (null != userSaid && userSaid.isNotEmpty()) {
+            latestText = if (includeCommitted) cumulative(userSaid[0]) else userSaid[0]
             val speechResult = JSONObject()
             val finalResult = speechBundle.getBoolean("final_result", false)
             val resultType = if (isFinal) {
@@ -491,7 +537,7 @@ public class SpeechToTextPlugin :
             val alternates = JSONArray()
             for (resultIndex in 0..userSaid.size - 1) {
                 val speechWords = JSONObject()
-                speechWords.put("recognizedWords", userSaid[resultIndex])
+                speechWords.put("recognizedWords", if (includeCommitted) cumulative(userSaid[resultIndex]) else userSaid[resultIndex])
                 if (null != confidence && confidence.size >= userSaid.size) {
                     speechWords.put("confidence", confidence[resultIndex])
                 } else {
@@ -621,8 +667,16 @@ public class SpeechToTextPlugin :
             }
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS,10)
 
-            pauseFor?.also {
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, it)
+            if (Build.VERSION.SDK_INT >= 33 && listenMode == ListenMode.dictation) {
+                // Optional provider capability. If ignored, ordinary results/errors
+                // and the legacy bounded capture/restart path remain supported.
+                putExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION,
+                    RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+            } else {
+                pauseFor?.also {
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, it.toLong())
+                }
             }
         }
     }
@@ -645,6 +699,12 @@ public class SpeechToTextPlugin :
     private fun onBeginningOfSpeech() {}
 
     private fun onEndOfSpeech() {
+        if (segmentedRequested && !captureStopping) {
+            // A phrase boundary is not a capture end. Until the first segment
+            // arrives, keep a bounded fallback for engines ignoring the extra.
+            if (!segmentedActive) awaitFinal()
+            return
+        }
         // Speech has ended even if an engine delays its final result, including
         // an engine that ends synchronously before startListening returns.
         if (!listening) emit(SpeechToTextCallbackMethods.notifyStatus, SpeechToTextStatus.notListening.name)
