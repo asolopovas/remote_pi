@@ -89,6 +89,8 @@ Grants last five minutes, are Owner+launcher scoped, and are never restored afte
 
 Every successful unlock rotates the global epoch, invalidating pending old-epoch admissions; already-unlocked other Owners keep their remaining expiration but must obtain the new epoch via status. **Lock is global for this launcher**, invalidates all grants/replay authority before any await and leaves already-running children alive. Parent-mediated child-room controls/history/output are also gated; a paired locked caller receives a correlated denial, not child data. Work accepted before Lock can continue in the background; Lock is not a rollback of completed actions.
 
+Protected host list/launch/stop replies retain the producing launcher and admission epoch. After the final paired-Owner lookup they synchronously recheck the grant, epoch, launcher identity, root lifecycle generation and actual active channel immediately before sending. Status, Lock and shutdown acknowledgements are intentionally not grant-gated.
+
 Shut down means **“Stop your managed agents and lock access.”** It stops only requesting Owner's children in this launcher and globally locks access; other Owners' children and unrelated agents remain running. `stopped:true` means all requesting Owner cleanup completed, including starts in flight. `stopped:false` means incomplete cleanup and access remains locked; inspect locally or unlock and submit a fresh shutdown request to retry safely. Neither operation invokes OS shutdown. Normal host teardown terminates all children it owns.
 
 ## Sandbox and parent/child transport scope

@@ -6372,11 +6372,16 @@ describe("UUID-scoped room display producer", () => {
 // ── plan/94: paired channel launch authorization and routing ────────────────
 describe("phone agent request routing", () => {
   let handleSpy: ReturnType<typeof vi.spyOn>;
+  let grantSpy: ReturnType<typeof vi.spyOn>;
+  let authSpy: ReturnType<typeof vi.spyOn>;
   beforeEach(async () => {
     _setDisposedForTest(false);
     _knownPeers.length = 0;
     const stop = captureHandler("remote-pi stop"); await stop("", makeMockCtx());
     const { SecureLauncher } = await import("./session/secure_launcher.js");
+    const { LaunchSecurity } = await import("./session/launch_security.js");
+    grantSpy = vi.spyOn(LaunchSecurity.prototype, "hasGrant").mockReturnValue(true);
+    authSpy = vi.spyOn(LaunchSecurity.prototype, "authorized").mockResolvedValue(true);
     handleSpy = vi.spyOn(SecureLauncher.prototype, "legacy").mockImplementation(async (_owner, request) => ({
       type: "agent_list_result", in_reply_to: request.id, available: true, cwd: "/fixture", max_agents: 4, agents: [],
     }));
@@ -6387,7 +6392,7 @@ describe("phone agent request routing", () => {
   afterEach(async () => {
     await captureEventHandler("session_shutdown")({ type: "session_shutdown" });
     _setDisposedForTest(false);
-    handleSpy.mockRestore(); vi.unstubAllEnvs();
+    handleSpy.mockRestore(); grantSpy.mockRestore(); authSpy.mockRestore(); vi.unstubAllEnvs();
     _knownPeers.length = 0;
   });
   const replies = () => relayRef.current!.send.mock.calls.map(c => decodeSentCt(c[0] as string));
@@ -6426,6 +6431,49 @@ describe("phone agent request routing", () => {
       await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ inner: expect.objectContaining({ type: "error", in_reply_to: "revoked-unlock" }) })));
       expect(handle).toHaveBeenCalledTimes(7);
     } finally { handle.mockRestore(); }
+  });
+  test.each(["project_list", "agent_list"].flatMap(type => ["Lock", "channel replacement", "lifecycle replacement"].map(change => [type, change])))("%s final peer lookup cannot publish after %s", async (type, change) => {
+    const { SecureLauncher } = await import("./session/secure_launcher.js");
+    const { setupLaunchPin } = await import("./session/launch_security.js");
+    const { listPeers } = await import("./pairing/storage.js");
+    const home = mkdtempSync(join(tmpdir(), "dispatch-final-")); vi.stubEnv("HOME", home);
+    // Use real verifier, grant and epoch, not permanently-true output guards.
+    grantSpy.mockRestore(); authSpy.mockRestore();
+    let launcher: InstanceType<typeof SecureLauncher> | undefined;
+    const handle = vi.spyOn(SecureLauncher.prototype, "handle").mockImplementation(function(_owner, request) {
+      launcher = this;
+      return Promise.resolve({ type: "launcher_status_result", in_reply_to: request.id,
+        status: { launcher_id: this.agents.launcherId, epoch: this.security.epoch, configured: true, unlocked: false, expires_at: null, cooldown_until: 0 } });
+    });
+    const parked = deferred<StoredPeer[]>(); const entered = deferred<void>();
+    try {
+      send({ type: "launcher_status", id: "capture-launcher" });
+      await vi.waitFor(() => expect(launcher).toBeDefined());
+      await setupLaunchPin("654321", launcher!.security.dir);
+      await launcher!.security.unlock(OWNER_STANDARD_FIXTURE, "local-unlock", launcher!.agents.launcherId, launcher!.security.epoch, "654321", async () => true);
+      expect(launcher!.security.hasGrant(OWNER_STANDARD_FIXTURE, launcher!.security.epoch)).toBe(true);
+      const producer = (_owner: string, request: { id: string }) => {
+        // Installed only AFTER production completes; this is the outbound lookup.
+        vi.mocked(listPeers).mockImplementationOnce(() => { entered.resolve(); return parked.promise; });
+        return Promise.resolve(type === "project_list"
+          ? { type: "project_list_result" as const, in_reply_to: request.id, projects: [{ project_id: "private", name: "private", cwd: "/secret", allowed_folders: ["/secret"] }] }
+          : { type: "agent_list_result" as const, in_reply_to: request.id, available: true, cwd: "/secret", max_agents: 4, agents: [] });
+      };
+      handle.mockImplementation(producer); handleSpy.mockImplementation(producer);
+      send({ type, id: "parked-final" }); await entered.promise;
+      if (change === "Lock") launcher!.lock();
+      else if (change === "channel replacement") {
+        _onPeerDisconnect(OWNER_STANDARD_FIXTURE);
+        send({ type: "ping", id: "new-channel" });
+        await vi.waitFor(() => expect(replies().some(r => r.inner.in_reply_to === "new-channel")).toBe(true));
+      } else {
+        await captureEventHandler("session_shutdown")({ type: "session_shutdown" });
+        _setDisposedForTest(false); // lifecycle generation must reject even after rearming
+      }
+      parked.resolve([..._knownPeers]);
+      await new Promise(r => setTimeout(r, 30));
+      expect(replies().some(r => r.inner.in_reply_to === "parked-final" && ["project_list_result", "agent_list_result"].includes(String(r.inner.type)))).toBe(false);
+    } finally { parked.resolve([..._knownPeers]); handle.mockRestore(); rmSync(home, { recursive: true, force: true }); }
   });
   test("unpaired peer cannot launch or discover capability", async () => {
     send({ type: "agent_launch", id: "unpaired", cwd: "/fixture" }, OTHER_OWNER_STANDARD_FIXTURE);

@@ -4544,11 +4544,13 @@ function _abortCurrentTurn(
 }
 
 function _getSecureLauncher(cwd: string): SecureLauncher {
-  return _secureLauncher ??= new SecureLauncher({ cwd, extensionPath: fileURLToPath(import.meta.url),
+  if (_secureLauncher) return _secureLauncher;
+  const launcher = new SecureLauncher({ cwd, extensionPath: fileURLToPath(import.meta.url),
     keypair: async () => { if (!_cachedEd25519) throw new Error("Host identity unavailable"); return _cachedEd25519; },
     paired: async owner => !!await _findKnownPeer(owner),
-    current: () => !_disposed,
+    current: () => !_disposed && _secureLauncher === launcher,
   });
+  return _secureLauncher = launcher;
 }
 async function _routeLauncherRequest(sender: PlainPeerChannel, raw: unknown): Promise<void> {
   const rawId = (raw as { id?: unknown } | null)?.id;
@@ -4558,8 +4560,15 @@ async function _routeLauncherRequest(sender: PlainPeerChannel, raw: unknown): Pr
     const owner = [..._activePeers].find(([, channel]) => channel === sender)?.[0];
     const generation = _rootLifecycleGeneration;
     if (!owner || _disposed || !await _findKnownPeer(owner) || generation !== _rootLifecycleGeneration || _activePeers.get(owner) !== sender || process.env[MANAGED_CHILD_ENV] === "1") throw new Error("A paired host channel is required");
-    const result = await _getSecureLauncher(_lastCtx?.cwd ?? process.cwd()).handle(owner, request, async () => !_disposed && generation === _rootLifecycleGeneration && !!await _findKnownPeer(owner));
-    if (!_disposed && generation === _rootLifecycleGeneration && _activePeers.get(owner) === sender && await _findKnownPeer(owner)) sender.send(result);
+    const launcher = _getSecureLauncher(_lastCtx?.cwd ?? process.cwd());
+    const epoch = launcher.security.epoch;
+    const result = await launcher.handle(owner, request, async () => !_disposed && generation === _rootLifecycleGeneration && !!await _findKnownPeer(owner));
+    const protectedResult = ["project_list_result", "agent_launch_result", "agent_stop_result"].includes(result.type);
+    if (protectedResult && !await launcher.security.authorized(owner, epoch)) return;
+    const paired = await _findKnownPeer(owner);
+    // No await after these checks: Lock, replacement and detach revoke pending output.
+    if (paired && !_disposed && generation === _rootLifecycleGeneration && _secureLauncher === launcher &&
+        _activePeers.get(owner) === sender && (!protectedResult || epoch === launcher.security.epoch && launcher.security.hasGrant(owner, epoch))) sender.send(result);
   } catch (error) {
     sender.send({ type: "error", ...(id ? { in_reply_to: id } : {}), code: "invalid_message", message: error instanceof DecodeError ? error.message : "Launcher request denied; refresh security status or inspect local setup" });
   }
@@ -4594,11 +4603,16 @@ async function _routeAgentRequest(sender: PlainPeerChannel, raw: unknown): Promi
       return;
     }
     const launcher = _getSecureLauncher(cwd);
+    const epoch = launcher.security.epoch;
     const result = await launcher.legacy(owner, request,
       async () => !_disposed && generation === _rootLifecycleGeneration && !!await _findKnownPeer(owner));
     // Phone disconnects do not stop accepted children. A revoked Owner must
     // not receive a completed reply via a stale channel.
-    if (_activePeers.get(owner) === sender && await _findKnownPeer(owner)) sender.send(result);
+    const protectedResult = ["agent_list_result", "agent_launch_result", "agent_stop_result"].includes(result.type);
+    if (protectedResult && !await launcher.security.authorized(owner, epoch)) return;
+    const paired = await _findKnownPeer(owner);
+    if (paired && !_disposed && generation === _rootLifecycleGeneration && _secureLauncher === launcher &&
+        _activePeers.get(owner) === sender && (!protectedResult || epoch === launcher.security.epoch && launcher.security.hasGrant(owner, epoch))) sender.send(result);
   } catch {
     sender.send({ type: "error", in_reply_to: request.id, code: "internal_error", message: "Could not verify Owner or manage agents; check the host" });
   }
