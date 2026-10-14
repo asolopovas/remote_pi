@@ -925,6 +925,9 @@ sealed class ServerMessage {
   factory ServerMessage.fromJson(Map<String, dynamic> json) {
     final type = json['type'] as String?;
     return switch (type) {
+      'launcher_status_result' ||
+      'launcher_shutdown_result' => LauncherStatusResult.fromJson(json),
+      'project_list_result' => ProjectListResult.fromJson(json),
       'agent_list_result' => AgentListResult.fromJson(json),
       'agent_launch_result' ||
       'agent_stop_result' => AgentMutationResult.fromJson(json),
@@ -1900,5 +1903,76 @@ class AgentMutationResult extends ServerMessage {
         j['type'] as String,
         j['in_reply_to'] as String,
         _managedAgent(j['agent'] as Map<String, dynamic>),
+      );
+}
+
+/// PIN-bearing messages are transient and must never enter a retry journal.
+class LauncherRequest extends ClientMessage {
+  LauncherRequest(
+    this.type,
+    this.id, {
+    this.status,
+    this.pin,
+    this.projectId,
+    this.name,
+    this.agentId,
+  });
+  final String type, id;
+  final LauncherStatus? status;
+  final String? pin, projectId, name, agentId;
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': type,
+    'id': id,
+    if (status != null) 'launcher_id': status!.launcherId,
+    if (status != null) 'epoch': status!.epoch,
+    if (pin != null) 'pin': pin,
+    if (projectId != null) 'project_id': projectId,
+    if (name != null) 'name': name,
+    if (agentId != null) 'agent_id': agentId,
+  };
+}
+
+class LauncherStatusResult extends ServerMessage {
+  LauncherStatusResult(this.type, this.inReplyTo, this.status, this.stopped);
+  final String type, inReplyTo;
+  final LauncherStatus status;
+  final bool? stopped;
+  factory LauncherStatusResult.fromJson(Map<String, dynamic> j) {
+    final s = j['status'] as Map<String, dynamic>;
+    return LauncherStatusResult(
+      j['type'] as String,
+      j['in_reply_to'] as String,
+      LauncherStatus(
+        launcherId: s['launcher_id'] as String,
+        epoch: s['epoch'] as String,
+        configured: s['configured'] as bool,
+        unlocked: s['unlocked'] as bool,
+        expiresAt: s['expires_at'] as int?,
+        cooldownUntil: s['cooldown_until'] as int,
+      ),
+      j['type'] == 'launcher_shutdown_result' ? j['stopped'] as bool : null,
+    );
+  }
+}
+
+class ProjectListResult extends ServerMessage {
+  ProjectListResult(this.inReplyTo, this.projects);
+  final String inReplyTo;
+  final List<LauncherProject> projects;
+  factory ProjectListResult.fromJson(Map<String, dynamic> j) =>
+      ProjectListResult(
+        j['in_reply_to'] as String,
+        List.unmodifiable(
+          (j['projects'] as List).map((value) {
+            final p = value as Map<String, dynamic>;
+            return LauncherProject(
+              p['project_id'] as String,
+              p['name'] as String,
+              p['cwd'] as String,
+              List<String>.unmodifiable(p['allowed_folders'] as List),
+            );
+          }),
+        ),
       );
 }

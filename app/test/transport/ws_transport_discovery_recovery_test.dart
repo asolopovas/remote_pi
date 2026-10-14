@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:app/data/transport/peer_channel.dart';
+import 'package:app/domain/contracts/agent_repository.dart';
 import 'package:app/data/transport/ws_transport.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:cryptography/cryptography.dart';
@@ -82,6 +83,113 @@ class _LocalRelay {
 }
 
 void main() {
+  test(
+    'launcher transport scopes all security requests and nested replies to exact paired host and room',
+    () async {
+      final relay = await _LocalRelay.start();
+      final ch = PlainPeerChannel(transport: await relay.connect());
+      final messages = <ServerMessage>[];
+      final sub = ch.serverMessages.listen(messages.add);
+      const status = LauncherStatus(
+        launcherId: 'launcher',
+        epoch: 'epoch',
+        configured: true,
+        unlocked: false,
+        expiresAt: null,
+        cooldownUntil: 0,
+      );
+      const producerStatus = {
+        'launcher_id': 'launcher',
+        'epoch': 'epoch',
+        'configured': true,
+        'unlocked': false,
+        'expires_at': null,
+        'cooldown_until': 0,
+      };
+      Map<String, dynamic> envelope(
+        Map<String, dynamic> body, {
+        String? room,
+        String peer = _peer,
+      }) => {
+        'peer': peer,
+        'room': ?room,
+        'ct': base64.encode(utf8.encode(jsonEncode(body))),
+      };
+      try {
+        for (final type in [
+          'launcher_status',
+          'project_list',
+          'launcher_unlock',
+          'launcher_lock',
+          'launcher_shutdown',
+          'project_launch',
+          'launcher_agent_stop',
+        ]) {
+          final sent = relay.outbound.stream.first;
+          final request = LauncherRequest(
+            type,
+            type,
+            status: type == 'launcher_status' || type == 'project_list'
+                ? null
+                : status,
+            pin: type == 'launcher_unlock' ? '123456' : null,
+            projectId: type == 'project_launch' ? 'p' : null,
+            agentId: type == 'launcher_agent_stop' ? 'a' : null,
+          );
+          await ch.send(request);
+          final outer = await sent;
+          expect(outer['peer'], _peer);
+          expect(outer['room'], 'project');
+          expect(
+            jsonDecode(utf8.decode(base64.decode(outer['ct'] as String))),
+            request.toJson(),
+          );
+        }
+        final results = [
+          {
+            'type': 'launcher_status_result',
+            'in_reply_to': 'launcher_status',
+            'status': producerStatus,
+          },
+          {
+            'type': 'launcher_shutdown_result',
+            'in_reply_to': 'launcher_shutdown',
+            'status': producerStatus,
+            'stopped': false,
+          },
+          {
+            'type': 'project_list_result',
+            'in_reply_to': 'project_list',
+            'projects': [],
+          },
+          {
+            'type': 'error',
+            'in_reply_to': 'launcher_unlock',
+            'code': 'invalid_message',
+            'message': 'Wrong PIN',
+          },
+        ];
+        final done = ch.serverMessages.firstWhere(
+          (m) => m is Pong && m.inReplyTo == 'done',
+        );
+        for (final result in results) {
+          relay.send(envelope(result));
+          relay.send(envelope(result, room: 'other'));
+          relay.send(envelope(result, room: 'project', peer: _other));
+          relay.send(envelope(result, room: 'project'));
+        }
+        relay.send(_pong(_peer, 'done'));
+        await done;
+        expect(messages.whereType<LauncherStatusResult>().length, 2);
+        expect(messages.whereType<ProjectListResult>().length, 1);
+        expect(messages.whereType<ErrorMessage>().length, 1);
+      } finally {
+        await sub.cancel();
+        await ch.close();
+        await relay.close();
+      }
+    },
+  );
   test(
     'agent replies and correlated errors require exact authenticated room',
     () async {

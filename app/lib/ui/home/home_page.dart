@@ -98,6 +98,11 @@ class HomePage extends StatelessWidget {
       automaticallyImplyLeading: false,
       actions: [
         IconButton(
+          tooltip: 'Refresh relay',
+          icon: Icon(LucideIcons.refreshCw, color: colors.muted2),
+          onPressed: vm.isRelayConnected ? vm.refreshRelay : null,
+        ),
+        IconButton(
           tooltip: 'Start agent',
           icon: Icon(LucideIcons.plus, color: colors.accent),
           onPressed: () => _chooseLauncher(context, vm, state),
@@ -159,7 +164,7 @@ class HomePage extends StatelessWidget {
               // Compact title — fades IN as we collapse.
               Positioned(
                 left: 20,
-                right: 112, // reserve both Start agent and Settings actions
+                right: 160, // reserve Refresh, Start agent and Settings actions
                 top: 0,
                 height: 56,
                 child: IgnorePointer(

@@ -126,6 +126,9 @@ class WsTransport implements PeerTransport, IControlLink {
             if (inner is Map<String, dynamic> &&
                 (const [
                       'agent_list_result',
+                      'launcher_status_result',
+                      'launcher_shutdown_result',
+                      'project_list_result',
                       'agent_launch_result',
                       'agent_stop_result',
                     ].contains(inner['type']) ||
@@ -270,6 +273,13 @@ class WsTransport implements PeerTransport, IControlLink {
     if (inner is Map<String, dynamic> &&
         const [
           'agent_list',
+          'launcher_status',
+          'launcher_unlock',
+          'launcher_lock',
+          'launcher_shutdown',
+          'project_list',
+          'project_launch',
+          'launcher_agent_stop',
           'agent_launch',
           'agent_stop',
         ].contains(inner['type'])) {
