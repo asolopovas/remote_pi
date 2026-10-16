@@ -39,14 +39,15 @@ Do not invent a PIN or weaken the registered-project/managed-child grant gate.
 - [x] Host implementation integrated with strict codec and scoped capability tests.
 - [x] Host fresh review finding corrected; targeted recheck OK (e82d2384).
 - [x] Creation state flow and App stop consumer implemented; targeted125 tests and analyzer pass.
-- [ ] Final consumer review and full combined regression gate accepted.
+- [x] Final consumer review OK;875 full App tests/analyzer pass. Subsequent read-only control-refresh/30s client-expiry correction passes36 focused tests.
 - [ ] Exact-source App/host delivery and temporary-agent physical-phone Stop verified.
 - [ ] Operator chooses local PIN and verifies approved-project launch on device.
 
 ## Evidence and limits
 
-Host112 affected +29 routing tests preceded the cleanup fix; correction compiler,
-build and69 affected tests pass. Primary RPC shutdown in cached SDK waits for a
+Final host compiler/build,112 affected tests and29 targeted routing tests pass
+(208 unrelated routing cases intentionally skipped). Cleanup regressions failed
+before correction;69 focused correction tests pass. Final consumer review OK. Primary RPC shutdown in cached SDK waits for a
 subsequent command, so primary control is TUI-only; managed RPC children use the
 parent-owned bounded stop path. No force-kill fallback for primary sessions.
 Local `remote-pi-launcher` entry point now resolves installed setup CLI; it does

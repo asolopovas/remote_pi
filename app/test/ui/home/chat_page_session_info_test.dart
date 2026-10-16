@@ -379,6 +379,10 @@ void main() {
           findsOneWidget,
         );
         expect(find.byKey(const Key('stop-session-agent')), findsNothing);
+        await tester.tap(find.widgetWithText(TextButton, 'Refresh'));
+        await tester.pumpAndSettle();
+        expect(controls.stops, 1); // Read-only reconciliation never retries Stop.
+        expect(find.byKey(const Key('stop-session-agent')), findsOneWidget);
       }
       if (outcome != 'confirm') {
         await tester.tap(find.byTooltip('Close info'));

@@ -62,7 +62,7 @@ class SessionControlRepositoryImpl extends SessionControlRepository {
       (_, entry) =>
           !_valid(entry) ||
           DateTime.now().difference(entry.createdAt) >=
-              const Duration(seconds: 60),
+              const Duration(seconds: 30),
     );
     if (status.token != null) {
       if (_leases.length >= 64) {
@@ -92,7 +92,7 @@ class SessionControlRepositoryImpl extends SessionControlRepository {
         lease.room != capability.room ||
         !_valid(lease) ||
         DateTime.now().difference(lease.createdAt) >=
-            const Duration(seconds: 60)) {
+            const Duration(seconds: 30)) {
       throw const SessionControlFailure(
         'Confirmation expired. Reopen agent info.',
       );

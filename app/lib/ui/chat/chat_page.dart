@@ -580,6 +580,12 @@ class _ChatPageState extends State<ChatPage> {
                       ),
               ),
               actions: [
+                if (snapshot != null && !lease.controlsLoading &&
+                    (lease.stopError != null || lease.stopCapability?.canStop == false && lease.stopCapability?.reason != null))
+                  TextButton(
+                    onPressed: lease.stopBusy ? null : () { unawaited(lease.refreshControls()); },
+                    child: const Text('Refresh'),
+                  ),
                 if (snapshot != null && lease.controlsLoading)
                   const Padding(
                     padding: EdgeInsets.all(AppSpacing.sm),
