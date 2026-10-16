@@ -220,151 +220,191 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
     return Scaffold(
       backgroundColor: colors.bg,
       appBar: AppBar(title: const Text('Start agent')),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          Text(
-            'Host: ${widget.target.host}',
-            style: TextStyle(color: colors.text),
-          ),
-          Text(widget.target.session, style: TextStyle(color: colors.muted)),
-          const SizedBox(height: 16),
-          if (state.busy) const LinearProgressIndicator(),
-          if (state.message != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: Text(state.message!),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          spacing: AppSpacing.md,
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              spacing: AppSpacing.xs,
+              children: [
+                Text(
+                  'Host: ${widget.target.host}',
+                  style: context.typo.sansBody,
+                ),
+                Text(
+                  widget.target.session,
+                  style: context.typo.monoSmall.copyWith(color: colors.muted),
+                ),
+              ],
             ),
-          if (availability != null)
-            Text(
-              availability.available
-                  ? '${availability.agents.where((a) => a.state == 'running' || a.state == 'starting').length}/${availability.maxAgents} agents'
-                  : 'Unavailable: ${availability.reason ?? 'Launching disabled on this host'}',
+            if (state.busy) const LinearProgressIndicator(),
+            if (state.message != null)
+              Text(state.message!, style: context.typo.sansBody),
+            if (state.message == null && !state.busy)
+              Text(
+                vm.security == null
+                    ? 'Host update required.'
+                    : !vm.security!.configured
+                    ? 'Set a PIN on the host.'
+                    : vm.unlocked
+                    ? 'Unlocked'
+                    : 'Locked',
+                style: context.typo.monoSmall.copyWith(color: colors.muted),
+              ),
+            if (availability?.available == false &&
+                availability?.reason != null &&
+                state.message == null)
+              Text(
+                availability!.reason!,
+                style: context.typo.sansBody.copyWith(color: colors.error),
+              ),
+            if (availability?.available == true)
+              Text(
+                '${availability!.agents.where((a) => a.state == 'running' || a.state == 'starting').length}/${availability.maxAgents} agents',
+                style: context.typo.monoSmall.copyWith(color: colors.muted),
+              ),
+            if ((vm.security?.cooldownUntil ?? 0) >
+                DateTime.now().millisecondsSinceEpoch)
+              Text('Too many attempts. Try later.'),
+            if (!vm.unlocked) ...[
+              TextField(
+                controller: _pin,
+                enabled: !disabled && vm.security?.configured == true,
+                obscureText: true,
+                enableSuggestions: false,
+                autocorrect: false,
+                autofillHints: const [],
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                maxLength: 12,
+                decoration: const InputDecoration(
+                  labelText: 'PIN',
+                  counterText: '',
+                ),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(AppSpacing.tap),
+                ),
+                onPressed: disabled || vm.security?.configured != true
+                    ? null
+                    : () {
+                        final pin = _pin.text;
+                        _pin.clear();
+                        vm.unlock(pin);
+                      },
+                child: const Text('Unlock'),
+              ),
+            ],
+            DropdownButtonFormField<String>(
+              isExpanded: true,
+              initialValue: _selected,
+              key: ValueKey(
+                '$identity:$_selected:${vm.projects.map((p) => p.projectId).join(',')}',
+              ),
+              decoration: const InputDecoration(labelText: 'Project'),
+              items: vm.projects
+                  .map(
+                    (p) => DropdownMenuItem(
+                      value: p.projectId,
+                      child: Text(
+                        p.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  )
+                  .toList(),
+              onChanged: disabled || !vm.unlocked
+                  ? null
+                  : (value) => setState(() {
+                      _selected = value;
+                      _projectDefinition = value == null
+                          ? null
+                          : _definition(
+                              vm.projects.firstWhere(
+                                (p) => p.projectId == value,
+                              ),
+                            );
+                    }),
             ),
-          Text(
-            vm.security == null
-                ? 'Launcher unavailable.'
-                : !vm.security!.configured
-                ? 'Host setup required: PIN and projects.'
-                : vm.unlocked
-                ? 'Launcher unlocked'
-                : 'Launcher locked',
-          ),
-          if ((vm.security?.cooldownUntil ?? 0) >
-              DateTime.now().millisecondsSinceEpoch)
-            Text('Too many attempts. Try later.'),
-          if (!vm.unlocked) ...[
+            for (final project in vm.projects.where(
+              (p) => p.projectId == _selected,
+            ))
+              Text(
+                'Directory: ${project.cwd}\nAllowed folders:\n${project.allowedFolders.join('\n')}',
+              ),
+            Wrap(
+              spacing: AppSpacing.sm,
+              runSpacing: AppSpacing.sm,
+              children: [
+                TextButton(
+                  onPressed: disabled || vm.security == null
+                      ? null
+                      : () {
+                          _pin.clear();
+                          vm.lock();
+                        },
+                  child: const Text('Lock'),
+                ),
+                TextButton(
+                  onPressed: disabled || vm.security == null ? null : _shutdown,
+                  child: const Text('Stop all and lock'),
+                ),
+              ],
+            ),
             TextField(
-              controller: _pin,
-              enabled: !disabled && vm.security?.configured == true,
-              obscureText: true,
-              enableSuggestions: false,
-              autocorrect: false,
-              autofillHints: const [],
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              maxLength: 12,
-              decoration: const InputDecoration(labelText: 'PIN (6–12 digits)'),
+              controller: _name,
+              enabled: !disabled,
+              decoration: const InputDecoration(labelText: 'Name (optional)'),
             ),
             FilledButton(
-              onPressed: disabled || vm.security?.configured != true
-                  ? null
-                  : () {
-                      final pin = _pin.text;
-                      _pin.clear();
-                      vm.unlock(pin);
-                    },
-              child: const Text('Unlock'),
-            ),
-          ],
-          DropdownButtonFormField<String>(
-            isExpanded: true,
-            initialValue: _selected,
-            key: ValueKey(
-              '$identity:$_selected:${vm.projects.map((p) => p.projectId).join(',')}',
-            ),
-            decoration: const InputDecoration(labelText: 'Registered project'),
-            items: vm.projects
-                .map(
-                  (p) =>
-                      DropdownMenuItem(value: p.projectId, child: Text(p.name)),
-                )
-                .toList(),
-            onChanged: disabled || !vm.unlocked
-                ? null
-                : (value) => setState(() {
-                    _selected = value;
-                    _projectDefinition = value == null
-                        ? null
-                        : _definition(
-                            vm.projects.firstWhere((p) => p.projectId == value),
-                          );
-                  }),
-          ),
-          for (final project in vm.projects.where(
-            (p) => p.projectId == _selected,
-          ))
-            Text(
-              'Directory: ${project.cwd}\nAllowed folders:\n${project.allowedFolders.join('\n')}',
-            ),
-          TextButton(
-            onPressed: disabled || vm.security == null
-                ? null
-                : () {
-                    _pin.clear();
-                    vm.lock();
-                  },
-            child: const Text('Lock'),
-          ),
-          TextButton(
-            onPressed: disabled || vm.security == null ? null : _shutdown,
-            child: const Text('Stop all and lock'),
-          ),
-          TextField(
-            controller: _name,
-            enabled: !disabled,
-            decoration: const InputDecoration(labelText: 'Name (optional)'),
-          ),
-          const SizedBox(height: 12),
-          FilledButton(
-            onPressed:
-                disabled ||
-                    !vm.unlocked ||
-                    _selected == null ||
-                    state.needsReconciliation ||
-                    availability?.available != true
-                ? null
-                : () => _confirm(),
-            child: const Text('Start agent'),
-          ),
-          TextButton(
-            onPressed: disabled ? null : vm.refresh,
-            child: const Text('Refresh'),
-          ),
-          if (vm.hasUnknownLaunch)
-            const Text(
-              'Launch unconfirmed. Refresh before retrying; retry may duplicate.',
-            ),
-          const Text('Managed agents'),
-          for (final agent in availability?.agents ?? [])
-            ListTile(
-              title: Text(agent.name),
-              subtitle: Text(
-                '${agent.cwd}\n${agent.state}${agent.error == null ? '' : ': ${agent.error}'}\nRoom: ${agent.roomId}',
+              style: FilledButton.styleFrom(
+                minimumSize: const Size.fromHeight(AppSpacing.tap),
               ),
-              trailing:
-                  agent.state == 'running' ||
-                      agent.state == 'starting' ||
-                      agent.state == 'failed'
-                  ? TextButton(
-                      onPressed: disabled || !vm.unlocked
-                          ? null
-                          : () => _confirm(id: agent.agentId, name: agent.name),
-                      child: const Text('Stop'),
-                    )
-                  : null,
+              onPressed:
+                  disabled ||
+                      !vm.unlocked ||
+                      _selected == null ||
+                      state.needsReconciliation ||
+                      availability?.available != true
+                  ? null
+                  : () => _confirm(),
+              child: const Text('Start agent'),
             ),
-        ],
+            TextButton(
+              onPressed: disabled ? null : vm.refresh,
+              child: const Text('Refresh'),
+            ),
+            if (vm.hasUnknownLaunch)
+              const Text(
+                'Launch unconfirmed. Refresh before retrying; retry may duplicate.',
+              ),
+            const Text('Managed agents'),
+            for (final agent in availability?.agents ?? [])
+              ListTile(
+                title: Text(agent.name),
+                subtitle: Text(
+                  '${agent.cwd}\n${agent.state}${agent.error == null ? '' : ': ${agent.error}'}\nRoom: ${agent.roomId}',
+                ),
+                trailing:
+                    agent.state == 'running' ||
+                        agent.state == 'starting' ||
+                        agent.state == 'failed'
+                    ? TextButton(
+                        onPressed: disabled || !vm.unlocked
+                            ? null
+                            : () =>
+                                  _confirm(id: agent.agentId, name: agent.name),
+                        child: const Text('Stop'),
+                      )
+                    : null,
+              ),
+          ],
+        ),
       ),
     );
   }

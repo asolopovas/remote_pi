@@ -13,7 +13,11 @@ typography:
     fontWeight: 400
     lineHeight: 1.4
 rounded: {}
-spacing: {}
+spacing:
+  xs: "4px"
+  sm: "8px"
+  md: "16px"
+  lg: "24px"
 components:
   session-working:
     textColor: "{colors.working}"
@@ -43,6 +47,23 @@ Status and metadata use `AppTypography.monoSmall`; tile titles retain 15px mediu
 ## Layout
 
 Separate session metadata from the untruncated status label. Secondary model text may ellipsize; session/path/title retain existing truncation and details access. Four-pixel vertical gaps clarify hierarchy. The toolbar's device/status group wraps instead of squeezing the status at large text. Status glyphs occupy 16px; no whole-row animation or layout motion is introduced.
+
+### Launcher and list controls
+
+Use `AppSpacing` for a 4px baseline: 4px within host metadata, 8px between
+compact actions, 16px screen insets and form gaps. Primary actions have a 48px
+minimum height; text scaling may increase it. Wrap action groups rather than
+squeezing labels. Keep the existing theme and typography tokens.
+
+One compact status/error at a time; do not repeat capability failures alongside
+a second unavailable message. Menus use short labels, not explanatory subtitles.
+Host identity, selected folders, unknown outcomes and risk confirmations stay
+visible. The All tab exposes a right-aligned “Clear inactive” action; disable it
+without live discovery. Clearing is local metadata only and requires confirmation.
+
+Native widget tests measure launcher inset, field/action gap and target height at
+320px in dark/light themes and 100%/200% text scale. Impeccable's web detector is
+not a Flutter/native validation tool; do not claim a detector pass.
 
 ## Components
 

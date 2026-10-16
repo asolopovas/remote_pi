@@ -34,14 +34,19 @@ class _FakeStorage extends PairingStorage {
   // ConnectionManager (_persistRoomsForPeer). Keep it in-memory so the
   // test never touches flutter_secure_storage (no binding in unit tests).
   final Map<String, List<PersistedRoom>> _rooms = {};
+  Completer<void>? roomLoadGate, roomSaveGate;
   @override
   Future<void> saveRooms(String epk, List<PersistedRoom> rooms) async {
+    await roomSaveGate?.future;
     _rooms[epk] = rooms;
   }
 
   @override
-  Future<List<PersistedRoom>> loadRooms(String epk) async =>
-      _rooms[epk] ?? const [];
+  Future<List<PersistedRoom>> loadRooms(String epk) async {
+    final snapshot = _rooms[epk] ?? const <PersistedRoom>[];
+    await roomLoadGate?.future;
+    return snapshot;
+  }
 
   @override
   Future<void> deleteRooms(String epk) async {
@@ -409,11 +414,76 @@ void main() {
       vm.setFilter(HomeFilter.all);
       expect(vm.visibleItems.map((i) => i.room.roomId).toList(), ['r1', 'r2']);
       expect(vm.counts, (all: 2, online: 1, offline: 1));
+      final controls = ch.sentControls.length;
+      expect(await vm.clearInactiveRooms(), 1);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(vm.counts, (all: 1, online: 1, offline: 0));
+      expect(vm.visibleItems.single.room.roomId, 'r1');
+      expect(
+        ch.sentControls.length,
+        controls,
+      ); // No remote stop/delete command.
+      expect(storage.peers.single.remoteEpk, _peerA.remoteEpk);
+      expect(storage.peers.single.pairedAt, _peerA.pairedAt);
+      expect((await storage.loadRooms('epk_A')).map((r) => r.roomId), ['r1']);
+      expect(await vm.clearInactiveRooms(), 0);
 
       vm.dispose();
       await conn.disconnect();
       conn.dispose();
     });
+
+    for (final seam in ['load', 'save', 'disconnect']) {
+      test('clear inactive preserves rooms that revive during $seam', () async {
+        final ch = _ControllableChannel();
+        final storage = _FakeStorage([_peerA]);
+        final conn = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: storage,
+          emitDebounce: Duration.zero,
+        );
+        final vm = HomeViewModel(
+          storage,
+          Preferences(_FakeSecureStorage()),
+          conn,
+        );
+        await conn.connectTo(_peerA);
+        ch.pushControl(
+          const RoomAnnounced(peer: 'epk_A', roomId: 'r1', startedAt: 1),
+        );
+        ch.pushControl(
+          const RoomEnded(peer: 'epk_A', roomId: 'r1', sinceTs: 2),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        final gate = Completer<void>();
+        if (seam == 'save') {
+          storage.roomSaveGate = gate;
+        } else {
+          storage.roomLoadGate = gate;
+        }
+        final clearing = vm.clearInactiveRooms();
+        await Future<void>.delayed(Duration.zero);
+        expect(await vm.clearInactiveRooms(), 0); // Suppress repeated taps.
+        if (seam == 'disconnect') {
+          await conn.disconnect();
+        } else {
+          ch.pushControl(
+            const RoomAnnounced(peer: 'epk_A', roomId: 'r1', startedAt: 3),
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        gate.complete();
+        expect(await clearing, 0);
+        storage.roomLoadGate = storage.roomSaveGate = null;
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect((await storage.loadRooms('epk_A')).map((r) => r.roomId), ['r1']);
+        expect(vm.counts.all, 1);
+        if (seam != 'disconnect') expect(vm.isRoomLive('epk_A', 'r1'), isTrue);
+        vm.dispose();
+        await conn.disconnect();
+        conn.dispose();
+      });
+    }
 
     test(
       'setFilter is a no-op when the tab is unchanged, and emits exactly once '

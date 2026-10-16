@@ -589,12 +589,43 @@ void main() {
           'Home fallback',
         );
         home.setFilter(HomeFilter.all);
+        await tester.runAsync(
+          () => h.push({
+            'type': 'room_ended',
+            'peer': data.peer.remoteEpk,
+            'room_id': 'r2',
+            'since_ts': 3,
+          }),
+        );
+        await tester.pumpAndSettle();
+        final clear = find.byKey(const Key('clear-inactive-sessions'));
+        expect(tester.widget<TextButton>(clear).onPressed, isNotNull);
+        await tester.tap(clear);
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Removes offline entries from this device only.'),
+          findsOneWidget,
+        );
+        await tester.tap(find.text('Cancel'));
+        await tester.pumpAndSettle();
+        expect(home.counts.all, 2);
+        await tester.tap(clear);
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, 'Clear'));
+        await tester.pumpAndSettle();
+        expect(home.counts, (all: 1, online: 1, offline: 0));
+        expect(h.cm.isRoomLive(data.peer.remoteEpk, 'r1'), isTrue);
+        // A new live announcement may return a previously cleared cache row.
+        await tester.runAsync(() => h.push(data.announced(room: 'r2')));
+        await tester.pumpAndSettle();
+        expect(home.counts.all, 2);
         await h.cm.disconnect();
         await tester.pumpAndSettle();
         expect(find.text('Home fallback'), findsOneWidget);
         expect(find.text('duplicate'), findsOneWidget);
         expect(find.textContaining('Reconnecting'), findsNWidgets(2));
         expect(h.room().display, isNull);
+        expect(tester.widget<TextButton>(clear).onPressed, isNull);
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());
         home.dispose();

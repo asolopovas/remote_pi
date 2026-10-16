@@ -286,7 +286,7 @@ void main() {
             isA<AgentFailure>().having(
               (e) => e.message,
               'message',
-              contains('Update'),
+              'Host update required.',
             ),
           ),
         );

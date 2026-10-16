@@ -17,6 +17,55 @@ Future<void> selectProject(WidgetTester tester) async {
 }
 
 void main() {
+  for (final scale in [1.0, 2.0]) {
+    for (final dark in [true, false]) {
+      testWidgets('launcher spacing at 320px, ${scale}x, dark=$dark', (
+        tester,
+      ) async {
+        tester.view.physicalSize = const Size(320, 900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final vm = AgentsViewModel(Repo());
+        await tester.pumpWidget(
+          ChangeNotifierProvider.value(
+            value: vm,
+            child: MaterialApp(
+              theme: dark ? buildDarkTheme() : buildLightTheme(),
+              builder: (context, child) => MediaQuery(
+                data: MediaQuery.of(
+                  context,
+                ).copyWith(textScaler: TextScaler.linear(scale)),
+                child: child!,
+              ),
+              home: const AgentsPage(
+                target: AgentsTarget('peer', 'room', 'Laptop', 'Project'),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final name = find.widgetWithText(TextField, 'Name (optional)');
+        final start = find.widgetWithText(FilledButton, 'Start agent');
+        await tester.ensureVisible(start);
+        await tester.pumpAndSettle();
+        expect(
+          tester.getRect(start).top - tester.getRect(name).bottom,
+          AppSpacing.md,
+        );
+        expect(
+          tester.getSize(start).height,
+          greaterThanOrEqualTo(AppSpacing.tap),
+        );
+        expect(tester.getRect(start).left, AppSpacing.md);
+        expect(tester.getRect(start).right, 320 - AppSpacing.md);
+        expect(find.textContaining('No capability reply'), findsNothing);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+        vm.dispose();
+      });
+    }
+  }
   testWidgets(
     'Lock does not stop agents; shutdown requires Owner-scoped confirmation',
     (tester) async {
@@ -91,12 +140,9 @@ void main() {
     await tester.pumpWidget(page('room'));
     await tester.pumpAndSettle();
     final field = tester.widget<TextField>(
-      find.widgetWithText(TextField, 'PIN (6–12 digits)'),
+      find.widgetWithText(TextField, 'PIN'),
     );
-    await tester.enterText(
-      find.widgetWithText(TextField, 'PIN (6–12 digits)'),
-      '123456',
-    );
+    await tester.enterText(find.widgetWithText(TextField, 'PIN'), '123456');
     await tester.pumpWidget(page('other'));
     await tester.pumpAndSettle();
     expect(field.controller!.text, isEmpty);
@@ -131,7 +177,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      final pin = find.widgetWithText(TextField, 'PIN (6–12 digits)');
+      final pin = find.widgetWithText(TextField, 'PIN');
       final field = tester.widget<TextField>(pin);
       expect(field.obscureText, true);
       expect(field.autofillHints, isEmpty);
@@ -372,7 +418,7 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Start'));
       await tester.pumpAndSettle();
       expect(repo.launches, 1);
-      expect(subject.state.message, contains('Waiting for room discovery'));
+      expect(subject.state.message, contains('Open it from Home'));
       await tester.ensureVisible(find.text('Stop'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Stop'));
@@ -407,7 +453,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Unavailable: Not allowed'), findsOneWidget);
+    expect(find.text('Not allowed'), findsOneWidget);
     expect(
       tester
           .widget<FilledButton>(

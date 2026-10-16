@@ -360,10 +360,10 @@ class AgentRepositoryImpl extends AgentRepository {
       p?.completer.completeError(
         AgentFailure(
           mutation
-              ? 'Host response timed out. Refresh before retrying; the operation may have completed.'
+              ? 'Result unknown. Refresh before retrying.'
               : securityMutation
-              ? 'Local control revoked. Host unlock/lock/stop outcome unknown. Refresh status; this action was not retried.'
-              : 'No capability reply. Update/setup the host Remote Pi extension and try again.',
+              ? 'Access locked. Result unknown; refresh status.'
+              : 'Host update required.',
           outcomeUnknown: mutation || securityMutation,
         ),
       );
@@ -455,7 +455,7 @@ class AgentRepositoryImpl extends AgentRepository {
     final previous = _journal._entries[key];
     if (hasUnknownLaunch && (!acknowledgeUnknown || !_reconciled)) {
       throw const AgentFailure(
-        'Outcome unknown; it may still start/appear. Refresh, then explicitly confirm another Start.',
+        'Launch unconfirmed. Refresh before retrying; retry may duplicate.',
         outcomeUnknown: true,
       );
     }

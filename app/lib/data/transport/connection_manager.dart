@@ -1211,6 +1211,35 @@ class ConnectionManager extends Service {
     }
   }
 
+  /// Remove local metadata only while discovery is online and the room is not.
+  /// Recheck after storage awaits so a resurrected room is never removed live.
+  Future<bool> deleteInactiveCachedRoom(String epk, String roomId) async {
+    final key = toStandardB64(epk);
+    bool eligible() =>
+        _status is StatusOnline &&
+        !isRoomLive(epk, roomId) &&
+        _roomsByPeer[key]?.any((room) => room.roomId == roomId) == true;
+    if (!eligible()) return false;
+    final cached = await _storage.loadRooms(epk);
+    if (!eligible()) return false;
+    await _storage.saveRooms(
+      epk,
+      cached.where((room) => room.roomId != roomId).toList(),
+    );
+    if (!eligible()) {
+      await _persistRoomsForPeer(key);
+      return false;
+    }
+    _endDisplayRoom(key, roomId);
+    final rooms = _roomsByPeer[key];
+    rooms?.removeWhere((room) => room.roomId == roomId);
+    if (rooms?.isEmpty == true) _roomsByPeer.remove(key);
+    if (!_roomsController.isClosed) {
+      _roomsController.add(_roomsSnapshot());
+    }
+    return true;
+  }
+
   /// Plan 17 fix — legacy migration hook for peers paired before
   /// `PeerRecord.roomId` existed. When the relay tells us about rooms
   /// for the active peer, and that peer has no persisted roomId yet,

@@ -297,10 +297,29 @@ class HomePage extends StatelessWidget {
     // Plan-38 Fase 3 — presence filter at the top of the list. Pure view:
     // tapping a tab only swaps `state.filter` → `vm.visibleItems` re-derives.
     final tabs = SliverToBoxAdapter(
-      child: HomeFilterTabs(
-        filter: state.filter,
-        counts: counts,
-        onSelected: vm.setFilter,
+      child: Column(
+        children: [
+          HomeFilterTabs(
+            filter: state.filter,
+            counts: counts,
+            onSelected: vm.setFilter,
+          ),
+          if (state.filter == HomeFilter.all)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  key: const Key('clear-inactive-sessions'),
+                  onPressed: vm.canClearInactive
+                      ? () => _clearInactive(context, vm)
+                      : null,
+                  icon: const Icon(LucideIcons.trash2, size: 16),
+                  label: const Text('Clear inactive'),
+                ),
+              ),
+            ),
+        ],
       ),
     );
 
@@ -447,6 +466,35 @@ class HomePage extends StatelessWidget {
         _titleFor(target.peer, target.room),
       ),
     );
+  }
+
+  Future<void> _clearInactive(BuildContext context, HomeViewModel vm) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('Clear inactive sessions?'),
+        content: const Text('Removes offline entries from this device only.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialog).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialog).pop(true),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+    if (!context.mounted || confirmed != true) return;
+    try {
+      await vm.clearInactiveRooms();
+    } on Exception {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not clear inactive sessions.')),
+      );
+    }
   }
 
   void _showSessionMenu(

@@ -11,7 +11,7 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
           const AgentsViewState(
             invalid: true,
             message:
-                'Host disconnected or session changed. Return home and select it again.',
+                'Host disconnected. Reopen the launcher.',
           ),
         );
       }
@@ -35,7 +35,7 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
     emit(
       const AgentsViewState(
         invalid: true,
-        message: 'Target changed. Return home and select the host again.',
+        message: 'Host changed. Reopen the launcher.',
       ),
     );
   }
@@ -136,7 +136,7 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
         );
       },
       message:
-          'Agent created. Waiting for room discovery: return home and open its actual session when online.',
+          'Started. Open it from Home.',
     );
   }
 

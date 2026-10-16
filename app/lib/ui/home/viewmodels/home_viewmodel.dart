@@ -28,6 +28,7 @@ class HomeViewModel extends ViewModel<HomeState> {
   StreamSubscription<ConnectionStatus>? _statusSub;
   bool _relayConnected = false;
   bool _disposed = false;
+  bool _clearingInactive = false;
 
   HomeViewModel(this._storage, this._prefs, this._conn)
     : super(const HomeLoading()) {
@@ -170,6 +171,35 @@ class HomeViewModel extends ViewModel<HomeState> {
     final all = s.items(normalizeEpk: normalizeEpkForLookup);
     final online = all.where(_online).length;
     return (all: all.length, online: online, offline: all.length - online);
+  }
+
+  bool get canClearInactive =>
+      !_disposed && !_clearingInactive && _relayConnected && counts.offline > 0;
+
+  /// Prunes this device's cached entries, never host history or processes.
+  Future<int> clearInactiveRooms() async {
+    final snapshot = state;
+    if (!canClearInactive || snapshot is! HomeList) return 0;
+    _clearingInactive = true;
+    var removed = 0;
+    try {
+      final candidates = snapshot
+          .items(normalizeEpk: normalizeEpkForLookup)
+          .where((item) => !_online(item))
+          .toList();
+      for (final item in candidates) {
+        if (_disposed || !_relayConnected) break;
+        if (await _conn.deleteInactiveCachedRoom(
+          item.peer.remoteEpk,
+          item.room.roomId,
+        )) {
+          removed++;
+        }
+      }
+      return removed;
+    } finally {
+      _clearingInactive = false;
+    }
   }
 
   /// Remember which (peer, room) the user picked. Falls back to
