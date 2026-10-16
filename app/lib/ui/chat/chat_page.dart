@@ -1,5 +1,6 @@
 import 'package:app/ui/core/session_status_indicator.dart';
 import 'package:app/ui/agents/agents_page.dart';
+import 'package:app/routing/adaptive.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/pairing/storage.dart';
@@ -225,7 +226,7 @@ class _ChatPageState extends State<ChatPage> {
 
   Widget _buildTopBar(BuildContext context, ChatState state) {
     // Plan-17 follow-up — two-line AppBar:
-    //   Line 1: synchronized desktop name (or fallback) | full cwd.
+    //   Line 1: synchronized desktop name (or fallback).
     //   Line 2: peer (Mac nickname or sessionName) + presence dot.
     // The dot reads from the ChatReady.peerPresence flag (which the
     // ViewModel sources from `isRoomLive`).
@@ -255,10 +256,6 @@ class _ChatPageState extends State<ChatPage> {
     // the generic placeholders when the ViewModel hasn't finished
     // bootstrapping yet.
     final roomName = _roomDisplayName(room, peer, state, initialTitle);
-    final path = room?.cwd;
-    final header = path != null && path.trim().isNotEmpty
-        ? '$roomName | $path'
-        : roomName;
     // Plan/32g — line 2 (device) falls back to `initialDevice` (the Mac name
     // Home passed), NOT `initialTitle` (the room name) — so it shows the right
     // device from frame 1 and doesn't flip when the PeerRecord loads.
@@ -290,7 +287,7 @@ class _ChatPageState extends State<ChatPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  header,
+                  roomName,
                   key: const Key('chat-session-title'),
                   maxLines: 1,
                   style: context.typo.mono.copyWith(
@@ -426,6 +423,7 @@ class _ChatPageState extends State<ChatPage> {
           identical(this.context.read<ChatViewModel>(), vm),
     );
     _infoDialogs.add(lease);
+    var closeChat = false;
     try {
       final navigator = Navigator.of(context, rootNavigator: true);
       final route = DialogRoute<void>(
@@ -450,13 +448,33 @@ class _ChatPageState extends State<ChatPage> {
                 borderRadius: BorderRadius.circular(10),
                 side: BorderSide(color: colors.border),
               ),
-              title: Text(
-                'Session info',
-                style: TextStyle(
-                  fontFamily: kMonoFamily,
-                  fontSize: 15,
-                  color: colors.text,
-                ),
+              title: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Session info',
+                      style: dCtx.typo.mono.copyWith(
+                        fontSize: 15,
+                        color: colors.text,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    key: const Key('close-agent-view'),
+                    tooltip: 'Close chat',
+                    icon: const Icon(Icons.close),
+                    onPressed: snapshot == null
+                        ? null
+                        : () {
+                            if (closeChat ||
+                                ModalRoute.of(dCtx)?.isCurrent != true) {
+                              return;
+                            }
+                            closeChat = true;
+                            Navigator.of(dCtx).pop();
+                          },
+                  ),
+                ],
               ),
               content: snapshot == null
                   ? Text(
@@ -512,6 +530,11 @@ class _ChatPageState extends State<ChatPage> {
       // The pop-result Future completes before the reverse animation. Keep the
       // lease (including page invalidation) through actual overlay teardown.
       await route.completed;
+      if (closeChat && mounted && lease.readSnapshot() != null) {
+        final router = GoRouter.of(this.context);
+        this.context.read<SessionSelection>().clear();
+        router.go('/home');
+      }
     } finally {
       _infoDialogs.remove(lease);
       lease.dispose();

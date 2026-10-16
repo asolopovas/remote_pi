@@ -161,10 +161,10 @@ class _SubagentPanelState extends State<SubagentPanel> {
           shrinkWrap: false,
           padding: const EdgeInsets.symmetric(
             horizontal: 12,
-            vertical: kAccordionGutter,
+            vertical: AppSpacing.xs,
           ),
           itemCount: invocations.length + 2,
-          separatorBuilder: (_, _) => Divider(height: 1, color: colors.border),
+          separatorBuilder: (_, _) => const SizedBox.shrink(),
           itemBuilder: (context, index) {
             if (index == invocations.length + 1) {
               return const AccordionEdgeSpace();
@@ -302,20 +302,16 @@ class _SubagentCardState extends State<_SubagentCard>
         },
       ),
       body: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 4, kAccordionGutter),
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.md,
+          0,
+          AppSpacing.xs,
+          AppSpacing.xs,
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             SelectableText(invocation.task, style: context.typo.sansBody),
-            ...[
-              const SizedBox(height: 8),
-              Text(
-                invocation.detached
-                    ? 'Launched in the background. Live child progress is not sent by this connection.'
-                    : 'This is launch-call output, not live child telemetry. Nested tools and child relationships are not sent by this connection.',
-                style: context.typo.monoSmall.copyWith(color: colors.muted2),
-              ),
-            ],
             if (invocation.tool.error?.isNotEmpty ?? false) ...[
               const SizedBox(height: 8),
               SelectableText(
@@ -331,11 +327,6 @@ class _SubagentCardState extends State<_SubagentCard>
                     : 'Launch-call output',
                 style: context.typo.monoSmall,
               ),
-              if (invocation.isWorkflow)
-                Text(
-                  'Per-agent output is not supplied by this connection.',
-                  style: context.typo.monoSmall.copyWith(color: colors.muted2),
-                ),
               AgentMarkdown(invocation.output, selectable: true),
             ],
           ],

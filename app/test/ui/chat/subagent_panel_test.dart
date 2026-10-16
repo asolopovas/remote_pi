@@ -39,6 +39,33 @@ Widget wrap(Widget child, {double scale = 1}) => MaterialApp(
   ),
 );
 void main() {
+  for (final scale in [1.0, 2.0]) {
+    testWidgets(
+      'child accordions have no spacer while retaining 48px targets at ${scale}x',
+      (tester) async {
+        await tester.pumpWidget(
+          wrap(
+            SubagentPanel(
+              invocations: [
+                invocation(id: 'a'),
+                invocation(id: 'b'),
+              ],
+              collapsed: true,
+              onCollapsedChanged: (_) {},
+            ),
+            scale: scale,
+          ),
+        );
+        await tester.pumpAndSettle();
+        final first = find.byKey(const ValueKey('subagent-b'));
+        final second = find.byKey(const ValueKey('subagent-a'));
+        expect(tester.getRect(second).top - tester.getRect(first).bottom, 0);
+        expect(tester.getSize(first).height, greaterThanOrEqualTo(48));
+        expect(tester.getSize(second).height, greaterThanOrEqualTo(48));
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
   test(
     'installed single, namespace suffix, parallel, named and raw workflows',
     () {
@@ -233,7 +260,7 @@ void main() {
       }
     },
   );
-  testWidgets('detached remains Launched, accessible target and explanation', (
+  testWidgets('detached remains Launched without persistent helper text', (
     tester,
   ) async {
     final semantics = tester.ensureSemantics();
@@ -272,7 +299,7 @@ void main() {
     );
     await tester.tap(header);
     await tester.pump();
-    expect(find.textContaining('Live child progress'), findsOneWidget);
+    expect(find.textContaining('Live child progress'), findsNothing);
     semantics.dispose();
   });
   testWidgets(
@@ -306,7 +333,7 @@ void main() {
       expect(find.text('Shared workflow output'), findsOneWidget);
       expect(
         find.textContaining('Per-agent output is not supplied'),
-        findsOneWidget,
+        findsNothing,
       );
       expect(find.text('Shared original result'), findsOneWidget);
       expect(find.byKey(const ValueKey('subagent-a')), findsOneWidget);

@@ -430,7 +430,7 @@ void main() {
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
         expect(find.byTooltip('Call returned'), findsWidgets);
-        expect(find.textContaining('not live child telemetry'), findsOneWidget);
+        expect(find.textContaining('not live child telemetry'), findsNothing);
         await tester.tap(
           find.byKey(const Key('code-disclosure')).hitTestable(),
         );

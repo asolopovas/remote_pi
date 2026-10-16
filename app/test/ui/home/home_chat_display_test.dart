@@ -357,7 +357,11 @@ void main() {
         expect(selection.current!.roomId, 'r1');
         expect(prefs.selectedRoomId, 'r1');
         expect(chat!.activeRoom!.roomId, 'r1');
-        expect(find.text('Pi · system | /synthetic/duplicate'), findsOneWidget);
+        expect(find.text('Pi · system'), findsOneWidget);
+        expect(
+          tester.widget<Text>(find.byKey(const Key('chat-session-title'))).data,
+          'Pi · system',
+        );
         await tester.enterText(
           find.descendant(
             of: find.byType(InputBar),
@@ -380,7 +384,7 @@ void main() {
         }) async {
           await tester.runAsync(() => h.push(data.patch(meta, room: room)));
           await tester.pumpAndSettle();
-          expect(find.text('$title | /synthetic/duplicate'), findsOneWidget);
+          expect(find.text(title), findsOneWidget);
           expect(
             identical((chat!.state as ChatReady).messages, before.messages),
             isTrue,
@@ -433,11 +437,7 @@ void main() {
         expect(find.text('model-only'), findsOneWidget);
         expect(find.text('r1'), findsOneWidget);
         expect(find.text('/synthetic/duplicate'), findsOneWidget);
-        expect(find.text('Renamed <plain>'), findsOneWidget);
-        expect(
-          find.text('Renamed <plain> | /synthetic/duplicate'),
-          findsOneWidget,
-        );
+        expect(find.text('Renamed <plain>'), findsNWidgets(2));
         await tester.tap(find.text('Close'));
         await tester.pumpAndSettle();
         await h.cm.setRoomLocalName(
@@ -446,10 +446,7 @@ void main() {
           'Saved fallback',
         );
         await tester.pumpAndSettle();
-        expect(
-          find.text('Renamed <plain> | /synthetic/duplicate'),
-          findsOneWidget,
-        );
+        expect(find.text('Renamed <plain>'), findsOneWidget);
         expect(h.room().localName, 'Saved fallback');
         await patch({
           'display': data.display(3, 'Desktop changed'),
@@ -470,11 +467,23 @@ void main() {
         expect(h.room().localName, 'Saved fallback');
         await h.cm.setRoomLocalName(data.peer.remoteEpk, 'r1', null);
         await tester.pumpAndSettle();
-        expect(find.text('duplicate | /synthetic/duplicate'), findsOneWidget);
+        expect(find.text('duplicate'), findsOneWidget);
         final priorNotices = notices;
         await patch({'working': false}, 'duplicate');
         expect(notices, priorNotices + 1); // State emit must not double-notify.
         expect(find.text('synthetic retained message'), findsOneWidget);
+        // Closing the view never terminates the host or deletes its session.
+        await tester.tap(find.byTooltip('Session info'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('close-agent-view')));
+        await tester.pumpAndSettle();
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(find.byType(ChatPage), findsNothing);
+        expect(selection.current, isNull);
+        expect(h.cm.isRoomLive(data.peer.remoteEpk, 'r1'), isTrue);
+        expect(h.storage.rooms.any((r) => r.roomId == 'r1'), isTrue);
+        await tester.tap(tile('r1'));
+        await tester.pumpAndSettle();
         // The open chat launches directly against its exact peer/room.
         await tester.tap(find.byTooltip('Start agent'));
         await tester.pumpAndSettle();

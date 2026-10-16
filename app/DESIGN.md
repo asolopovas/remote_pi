@@ -79,6 +79,11 @@ Collapsed work is a borderless activity row. Show the framed output and copy
 controls only after disclosure, retaining 48px targets, keyboard access, lossless
 copying and stable scroll anchors. Do not invent progress or successful outcomes.
 
+Agent headers show the display name only; the folder remains in Session info.
+The info-modal X closes the chat view and clears its selection, never the host
+process. Child-agent headers are adjacent 48px targets with 4px outer/body
+spacing, without repeated helper paragraphs.
+
 ## Components
 
 `SessionStatus.resolve` preserves working > reconnecting > online > offline. `SessionStatusIndicator` rotates only the working renewal glyph (1200ms). Disable-animations or accessible-navigation preferences stop rotation and retain the same green shape and visible label. Decorative glyphs are excluded from semantics; adjacent labels communicate status independently of color.
