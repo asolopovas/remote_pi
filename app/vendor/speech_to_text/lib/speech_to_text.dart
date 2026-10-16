@@ -168,7 +168,7 @@ class SpeechToText {
   /// True as soon as the platform reports it has started listening which
   /// happens some time after the listen method is called.
   bool _listening = false;
-  // Set only by a capture-fenced Android segmented-result callback.
+  // Set by the capture-fenced Android pipe-session startup event.
   bool _segmented = false;
   bool _cancelOnError = false;
 
@@ -744,15 +744,15 @@ class SpeechToText {
   void _onNotifyStatus(String status) {
     if (status == 'segmented' &&
         SpeechToTextPlatform.instance is LocalAndroidSpeechToText) {
-      // A provider actually returned a segment; cancel both Dart limits. This
-      // can arrive synchronously before listen() acknowledges, so retain the
-      // flag to avoid installing a timer after that acknowledgment.
+      // Android owns a pipe-controlled session, not silence-delimited mic
+      // captures. Cancel both Dart limits, including before listen() replies.
+      // This lifecycle event does not prove provider/acoustic support.
       _segmented = true;
       _listenTimer?.cancel();
       _listenTimer = null;
       _pauseFor = null;
       _listenFor = null;
-      return; // capability is not a change in microphone/listening state
+      return; // pipe configuration is not a microphone/listening state change
     }
     // print('status $status');
     switch (status) {

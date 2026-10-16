@@ -92,7 +92,7 @@ public class SpeechToTextPlugin :
     private var pluginContext: Context? = null
     private var channel: MethodChannel? = null
     private val minSdkForSpeechSupport = 21
-    private val minSdkForOnDeviceSpeechSupport = 31
+    private val minSdkForOnDeviceSpeechSupport = 33
     private val speechToTextPermissionCode = 28521
     private val missingConfidence: Double = -1.0
     private var speechThresholdRms = 9
@@ -112,11 +112,11 @@ public class SpeechToTextPlugin :
     private var captureListener: CaptureListener? = null
     private var finalization: Runnable? = null
     private var captureStopping = false
-    private var segmentedRequested = false
-    private var segmentedActive = false
+    private var audioSource: ContinuousAudioSource? = null
+    private var startReply: Result? = null
+    private var supportTimeout: Runnable? = null
     private var committedText = ""
     private var latestText = ""
-    private var captureCap: Runnable? = null
     private var speechRecognizer: SpeechRecognizer? = null
     private var recognizerIntent: Intent? = null
     private var bluetoothAdapter: android.bluetooth.BluetoothAdapter? = null
@@ -206,9 +206,7 @@ public class SpeechToTextPlugin :
                                 "listenMode is required", null)
                         return
                     }
-                    val pauseFor =
-                        call.argument<Int?>("pauseFor")
-                    startListening(result, localeId, partialResults, listenModeIndex, onDevice, pauseFor, call.argument<Int>("captureId"), call.argument<Int>("listenFor"))
+                    startListening(result, localeId, partialResults, listenModeIndex, onDevice, call.argument<Int>("captureId"))
                 }
                 "stop" -> stopListening(result)
                 "cancel" -> cancelListening(result)
@@ -279,49 +277,68 @@ public class SpeechToTextPlugin :
     }
 
     private fun startListening(result: Result, languageTag: String, partialResults: Boolean,
-                               listenModeIndex: Int, onDevice: Boolean, pauseFor: Int?,
-                               id: Int?, listenFor: Int?) {
-        if (isNotInitialized() || isListening() || !onDevice || id == null) {
+                               listenModeIndex: Int, onDevice: Boolean, id: Int?) {
+        if (isNotInitialized() || captureId != null || !onDevice || id == null ||
+            listenModeIndex != ListenMode.dictation.ordinal) {
             result.success(false)
             return
         }
         retireCapture()
         captureId = id
+        startReply = result
         resultSent = false
         captureStopping = false
-        segmentedRequested = Build.VERSION.SDK_INT >= 33 && listenModeIndex == ListenMode.dictation.ordinal
-        segmentedActive = false
         committedText = ""
         latestText = ""
         minRms = 1000.0F
         maxRms = -100.0F
         try {
-            // Availability is rechecked at creation, not just at initialization.
-            // No generic recognizer or intent-lookup fallback is allowed.
-            check(localRecognitionAvailable()) { "Local speech recognition unavailable" }
+            check(localRecognitionAvailable()) { "Local continuous recognition unavailable" }
             val recognizer = createOnDeviceSpeechRecognizer(pluginContext!!)
             speechRecognizer = recognizer
             val listener = CaptureListener(id)
             captureListener = listener
             recognizer.setRecognitionListener(listener)
-            setupRecognizerIntent(languageTag, partialResults,
-                enumValues<ListenMode>()[listenModeIndex], true, pauseFor)
-            optionallyStartBluetooth()
-            speechStartTime = System.currentTimeMillis()
-            recognizer.startListening(recognizerIntent)
-            // Synchronous engine failures/end must not be overwritten by Listening.
-            if (captureId == id && !captureStopping && (finalization == null || segmentedRequested)) notifyListening(true)
-            if (captureId == id && !captureStopping && !segmentedActive && (finalization == null || segmentedRequested)) {
-                val cap = Runnable { if (captureId == id) stopCapture() }
-                captureCap = cap
-                handler.postDelayed(cap, (listenFor ?: 60000).coerceIn(1, 60000).toLong())
-            }
-            result.success(captureId == id)
-        } catch (exc: Exception) {
-            sendError("error_local_recognition_unavailable")
-            finishCapture()
-            result.success(false)
-        }
+            audioSource = ContinuousAudioSource()
+            setupRecognizerIntent(languageTag, partialResults)
+            val timeout = Runnable { if (captureListener === listener) failContinuousCapture() }
+            supportTimeout = timeout
+            handler.postDelayed(timeout, 2000)
+            // Check the exact intent, including the pipe, before acquiring the mic.
+            // Success is not proof that a provider honors optional extras.
+            recognizer.checkRecognitionSupport(recognizerIntent!!,
+                java.util.concurrent.Executor { command -> handler.post(command) },
+                object : RecognitionSupportCallback {
+                    override fun onSupportResult(support: RecognitionSupport) {
+                        if (captureListener !== listener || supportTimeout !== timeout) return
+                        handler.removeCallbacks(timeout)
+                        supportTimeout = null
+                        try {
+                            audioSource!!.start {
+                                handler.post { if (captureListener === listener) failContinuousCapture() }
+                            }
+                            speechStartTime = System.currentTimeMillis()
+                            recognizer.startListening(recognizerIntent)
+                            if (captureListener === listener && !captureStopping) {
+                                // Disable Dart pause/cap timers immediately, even before words.
+                                emit(SpeechToTextCallbackMethods.notifyStatus, "segmented")
+                                notifyListening(true)
+                                startReply?.success(true)
+                                startReply = null
+                            }
+                        } catch (error: Exception) { failContinuousCapture() }
+                    }
+                    override fun onError(error: Int) {
+                        if (captureListener === listener && supportTimeout === timeout) failContinuousCapture()
+                    }
+                })
+        } catch (error: Exception) { failContinuousCapture() }
+    }
+
+    private fun failContinuousCapture() {
+        if (captureId == null) return
+        sendError("error_continuous_recognition_unavailable")
+        finishCapture()
     }
 
     private inner class CaptureListener(private val id: Int) : RecognitionListener {
@@ -329,27 +346,27 @@ public class SpeechToTextPlugin :
         override fun onPartialResults(results: Bundle?) { if (current()) updateResults(results, false) }
         override fun onResults(results: Bundle?) {
             if (!current()) return
-            updateResults(results, true)
-            finishCapture()
+            if (!captureStopping) {
+                updateResults(results, false)
+                failContinuousCapture() // ignored source/segmentation: never restart
+            } else {
+                updateResults(results, true)
+                finishCapture()
+            }
         }
         override fun onSegmentResults(results: Bundle) {
-            if (!current() || !segmentedRequested) return
-            // A callback, not SDK level or language availability, proves support.
-            if (!captureStopping) {
-                finalization?.let { handler.removeCallbacks(it) }
-                finalization = null
-                captureCap?.let { handler.removeCallbacks(it) }
-                captureCap = null
-                if (!segmentedActive) emit(SpeechToTextCallbackMethods.notifyStatus, "segmented")
-            }
-            segmentedActive = true
+            if (!current()) return
             updateResults(results, false)
             val words = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
             if (!words.isNullOrBlank()) committedText = cumulative(words)
         }
         override fun onEndOfSegmentedSession() {
-            if (!current() || !segmentedRequested) return
-            // Terminal final seals the capture, not each phrase within it.
+            if (!current()) return
+            if (!captureStopping) {
+                failContinuousCapture()
+                return
+            }
+            // EOF after explicit Stop seals the cumulative transcript.
             if (latestText.isNotEmpty()) {
                 val final = Bundle()
                 final.putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf(latestText))
@@ -382,19 +399,11 @@ public class SpeechToTextPlugin :
     private fun stopCapture() {
         if (captureId == null || captureStopping) return
         captureStopping = true // before status delivery can re-enter Stop
-        captureCap?.let { handler.removeCallbacks(it) }
-        captureCap = null
-        // The first Stop gets its own full window, not the remaining time on
-        // a provisional phrase-boundary watchdog. Repeated Stop never resets it.
-        finalization?.let { handler.removeCallbacks(it) }
-        finalization = null
         awaitFinal()
         notifyListening(false)
-        try { speechRecognizer?.stopListening() }
-        catch (exc: Exception) {
-            sendError("error_client")
-            finishCapture()
-        }
+        // AUDIO_SOURCE segmented sessions end by EOF, not stopListening().
+        audioSource?.close()
+        if (startReply != null) finishCapture() // Stop during support preflight
     }
 
     private fun finishCapture() {
@@ -409,9 +418,14 @@ public class SpeechToTextPlugin :
         captureId = null // invalidate before cancel/destroy can call back
         captureListener = null
         finalization?.let { handler.removeCallbacks(it) }
-        captureCap?.let { handler.removeCallbacks(it) }
+        supportTimeout?.let { handler.removeCallbacks(it) }
         finalization = null
-        captureCap = null
+        supportTimeout = null
+        audioSource?.close()
+        audioSource = null
+        val reply = startReply
+        startReply = null
+        reply?.success(false)
         val recognizer = speechRecognizer
         speechRecognizer = null
         listening = false
@@ -451,12 +465,6 @@ public class SpeechToTextPlugin :
     private fun locales(result: Result) {
         if (!localRecognitionAvailable()) {
             result.success(emptyList<String>())
-            return
-        }
-        // API 31/32 has no local support query. This is only a locale candidate;
-        // the actual local recognizer remains the authority at capture startup.
-        if (Build.VERSION.SDK_INT < 33) {
-            LanguageDetailsChecker(result, debugLogging).createResponse(listOf(defaultLanguageTag, "en-US"))
             return
         }
         var recognizer: SpeechRecognizer? = null
@@ -639,16 +647,11 @@ public class SpeechToTextPlugin :
         bluetoothAdapter?.getProfileProxy(pluginContext, mProfileListener, BluetoothProfile.HEADSET)
     }
 
-    private fun setupRecognizerIntent(languageTag: String, partialResults: Boolean, listenMode: ListenMode, onDevice: Boolean, pauseFor: Int? ) {
+    private fun setupRecognizerIntent(languageTag: String, partialResults: Boolean) {
         debugLog("setupRecognizerIntent")
         recognizerIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             debugLog("In RecognizerIntent apply")
-            if (listenMode == ListenMode.search) {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_WEB_SEARCH)
-            }
-            else {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            }
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             debugLog("put model")
             val localContext = pluginContext
             if (null != localContext) {
@@ -662,22 +665,14 @@ public class SpeechToTextPlugin :
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag);
                 debugLog("put languageTag")
             }
-            if ( onDevice ) {
-                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, onDevice );
-            }
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS,10)
 
-            if (Build.VERSION.SDK_INT >= 33 && listenMode == ListenMode.dictation) {
-                // Optional provider capability. If ignored, ordinary results/errors
-                // and the legacy bounded capture/restart path remain supported.
-                putExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION,
-                    RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
-            } else {
-                pauseFor?.also {
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, it.toLong())
-                }
-            }
+            putExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION, RecognizerIntent.EXTRA_AUDIO_SOURCE)
+            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, audioSource!!.reader)
+            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
+            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, android.media.AudioFormat.ENCODING_PCM_16BIT)
+            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, 16000)
         }
     }
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray): Boolean {
@@ -699,17 +694,8 @@ public class SpeechToTextPlugin :
     private fun onBeginningOfSpeech() {}
 
     private fun onEndOfSpeech() {
-        if (segmentedRequested && !captureStopping) {
-            // A phrase boundary is not a capture end. Until the first segment
-            // arrives, keep a bounded fallback for engines ignoring the extra.
-            if (!segmentedActive) awaitFinal()
-            return
-        }
-        // Speech has ended even if an engine delays its final result, including
-        // an engine that ends synchronously before startListening returns.
-        if (!listening) emit(SpeechToTextCallbackMethods.notifyStatus, SpeechToTextStatus.notListening.name)
-        awaitFinal()
-        notifyListening(false)
+        // A phrase boundary never closes the pipe, starts a watchdog, or ends
+        // Listening. Only explicit Stop/cancel/lifecycle release owns EOF.
     }
 
     private fun onError(errorCode: Int) {
@@ -736,8 +722,13 @@ public class SpeechToTextPlugin :
             else -> "error_unknown ($errorCode)"
         }
 
-        sendError(errorMsg)
-        finishCapture()
+        // Even no-match/timeout is a real continuous-engine failure, not an
+        // invitation for the Dart owner to reopen a recognizer on every pause.
+        if (!captureStopping) failContinuousCapture()
+        else {
+            sendError(errorMsg)
+            finishCapture()
+        }
     }
 
     private fun debugLog( msg: String ) {

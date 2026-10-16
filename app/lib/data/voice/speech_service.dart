@@ -375,7 +375,8 @@ class SttPluginImpl implements SttPlugin {
     onError: (SpeechRecognitionError error) =>
         onError?.call(SttError(error.errorMsg, permanent: error.permanent)),
     // Handset dictation must not open/close headset voice mode per segment or
-    // request Bluetooth permission. Android recognizer beeps are OS-controlled.
+    // request Bluetooth permission. Android uses one pipe-controlled PCM capture;
+    // optional provider support is checked natively, with no restart fallback.
     options: [stt.SpeechToText.androidNoBluetooth],
     // Disable plugin partial-as-final synthesis; service owns fallback timing.
     finalTimeout: Duration.zero,
@@ -407,7 +408,8 @@ class SttPluginImpl implements SttPlugin {
         listenMode: stt.ListenMode.dictation,
         // Cumulative recognition hypotheses are shown live by replacement.
         partialResults: true,
-        // Request the cap; native engines can end earlier on silence.
+        // Non-Android engines retain their limits. Android pipe startup disables
+        // these timers; only explicit Stop/cancel closes its audio source.
         pauseFor: listenFor,
         listenFor: listenFor,
         localeId: localeId,

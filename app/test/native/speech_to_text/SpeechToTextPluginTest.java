@@ -54,6 +54,11 @@ public class SpeechToTextPluginTest {
         boolean status(String value) { return payloads("notifyStatus").contains(value); }
     }
     static Fixture fresh() throws Exception {
+        long until=System.currentTimeMillis()+2000;
+        for(var audio:android.media.AudioRecord.created) {
+            while(!audio.released && System.currentTimeMillis()<until)Thread.sleep(5);
+            check(audio.released,"previous capture worker released");
+        }
         Handler.reset(); SpeechRecognizer.reset(); ContextCompat.granted=true;
         ContextCompat.bluetoothGranted=false;
         androidx.core.app.ActivityCompat.requested=null;
@@ -65,185 +70,177 @@ public class SpeechToTextPluginTest {
         return bundle;
     }
     static void privacyAndCapability() throws Exception {
-        for(int sdk:new int[]{21,30,31,33}) {
-            Fixture f=fresh(); Build.VERSION.SDK_INT=sdk; SpeechRecognizer.available=false;
-            check(Boolean.FALSE.equals(f.initialize().value),"absent local capability");
-            check(Boolean.FALSE.equals(f.listen(1).value),"no listen after unavailable init");
-            check(SpeechRecognizer.created.isEmpty(),"no recognizer created");
-            check(!f.status("listening"),"never false Listening");
-            check(SpeechRecognizer.genericCreates==0,"no cloud fallback");
+        for(int sdk:new int[]{21,30,31,32}) {
+            Fixture f=fresh(); Build.VERSION.SDK_INT=sdk;
+            check(Boolean.FALSE.equals(f.initialize().value),"API33+ continuous capture required");
+            check(Boolean.FALSE.equals(f.listen(1).value),"unsupported API fails closed");
+            check(SpeechRecognizer.created.isEmpty(),"no recognizer on unsupported API");
         }
-        for(int failure=0;failure<3;failure++) {
-            Fixture f=fresh(); check(Boolean.TRUE.equals(f.initialize().value),"ready");
+        for(int failure=0;failure<5;failure++) {
+            Fixture f=fresh(); f.initialize();
             if(failure==0) SpeechRecognizer.available=false;
             if(failure==1) SpeechRecognizer.failCreate=true;
             if(failure==2) SpeechRecognizer.failStart=true;
-            check(Boolean.FALSE.equals(f.listen(7).value),"creation/start race fails closed");
-            check(!f.status("listening"),"creation/start failure not Listening");
+            if(failure==3) SpeechRecognizer.supportError=true;
+            if(failure==4) android.media.AudioRecord.failStart=true;
+            check(Boolean.FALSE.equals(f.listen(7).value),"creation/support/audio/start failure closed");
+            android.media.AudioRecord.failStart=false;
+            check(!f.status("listening"),"startup failure not Listening");
             check(f.payloads("notifyError").size()==1,"startup error surfaced");
-            check(SpeechRecognizer.genericCreates==0,"race never falls back");
+            check(SpeechRecognizer.genericCreates==0,"no generic fallback");
         }
-        Fixture f=fresh(); f.initialize();
-        check(Boolean.FALSE.equals(f.call("listen",Map.of("captureId",1,"onDevice",false,"listenMode",1)).value),"reject non-local request");
+        Fixture f=fresh(); ContextCompat.bluetoothGranted=true; f.initialize();
+        check(Boolean.TRUE.equals(f.get("bluetoothDisabled")),"handset opt-out overrides granted Bluetooth permission");
+        check(f.get("bluetoothAdapter")==null && f.get("bluetoothHeadset")==null,"no Bluetooth profile setup");
+        check(Boolean.FALSE.equals(f.call("listen",Map.of("captureId",1,"onDevice",false,"listenMode",1)).value),"reject non-local");
         f.call("initialize",Map.of("intentLookup",true)); f.listen(2);
         check(SpeechRecognizer.genericCreates==0,"intent lookup cannot bypass local factory");
-        check(Boolean.TRUE.equals(f.recognizer().intent.extras.get("android.speech.extra.PREFER_OFFLINE")),"fresh local intent");
+        check(Boolean.TRUE.equals(f.recognizer().intent.extras.get("android.speech.extra.PREFER_OFFLINE")),"local intent");
+        f.call("cancel",Map.of());
     }
     static void finalAndGeneration() throws Exception {
-        Fixture f=fresh(); f.initialize(); f.listen(1);
-        SpeechRecognizer first=f.recognizer();
+        Fixture f=fresh(); f.initialize(); f.listen(1); SpeechRecognizer first=f.recognizer();
         first.listener.onPartialResults(words("hello"));
         first.listener.onPartialResults(words("hello wonderful"));
         f.call("stop",Map.of());
-        check(first.stops==1 && first.destroys==0,"stop retains final listener");
-        check(f.status("notListening"),"stop ends listening immediately");
-        first.listener.onResults(words("hello wonderful world"));
-        check(f.payloads("textRecognition").size()==3,"cumulative partials and final delivered");
-        check(f.payloads("textRecognition").get(2).toString().contains("hello wonderful world"),"complete corrected final after stop");
-        check(first.destroys==1,"final releases recognizer");
+        check(first.stops==0 && first.destroys==0,"Stop sends EOF, retains final listener without stopListening");
+        first.listener.onSegmentResults(words("hello wonderful world"));
+        first.listener.onEndOfSegmentedSession();
+        check(f.payloads("textRecognition").get(3).toString().contains("hello wonderful world"),"corrected final after Stop");
+        check(first.destroys==1,"final releases once");
         f.listen(2); SpeechRecognizer second=f.recognizer();
-        check(first!=second && first.listener!=second.listener,"no recognizer/listener reuse");
         int size=f.channel.events.size();
         first.listener.onResults(words("stale")); first.listener.onError(5);
-        first.listener.onEndOfSpeech(); first.listener.onRmsChanged(8);
-        check(size==f.channel.events.size(),"stale callbacks cannot reach new capture");
-        second.listener.onPartialResults(words("new words"));
-        var event=f.channel.events.get(f.channel.events.size()-1);
-        check(((Map<?,?>)event.arguments()).get("captureId").equals(2),"channel carries capture identity");
-        Handler.advance(2000);
-        check(second.destroys==0,"old finalization cannot destroy new recognizer");
-        f.call("cancel",Map.of());
-        check(second.cancels==1 && second.destroys==1,"cancel releases recognizer");
-        size=f.channel.events.size(); second.listener.onResults(words("late"));
+        first.listener.onEndOfSpeech(); first.listener.onSegmentResults(words("stale"));first.listener.onEndOfSegmentedSession();
+        check(size==f.channel.events.size(),"old listener cannot reach new capture");
+        Handler.advance(2000); check(second.destroys==0,"old timer cannot close new capture");
+        f.call("cancel",Map.of());size=f.channel.events.size();second.listener.onResults(words("late"));
         check(size==f.channel.events.size(),"cancel rejects final");
-        f.listen(2); // Deliberately reuse a wire ID; listener identity still fences native callbacks.
-        size=f.channel.events.size(); second.listener.onResults(words("same token stale listener"));
-        check(size==f.channel.events.size(),"native identity guard survives wire token reuse");
-        f.call("cancel",Map.of());
-        for(int i=0;i<20;i++) {
-            f.listen(100+i); SpeechRecognizer rapid=f.recognizer();
-            f.call("stop",Map.of()); f.call("cancel",Map.of());
-            check(rapid.stops==1 && rapid.destroys==1,"rapid start/stop/cancel closes exactly once");
+        f.listen(2);size=f.channel.events.size();second.listener.onSegmentResults(words("reused token"));
+        check(size==f.channel.events.size(),"listener identity fences token reuse");f.call("cancel",Map.of());
+    }
+    static void continuousCaptureAndStop() throws Exception {
+        Fixture f=fresh();f.initialize();f.listen(1);SpeechRecognizer r=f.recognizer();
+        check(r.supportIntent==r.intent,"preflight uses exact start intent");
+        check(r.intent.extras.get("android.speech.extra.SEGMENTED_SESSION").equals("android.speech.extra.AUDIO_SOURCE"),"documented pipe selector");
+        check(r.intent.extras.get("android.speech.extra.AUDIO_SOURCE") instanceof android.os.ParcelFileDescriptor,"source is descriptor not URI");
+        check(r.intent.extras.get("android.speech.extra.AUDIO_SOURCE_SAMPLING_RATE").equals(16000),"explicit 16 kHz");
+        check(r.intent.extras.get("android.speech.extra.AUDIO_SOURCE_CHANNEL_COUNT").equals(1),"mono");
+        check(r.intent.extras.get("android.speech.extra.AUDIO_SOURCE_ENCODING").equals(2),"PCM16");
+        var reader=(android.os.ParcelFileDescriptor)r.intent.extras.get("android.speech.extra.AUDIO_SOURCE");
+        r.listener.onEndOfSpeech();Handler.advance(120000);
+        check(!reader.closed && r.destroys==0 && !f.status("notListening"),"silence before first segment never closes stream or starts cap/watchdog");
+        r.listener.onSegmentResults(words("repeat"));
+        r.listener.onEndOfSpeech();r.listener.onPartialResults(words("repea"));r.listener.onSegmentResults(words("repeat"));
+        check(f.payloads("textRecognition").get(2).toString().contains("repeat repeat"),"repeated phrases retained exactly");
+        Handler.advance(120000);check(r.destroys==0,"no cap after words either");
+        f.call("stop",Map.of());f.call("stop",Map.of());
+        check(reader.closed && r.stops==0,"explicit Stop closes source idempotently");
+        r.listener.onSegmentResults(words("last words"));r.listener.onEndOfSegmentedSession();
+        String last=f.payloads("textRecognition").get(4).toString();
+        check(last.contains("repeat repeat last words") && last.contains("resultType=2"),"all segments sealed final after EOF");
+        check(r.destroys==1,"terminal callback releases once");
+        f.listen(2);r=f.recognizer();f.call("stop",Map.of());Handler.advance(1999);
+        check(r.destroys==0,"Stop final window remains");Handler.advance(1);check(r.destroys==1,"bounded final timeout releases");
+    }
+    static void ignoredSourceFailsWithoutRestart() throws Exception {
+        for(int mode=0;mode<5;mode++) {
+            Fixture f=fresh();f.initialize();f.listen(1);SpeechRecognizer r=f.recognizer();
+            if(mode==0)r.listener.onResults(words("ordinary unsupported"));
+            if(mode==1)r.listener.onEndOfSegmentedSession();
+            if(mode==2)r.listener.onError(7);
+            if(mode==3)r.listener.onError(6);
+            if(mode==4)r.listener.onError(5);
+            check(r.destroys==1,"ignored source/early terminal released");
+            check(f.payloads("notifyError").get(0).toString().contains("error_continuous_recognition_unavailable"),"no-speech is unsupported continuous capture, not resumable silence");
+            Handler.advance(120000);check(SpeechRecognizer.created.size()==1,"no recognizer restart");
         }
     }
-    static void endsErrorsCapsAndDispose() throws Exception {
-        Fixture f=fresh(); Build.VERSION.SDK_INT=32; f.initialize(); f.listen(1); SpeechRecognizer r=f.recognizer();
-        r.listener.onEndOfSpeech(); check(f.status("notListening"),"early end honest");
-        Handler.advance(1999); check(r.destroys==0,"bounded final window remains open");
-        Handler.advance(1); check(r.destroys==1 && f.status("doneNoResult"),"empty/silence finalization closes");
-        f.listen(2); r=f.recognizer(); r.listener.onError(7);
-        check(r.destroys==1 && !f.payloads("notifyError").isEmpty(),"engine error closes capture");
-        f.listen(3); r=f.recognizer(); Handler.advance(60000);
-        check(r.stops==1 && r.destroys==0,"60s cap stops but preserves final");
-        r.listener.onResults(words("capped final")); check(r.destroys==1,"cap final releases");
-        f.listen(4); r=f.recognizer(); f.call("stop",Map.of()); f.call("cancel",Map.of());
-        check(r.destroys==1,"cancel during finalization releases");
-        f.listen(5); SpeechRecognizer latest=f.recognizer(); Handler.advance(2000);
-        check(latest.destroys==0,"cancelled final timeout cannot affect next capture");
-        f.plugin.onDetachedFromEngine(new io.flutter.embedding.engine.plugins.FlutterPlugin.FlutterPluginBinding(new Context(),null,null,null,null,null,null));
-        check(latest.destroys==1,"engine disposal releases");
-        int size=f.channel.events.size(); latest.listener.onResults(words("disposed"));
-        check(f.channel.events.size()==size,"dispose rejects late results");
-        for(boolean error:new boolean[]{false,true}) {
-            f=fresh(); Build.VERSION.SDK_INT=32; f.initialize();
-            SpeechRecognizer.endOnStart=!error; SpeechRecognizer.errorOnStart=error;
-            f.listen(1); check(!f.status("listening"),"synchronous early end/error never overwritten");
-            Handler.advance(2000); check(f.recognizer().destroys==1,"startup termination closes");
+    static void supportPreflightAndDisposal() throws Exception {
+        for(int mode=0;mode<4;mode++) {
+            Fixture f=fresh();f.initialize();SpeechRecognizer.supportHang=true;
+            int audioBefore=android.media.AudioRecord.created.size();
+            Reply reply=new Reply();f.plugin.onMethodCall(new MethodCall("listen",Map.of("captureId",1,"onDevice",true,"listenMode",1)),reply);
+            check(reply.calls==0 && android.media.AudioRecord.created.size()==audioBefore,"preflight pending never acquires mic");
+            SpeechRecognizer r=f.recognizer();
+            if(mode==0)Handler.advance(2000);
+            if(mode==1)f.call("cancel",Map.of());
+            if(mode==2)f.call("stop",Map.of());
+            if(mode==3)f.plugin.onDetachedFromEngine(new io.flutter.embedding.engine.plugins.FlutterPlugin.FlutterPluginBinding(new Context(),null,null,null,null,null,null));
+            Handler.advance(0);
+            check(reply.calls==1 && Boolean.FALSE.equals(reply.value),"pending start resolved false once mode="+mode+" calls="+reply.calls);
+            check(r.destroys==1,"pending capture released");
+            int audioAfter=android.media.AudioRecord.created.size();
+            r.supportCallback.onSupportResult(new android.speech.RecognitionSupport());
+            r.supportCallback.onError(5);
+            Handler.advance(2000);check(reply.calls==1,"old timeout/support callbacks cannot complete twice");
+            check(audioAfter==android.media.AudioRecord.created.size(),"stale support callback cannot acquire mic");
         }
+        Fixture f=fresh();f.initialize();f.listen(1);SpeechRecognizer r=f.recognizer();
+        f.plugin.onDetachedFromEngine(new io.flutter.embedding.engine.plugins.FlutterPlugin.FlutterPluginBinding(new Context(),null,null,null,null,null,null));
+        check(r.destroys==1,"active engine detach releases");
+    }
+    static void activityDetachReleases() throws Exception {
+        for(boolean config:new boolean[]{false,true}) {
+            Fixture f=fresh();f.initialize();f.listen(1);SpeechRecognizer r=f.recognizer();
+            var reader=(android.os.ParcelFileDescriptor)r.intent.extras.get("android.speech.extra.AUDIO_SOURCE");
+            if(config)f.plugin.onDetachedFromActivityForConfigChanges();else f.plugin.onDetachedFromActivity();
+            check(reader.closed && r.destroys==1,"activity/config detach releases source and recognizer");
+            int size=f.channel.events.size();r.listener.onSegmentResults(words("detached"));
+            check(f.channel.events.size()==size,"detached callback rejected");
+        }
+    }
+    static void synchronousStartCallbacks() throws Exception {
+        for(boolean error:new boolean[]{false,true}) {
+            Fixture f=fresh();f.initialize();
+            SpeechRecognizer.endOnStart=!error;SpeechRecognizer.errorOnStart=error;
+            Reply reply=f.listen(1);SpeechRecognizer r=f.recognizer();
+            check(Boolean.valueOf(!error).equals(reply.value),"synchronous start result matches lifecycle");
+            if(error)check(!f.status("listening") && r.destroys==1,"startup failure cannot resurrect Listening");
+            else {
+                Handler.advance(120000);check(r.destroys==0,"synchronous phrase boundary starts no watchdog");
+                f.call("cancel",Map.of());
+            }
+        }
+    }
+    static void pcmPipeAndRelease() throws Exception {
+        Fixture f=fresh();android.system.Os.written.reset();android.system.Os.again=2;
+        f.initialize();f.listen(1);
+        long until=System.currentTimeMillis()+2000;
+        while(android.system.Os.written.size()<8 && System.currentTimeMillis()<until)Thread.sleep(5);
+        check(Arrays.equals(android.system.Os.written.toByteArray(),new byte[]{0,1,2,3,4,5,6,7}),"partial PCM writes and EAGAIN preserve exact bytes");
+        var audio=android.media.AudioRecord.created.get(android.media.AudioRecord.created.size()-1);
+        f.call("cancel",Map.of());until=System.currentTimeMillis()+2000;
+        while(!audio.released && System.currentTimeMillis()<until)Thread.sleep(5);
+        check(audio.released && audio.stopped,"cancel releases AudioRecord");
+        android.system.Os.blocked=true;f.listen(2);audio=android.media.AudioRecord.created.get(android.media.AudioRecord.created.size()-1);
+        f.call("cancel",Map.of());until=System.currentTimeMillis()+2000;
+        while(!audio.released && System.currentTimeMillis()<until)Thread.sleep(5);
+        check(audio.released,"non-reading engine cannot retain capture thread");android.system.Os.blocked=false;
+        android.media.AudioRecord.failRead=true;f.listen(3);until=System.currentTimeMillis()+2000;
+        while(!android.media.AudioRecord.created.get(android.media.AudioRecord.created.size()-1).released && System.currentTimeMillis()<until)Thread.sleep(5);
+        Handler.advance(0);check(f.recognizer().destroys==1,"read failure releases engine");android.media.AudioRecord.failRead=false;
+        synchronized(android.os.ParcelFileDescriptor.opened){for(var fd:android.os.ParcelFileDescriptor.opened)check(fd.closed,"all local pipe descriptors closed");}
     }
     static void localesAndPermission() throws Exception {
         for(int mode=0;mode<4;mode++) {
-            Fixture f=fresh(); f.initialize();
-            SpeechRecognizer.available=mode!=0;
-            SpeechRecognizer.supportError=mode==1; SpeechRecognizer.supportHang=mode==2;
-            Reply reply=new Reply(); f.plugin.onMethodCall(new MethodCall("locales",Map.of()),reply);
-            Handler.advance(2000);
-            check(reply.calls==1,"locales unavailable/error/hang/success replies once");
-            if(mode<3) check(((List<?>)reply.value).isEmpty(),"locales fails closed");
-            else check(((List<?>)reply.value).size()==1,"only installed local languages reported");
-            if(mode>0) check(f.recognizer().destroys==1,"locale probe released");
+            Fixture f=fresh(); f.initialize();SpeechRecognizer.available=mode!=0;
+            SpeechRecognizer.supportError=mode==1;SpeechRecognizer.supportHang=mode==2;
+            Reply reply=new Reply();f.plugin.onMethodCall(new MethodCall("locales",Map.of()),reply);Handler.advance(2000);
+            check(reply.calls==1,"locales responds once");
+            check(((List<?>)reply.value).size()==(mode==3?1:0),"only installed local languages");
         }
-        Fixture f=fresh(); ContextCompat.granted=false;
-        f.set("currentActivity",new android.app.Activity());
-        Reply reply=new Reply(); f.plugin.onMethodCall(new MethodCall("initialize",Map.of("noBluetooth",true)),reply);
-        Handler.advance(0); check(reply.calls==0,"permission startup waits honestly");
-        check(Arrays.equals(androidx.core.app.ActivityCompat.requested,
-            new String[]{"android.permission.RECORD_AUDIO"}),"handset dictation never requests Bluetooth permission");
-        f.plugin.onDetachedFromEngine(new io.flutter.embedding.engine.plugins.FlutterPlugin.FlutterPluginBinding(new Context(),null,null,null,null,null,null)); Handler.advance(0);
-        check(reply.calls==1 && Boolean.FALSE.equals(reply.value),"dispose resolves pending permission");
-        f.plugin.onRequestPermissionsResult(28521,new String[]{"android.permission.RECORD_AUDIO"},new int[]{0});
-        Handler.advance(0); check(reply.calls==1,"late permission reply cannot double-complete");
-    }
-    static void handsetBluetoothOptOut() throws Exception {
-        Fixture f=fresh(); ContextCompat.bluetoothGranted=true;
-        check(Boolean.TRUE.equals(f.initialize().value),"handset ready even when Bluetooth already granted");
-        check(Boolean.TRUE.equals(f.get("bluetoothDisabled")),"explicit opt-out overrides granted Bluetooth permission");
-        check(f.get("bluetoothAdapter")==null && f.get("bluetoothHeadset")==null,"no Bluetooth profile setup");
-        for(int id=1;id<=3;id++) {
-            f.listen(id);
-            check(f.get("activeBluetooth")==null,"segment does not enter headset voice mode");
-            f.call("stop",Map.of()); f.call("cancel",Map.of());
-            check(f.get("activeBluetooth")==null,"segment release leaves Bluetooth route alone");
-        }
-    }
-    static void segmentedCaptureAndStop() throws Exception {
-        Fixture f=fresh(); f.initialize(); f.listen(1);
-        SpeechRecognizer first=f.recognizer();
-        check(first.intent.extras.get("android.speech.extra.SEGMENTED_SESSION")
-            .equals("android.speech.extras.SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS"),"requests documented segmented selector");
-        check(first.intent.extras.get("android.speech.extras.SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS")
-            .equals(1500L),"paired silence extra uses milliseconds as long");
-        first.listener.onEndOfSpeech();
-        check(!f.status("notListening"),"first phrase boundary is not capture end");
-        first.listener.onSegmentResults(words("repeat"));
-        check(f.status("segmented"),"callback establishes support");
-        Handler.advance(65000);
-        check(first.stops==0 && first.destroys==0,"segment cancels provisional finalization and 60s cap");
-        first.listener.onEndOfSpeech();
-        first.listener.onPartialResults(words("repea"));
-        first.listener.onPartialResults(words("repeat"));
-        first.listener.onSegmentResults(words("repeat"));
-        check(f.payloads("textRecognition").get(3).toString().contains("repeat repeat"),"identical legitimate phrases are retained");
-        check(!f.status("notListening"),"multiple phrases stay on one recognizer");
-        f.call("stop",Map.of()); f.call("stop",Map.of());
-        check(first.stops==1,"explicit Stop is idempotent");
-        first.listener.onSegmentResults(words("last words"));
-        first.listener.onEndOfSegmentedSession();
-        String finalText=f.payloads("textRecognition").get(5).toString();
-        check(finalText.contains("repeat repeat last words") && finalText.contains("resultType=2"),"Stop-time final contains all segments");
-        check(first.destroys==1,"terminal segmented callback releases once");
-        f.listen(2); int size=f.channel.events.size();
-        first.listener.onSegmentResults(words("stale")); first.listener.onEndOfSegmentedSession();
-        check(size==f.channel.events.size(),"both segmented callbacks are identity fenced");
-        f.call("cancel",Map.of());
-
-        f=fresh(); f.initialize(); f.listen(1); SpeechRecognizer fallback=f.recognizer();
-        fallback.listener.onEndOfSpeech(); fallback.listener.onResults(words("ordinary fallback"));
-        check(fallback.destroys==1 && !f.status("segmented"),"ignored extra retains ordinary final path");
-        f.listen(2); fallback=f.recognizer(); Handler.advance(60000);
-        f.call("stop",Map.of()); f.call("stop",Map.of());
-        check(fallback.stops==1,"cap and repeated Stop cannot overlap native stops");
-        Handler.advance(2000); check(fallback.destroys==1,"finalization remains bounded");
-        f.listen(3); fallback=f.recognizer(); fallback.listener.onEndOfSpeech();
-        Handler.advance(2000); check(fallback.destroys==1,"ignored segmentation without results closes boundedly");
-        f=fresh(); f.initialize(); f.listen(1); SpeechRecognizer delayed=f.recognizer();
-        delayed.listener.onEndOfSpeech(); Handler.advance(1900);
-        f.call("stop",Map.of()); f.call("stop",Map.of()); Handler.advance(100);
-        check(delayed.stops==1 && delayed.destroys==0,"Stop replaces provisional watchdog with its full final-result window");
-        delayed.listener.onSegmentResults(words("corrected delayed words"));
-        delayed.listener.onEndOfSegmentedSession();
-        check(f.payloads("textRecognition").get(1).toString().contains("corrected delayed words"),"delayed first segment is retained after Stop");
-        check(delayed.destroys==1,"delayed terminal closes once");
-        f.listen(2); delayed=f.recognizer(); delayed.listener.onEndOfSpeech(); Handler.advance(1900);
-        f.call("stop",Map.of()); Handler.advance(1999);
-        check(delayed.destroys==0,"Stop finalization remains open for 1999ms");
-        Handler.advance(1); check(delayed.destroys==1,"Stop finalization still closes at 2000ms");
-        f=fresh(); Build.VERSION.SDK_INT=32; f.initialize(); f.listen(1);
-        check(!f.recognizer().intent.extras.containsKey("android.speech.extra.SEGMENTED_SESSION"),"API32 retains legacy capture");
-        f.call("cancel",Map.of());
+        Fixture f=fresh();ContextCompat.granted=false;f.set("currentActivity",new android.app.Activity());
+        Reply reply=new Reply();f.plugin.onMethodCall(new MethodCall("initialize",Map.of("noBluetooth",true)),reply);Handler.advance(0);
+        check(reply.calls==0,"permission waits honestly");
+        check(Arrays.equals(androidx.core.app.ActivityCompat.requested,new String[]{"android.permission.RECORD_AUDIO"}),"only mic permission");
+        f.plugin.onDetachedFromEngine(new io.flutter.embedding.engine.plugins.FlutterPlugin.FlutterPluginBinding(new Context(),null,null,null,null,null,null));Handler.advance(0);
+        check(reply.calls==1 && Boolean.FALSE.equals(reply.value),"detach resolves pending permission");
+        f.plugin.onRequestPermissionsResult(28521,new String[]{"android.permission.RECORD_AUDIO"},new int[]{0});Handler.advance(0);
+        check(reply.calls==1,"late permission callback cannot double complete");
     }
     public static void main(String[] args) throws Exception {
-        privacyAndCapability(); finalAndGeneration(); endsErrorsCapsAndDispose(); localesAndPermission(); handsetBluetoothOptOut(); segmentedCaptureAndStop();
+        privacyAndCapability();finalAndGeneration();continuousCaptureAndStop();ignoredSourceFailsWithoutRestart();supportPreflightAndDisposal();activityDetachReleases();synchronousStartCallbacks();pcmPipeAndRelease();localesAndPermission();
         System.out.println("PASS actual SpeechToTextPlugin JVM lifecycle: "+assertions+" assertions (Android/Flutter doubles; NOT device/acoustic proof)");
     }
 }
