@@ -1,4 +1,5 @@
 import 'package:app/ui/core/session_status_indicator.dart';
+import 'package:app/ui/agents/agents_page.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/pairing/storage.dart';
@@ -223,7 +224,7 @@ class _ChatPageState extends State<ChatPage> {
 
   Widget _buildTopBar(BuildContext context, ChatState state) {
     // Plan-17 follow-up — two-line AppBar:
-    //   Line 1: ROOM name (cwd basename / room.name / fallback).
+    //   Line 1: synchronized desktop name (or fallback) | full cwd.
     //   Line 2: peer (Mac nickname or sessionName) + presence dot.
     // The dot reads from the ChatReady.peerPresence flag (which the
     // ViewModel sources from `isRoomLive`).
@@ -253,6 +254,10 @@ class _ChatPageState extends State<ChatPage> {
     // the generic placeholders when the ViewModel hasn't finished
     // bootstrapping yet.
     final roomName = _roomDisplayName(room, peer, state, initialTitle);
+    final path = room?.cwd;
+    final header = path != null && path.trim().isNotEmpty
+        ? '$roomName | $path'
+        : roomName;
     // Plan/32g — line 2 (device) falls back to `initialDevice` (the Mac name
     // Home passed), NOT `initialTitle` (the room name) — so it shows the right
     // device from frame 1 and doesn't flip when the PeerRecord loads.
@@ -284,7 +289,8 @@ class _ChatPageState extends State<ChatPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  roomName,
+                  header,
+                  key: const Key('chat-session-title'),
                   maxLines: 1,
                   style: context.typo.mono.copyWith(
                     fontSize: 13,
@@ -361,6 +367,22 @@ class _ChatPageState extends State<ChatPage> {
                 ++_accordionRevision;
               });
             },
+          ),
+          IconButton(
+            key: const Key('start-agent'),
+            tooltip: 'Start agent',
+            icon: Icon(LucideIcons.plus, size: 18, color: colors.accent),
+            onPressed: peer != null && room != null && vm.isRoomLive
+                ? () => context.push(
+                    '/agents',
+                    extra: AgentsTarget(
+                      peer.remoteEpk,
+                      room.roomId,
+                      peerLabel,
+                      roomName,
+                    ),
+                  )
+                : null,
           ),
           // Plan/32g follow-up: ALWAYS render the info button. Gating it on the
           // async PeerRecord made it pop in on load → an AppBar layout shift

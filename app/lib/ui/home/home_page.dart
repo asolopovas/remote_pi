@@ -390,11 +390,11 @@ class HomePage extends StatelessWidget {
   // Long-press menu (preserved from prior plan-17 wiring)
   // ---------------------------------------------------------------------------
 
-  void _chooseLauncher(
+  Future<void> _chooseLauncher(
     BuildContext context,
     HomeViewModel vm,
     HomeState state,
-  ) {
+  ) async {
     final online = state is HomeList
         ? state
               .items(normalizeEpk: toStandardB64)
@@ -403,40 +403,48 @@ class HomePage extends StatelessWidget {
               )
               .toList()
         : <HomeItem>[];
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (sheet) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            const ListTile(
-              title: Text('Start agent · choose an online paired session'),
-            ),
-            if (online.isEmpty)
-              const ListTile(
-                title: Text('No online paired sessions available.'),
-              ),
-            for (final item in online)
-              ListTile(
-                title: Text(_deviceFor(item.peer)),
-                subtitle: Text(
-                  '${_titleFor(item.peer, item.room)} · ${item.room.roomId}',
+    if (online.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No online paired sessions available.')),
+      );
+      return;
+    }
+    final selection = context.read<SessionSelection>();
+    HomeItem? target;
+    for (final item in online) {
+      if (selection.matches(item.peer.remoteEpk, item.room.roomId)) {
+        target = item;
+        break;
+      }
+    }
+    if (target == null && online.length == 1) target = online.single;
+    // Only ask when the destination is genuinely ambiguous. No bottom sheet
+    // between the + action and the creation form for a known host/session.
+    target ??= await Navigator.of(context).push<HomeItem>(
+      MaterialPageRoute(
+        builder: (picker) => Scaffold(
+          appBar: AppBar(title: const Text('Choose launch host')),
+          body: ListView(
+            children: [
+              for (final item in online)
+                ListTile(
+                  title: Text(_deviceFor(item.peer)),
+                  subtitle: Text(_titleFor(item.peer, item.room)),
+                  onTap: () => Navigator.of(picker).pop(item),
                 ),
-                onTap: () {
-                  Navigator.of(sheet).pop();
-                  context.push(
-                    '/agents',
-                    extra: AgentsTarget(
-                      item.peer.remoteEpk,
-                      item.room.roomId,
-                      _deviceFor(item.peer),
-                      _titleFor(item.peer, item.room),
-                    ),
-                  );
-                },
-              ),
-          ],
+            ],
+          ),
         ),
+      ),
+    );
+    if (!context.mounted || target == null) return;
+    context.push(
+      '/agents',
+      extra: AgentsTarget(
+        target.peer.remoteEpk,
+        target.room.roomId,
+        _deviceFor(target.peer),
+        _titleFor(target.peer, target.room),
       ),
     );
   }

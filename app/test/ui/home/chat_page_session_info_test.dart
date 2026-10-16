@@ -380,7 +380,7 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(chat.activeRoom!.roomId, 'r1');
-        expect(find.text('Pi · system'), findsOneWidget);
+        expect(find.text('Pi · system | /synthetic/duplicate'), findsOneWidget);
         await tester.enterText(
           find.descendant(
             of: find.byType(InputBar),
@@ -403,7 +403,7 @@ void main() {
         }) async {
           await tester.runAsync(() => h.push(data.patch(meta, room: room)));
           await tester.pumpAndSettle();
-          expect(find.text(title), findsNWidgets(2));
+          expect(find.text(title), findsOneWidget);
           expect(
             identical((chat.state as ChatReady).messages, before.messages),
             isTrue,
@@ -461,14 +461,14 @@ void main() {
         expect(find.text('model-only'), findsOneWidget);
         expect(find.text('r1'), findsOneWidget);
         expect(find.text('/synthetic/duplicate'), findsOneWidget);
-        expect(find.text('Renamed <plain>'), findsNWidgets(2));
+        expect(find.text('Renamed <plain>'), findsOneWidget);
         await h.cm.setRoomLocalName(
           data.peer.remoteEpk,
           'r1',
           'Saved fallback',
         );
         await tester.pumpAndSettle();
-        expect(find.text('Renamed <plain>'), findsNWidgets(2));
+        expect(find.text('Renamed <plain>'), findsOneWidget);
         expect(h.room().localName, 'Saved fallback');
         await patch({
           'display': data.display(3, 'Desktop changed'),
@@ -497,7 +497,7 @@ void main() {
         );
         await h.cm.setRoomLocalName(data.peer.remoteEpk, 'r1', null);
         await tester.pumpAndSettle();
-        expect(find.text('duplicate'), findsNWidgets(2));
+        expect(find.text('duplicate'), findsOneWidget);
         final priorNotices = notices;
         await patch({'working': false}, 'duplicate');
         expect(notices, priorNotices + 1); // State emit must not double-notify.
@@ -517,7 +517,7 @@ void main() {
           identical(tester.element(find.byType(AlertDialog)), mountedDialog),
           isTrue,
         );
-        expect(find.text(longName), findsNWidgets(2));
+        expect(find.text(longName), findsOneWidget);
         expect(find.text(longPath), findsOneWidget);
         expect(find.text(longModel), findsOneWidget);
         final paired = find.text('PAIRED');
@@ -612,7 +612,7 @@ void main() {
       await tester.pumpAndSettle();
       final mountedDialog = tester.element(find.byType(AlertDialog));
       if (scenario != 'in-flight page teardown') {
-        expect(find.text('Scoped name'), findsNWidgets(2));
+        expect(find.text('Scoped name'), findsOneWidget);
         expect(vm.listeners.length, baselineListeners + 1);
       }
       switch (scenario) {
@@ -840,7 +840,7 @@ void main() {
       await tester.tap(find.byTooltip('Session info'));
       await tester.pumpAndSettle();
       final dialog = tester.element(find.byType(AlertDialog));
-      expect(find.text('duplicate'), findsNWidgets(2));
+      expect(find.text('duplicate'), findsOneWidget);
       var notices = 0;
       h.vm.addListener(() => notices++);
       final gate = Completer<List<PersistedRoom>>();

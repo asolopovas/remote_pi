@@ -131,6 +131,13 @@ void main() {
       // The info button renders immediately — even with no PeerRecord loaded
       // (activePeer == null here) — so it never pops in and shifts the AppBar.
       expect(find.byIcon(LucideIcons.info), findsOneWidget);
+      // No paired live room: cannot accidentally launch on an unknown host.
+      expect(
+        tester
+            .widget<IconButton>(find.byKey(const Key('start-agent')))
+            .onPressed,
+        isNull,
+      );
 
       // Status dot uses initialOnline before the runtime resolves → shows
       // "online" immediately instead of flashing offline/reconnecting.

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:app/ui/agents/agents_page.dart';
 
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/images/image_picker_service.dart';
@@ -217,10 +218,18 @@ void main() {
         final attach = AttachmentViewModel(_Picker(), actions);
         ChatViewModel? chat;
         Map<String, dynamic>? navigation;
+        AgentsTarget? launchTarget;
         final router = GoRouter(
           initialLocation: '/home',
           routes: [
             GoRoute(path: '/home', builder: (_, _) => const HomePage()),
+            GoRoute(
+              path: '/agents',
+              builder: (_, state) {
+                launchTarget = state.extra! as AgentsTarget;
+                return const Scaffold(body: Text('Agent creation form'));
+              },
+            ),
             GoRoute(
               path: '/chat',
               builder: (_, state) {
@@ -290,6 +299,18 @@ void main() {
         home.setFilter(HomeFilter.all);
         await tester.pumpAndSettle();
         expect(find.text('Pi · system'), findsNWidgets(2));
+        // Multiple online sessions with no selection require an explicit host,
+        // but no longer open a bottom-sheet detour.
+        await tester.tap(find.byTooltip('Start agent'));
+        await tester.pumpAndSettle();
+        expect(find.byType(BottomSheet), findsNothing);
+        expect(find.text('Choose launch host'), findsOneWidget);
+        await tester.tap(find.widgetWithText(ListTile, 'Pi · system').first);
+        await tester.pumpAndSettle();
+        expect(find.text('Agent creation form'), findsOneWidget);
+        expect(launchTarget!.room, 'r1');
+        router.pop();
+        await tester.pumpAndSettle();
         expect(
           tester.getSemantics(find.text('Connected').first).label,
           contains('Connected'),
@@ -336,7 +357,7 @@ void main() {
         expect(selection.current!.roomId, 'r1');
         expect(prefs.selectedRoomId, 'r1');
         expect(chat!.activeRoom!.roomId, 'r1');
-        expect(find.text('Pi · system'), findsOneWidget);
+        expect(find.text('Pi · system | /synthetic/duplicate'), findsOneWidget);
         await tester.enterText(
           find.descendant(
             of: find.byType(InputBar),
@@ -359,7 +380,7 @@ void main() {
         }) async {
           await tester.runAsync(() => h.push(data.patch(meta, room: room)));
           await tester.pumpAndSettle();
-          expect(find.text(title), findsOneWidget);
+          expect(find.text('$title | /synthetic/duplicate'), findsOneWidget);
           expect(
             identical((chat!.state as ChatReady).messages, before.messages),
             isTrue,
@@ -412,7 +433,11 @@ void main() {
         expect(find.text('model-only'), findsOneWidget);
         expect(find.text('r1'), findsOneWidget);
         expect(find.text('/synthetic/duplicate'), findsOneWidget);
-        expect(find.text('Renamed <plain>'), findsNWidgets(2));
+        expect(find.text('Renamed <plain>'), findsOneWidget);
+        expect(
+          find.text('Renamed <plain> | /synthetic/duplicate'),
+          findsOneWidget,
+        );
         await tester.tap(find.text('Close'));
         await tester.pumpAndSettle();
         await h.cm.setRoomLocalName(
@@ -421,7 +446,10 @@ void main() {
           'Saved fallback',
         );
         await tester.pumpAndSettle();
-        expect(find.text('Renamed <plain>'), findsOneWidget);
+        expect(
+          find.text('Renamed <plain> | /synthetic/duplicate'),
+          findsOneWidget,
+        );
         expect(h.room().localName, 'Saved fallback');
         await patch({
           'display': data.display(3, 'Desktop changed'),
@@ -442,11 +470,28 @@ void main() {
         expect(h.room().localName, 'Saved fallback');
         await h.cm.setRoomLocalName(data.peer.remoteEpk, 'r1', null);
         await tester.pumpAndSettle();
-        expect(find.text('duplicate'), findsOneWidget);
+        expect(find.text('duplicate | /synthetic/duplicate'), findsOneWidget);
         final priorNotices = notices;
         await patch({'working': false}, 'duplicate');
         expect(notices, priorNotices + 1); // State emit must not double-notify.
         expect(find.text('synthetic retained message'), findsOneWidget);
+        // The open chat launches directly against its exact peer/room.
+        await tester.tap(find.byTooltip('Start agent'));
+        await tester.pumpAndSettle();
+        expect(find.text('Agent creation form'), findsOneWidget);
+        expect(launchTarget!.room, 'r1');
+        expect(launchTarget!.peer, data.peer.remoteEpk);
+        router.pop();
+        await tester.pumpAndSettle();
+        router.pop();
+        await tester.pumpAndSettle();
+        // Home reuses the selected session even when several are online.
+        await tester.tap(find.byTooltip('Start agent'));
+        await tester.pumpAndSettle();
+        expect(find.text('Agent creation form'), findsOneWidget);
+        expect(find.text('Choose launch host'), findsNothing);
+        expect(find.byType(BottomSheet), findsNothing);
+        expect(launchTarget!.room, 'r1');
         expect(tester.takeException(), isNull);
         semantics.dispose();
         await tester.pumpWidget(const SizedBox.shrink());
