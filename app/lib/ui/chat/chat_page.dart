@@ -744,9 +744,7 @@ class _ChatPageState extends State<ChatPage> {
       case VoiceHint.permissionDenied:
         messenger.showSnackBar(
           SnackBar(
-            content: const Text(
-              'Microphone permission denied.',
-            ),
+            content: const Text('Microphone permission denied.'),
             duration: const Duration(seconds: 5),
             behavior: SnackBarBehavior.floating,
             action: SnackBarAction(
