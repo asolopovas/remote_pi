@@ -92,6 +92,9 @@ class HomeViewModel extends ViewModel<HomeState> {
         peers: peers,
         statusByEpk: _conn.presenceSnapshot,
         roomsByPeer: _conn.roomsSnapshot,
+        filter: state is HomeList
+            ? (state as HomeList).filter
+            : HomeFilter.online,
       ),
     );
   }

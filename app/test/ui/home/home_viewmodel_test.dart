@@ -16,6 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 class _FakeStorage extends PairingStorage {
   List<PeerRecord> peers;
   _FakeStorage(this.peers);
+  void changed() => notifyListeners();
 
   @override
   Future<List<PeerRecord>> listPeers() async => List.of(peers);
@@ -504,6 +505,13 @@ void main() {
         vm.setFilter(HomeFilter.offline); // changed → one emit
         expect(notifies, 1);
         expect((vm.state as HomeList).filter, HomeFilter.offline);
+        storage.changed();
+        await Future<void>.delayed(Duration.zero);
+        expect((vm.state as HomeList).filter, HomeFilter.offline);
+        vm.setFilter(HomeFilter.all);
+        storage.changed();
+        await Future<void>.delayed(Duration.zero);
+        expect((vm.state as HomeList).filter, HomeFilter.all);
 
         vm.dispose();
       },
