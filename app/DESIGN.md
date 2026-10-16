@@ -58,7 +58,11 @@ squeezing labels. Keep the existing theme and typography tokens.
 One compact status/error at a time; do not repeat capability failures alongside
 a second unavailable message. Menus use short labels, not explanatory subtitles.
 Host identity, selected folders, unknown outcomes and risk confirmations stay
-visible. The All tab exposes a right-aligned “Clear inactive” action; disable it
+visible. Creation is state-driven: connecting, missing host setup, PIN unlock,
+then an approved-project radio list and one Start action. Never show disabled
+PIN/project/name fields for an unconfigured host. Omit optional naming and
+management sections; put owned-agent management and access locking in secondary
+navigation. A PIN is chosen locally on the PC, never invented by the client. The All tab exposes a right-aligned “Clear inactive” action; disable it
 without live discovery. Clearing is local metadata only and requires confirmation.
 
 Native widget tests measure launcher inset, field/action gap and target height at
@@ -80,8 +84,11 @@ controls only after disclosure, retaining 48px targets, keyboard access, lossles
 copying and stable scroll anchors. Do not invent progress or successful outcomes.
 
 Agent headers show the display name only; the folder remains in Session info.
-The info-modal X closes the chat view and clears its selection, never the host
-process. Child-agent headers are adjacent 48px targets with 4px outer/body
+The info-modal X only dismisses info. A separate Stop agent action fetches fresh
+exact-session authority, confirms the process/child consequences, and requests
+an orderly host stop. It never selects a process by name/path/PID or deletes
+history. Stop acknowledgements distinguish requested from actual child exit;
+unknown outcomes are not retried automatically. Child-agent headers are adjacent 48px targets with 4px outer/body
 spacing, without repeated helper paragraphs.
 
 ## Components

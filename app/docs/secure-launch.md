@@ -4,6 +4,13 @@ Use Home’s **Start agent** entry on the exact online paired launcher session.
 Home’s header Refresh remains a discovery refresh; the launcher page’s Refresh
 reads security, registered projects and your Owner’s managed agents.
 
+Creation has one purpose: select an approved project and Start. Loading, missing
+host setup and PIN unlock are separate states, not disabled creation forms.
+Missing setup offers the local `remote-pi-launcher pin-setup` command; the PIN
+field is editable only after the host actually has a verifier. Optional naming,
+capacity counters and managed-agent headings are not part of creation. Existing
+agents and access locking live under the page’s secondary menu.
+
 The machine-side extension must support the launcher protocol and be configured
 with a 6–12 digit PIN plus registered projects and directory allowlists. The
 operator supplies the PIN; the App cannot set it or invent registered projects.
@@ -25,12 +32,20 @@ It survives phone disconnect but not launcher close/session replacement/reload.
 Open its actual discovered online session from Home. Stop manages only the
 requesting Owner’s managed records; the host remains the final owner authority.
 
-**Lock** immediately revokes local control and asks the host to lock access;
-agents keep running. Confirmed **Stop your managed agents and lock access**
-asks the host to stop only this Owner’s managed agents and globally lock launcher
-access. It does not shut down the OS, Relay or other Owners’ agents. Partial stop
-failure is explicitly reported; lost replies do not imply host-side success.
-Refresh status or inspect the machine before further action.
+**Lock access** in the secondary menu revokes local control; agents keep running.
+**Started here** is a separate list of this launcher's app-created agents, with
+confirmed per-agent Stop. It never
+exposes OS/Relay shutdown or an aggregate stop action in the creation form.
+Partial failures and unknown replies remain explicit, never automatically retried.
+
+Session info separately offers **Stop agent** for the exact selected running
+process. Its X only dismisses info. This control uses fresh short-lived one-use
+host capabilities, exact channel/room/lifecycle guards, a confirmation, and no
+PID/name/path targeting. Primary TUI Pi stops orderly using its SDK and may also
+stop children it launched. App-launched child stops remain Owner/PIN-grant gated.
+Unsupported primary RPC/print/JSON contexts are reported, not force-killed. A
+`requested` acknowledgement is not proof of process exit; only `stopped` confirms
+managed child exit. Control tokens/errors never become chat history.
 
 Security and launch mutations are never automatically replayed. Unknown launch
 attempts retain only IDs/type/incarnation, never payloads. Refresh is read-only.

@@ -10,8 +10,7 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
         emit(
           const AgentsViewState(
             invalid: true,
-            message:
-                'Host disconnected. Reopen the launcher.',
+            message: 'Host disconnected. Reopen the launcher.',
           ),
         );
       }
@@ -96,7 +95,7 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
     await _run(_repo.list, reconciles: true);
   }
 
-  Future<void> launch(
+  Future<ManagedAgent?> launch(
     String projectId,
     String? name, {
     required bool confirmed,
@@ -108,36 +107,38 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
         !unlocked ||
         state.needsReconciliation ||
         state.availability?.available != true) {
-      return;
+      return null;
     }
     final error = validateAgentInput(projectId, name);
     if (error != null) {
       emit(AgentsViewState(availability: state.availability, message: error));
-      return;
+      return null;
     }
     final old = state.availability!;
-    await _run(
-      () async {
-        final agent = await _repo.launch(
-          projectId,
-          name,
-          acknowledgeUnknown: acknowledgeUnknown,
-        );
-        return AgentAvailability(
-          available: old.available,
-          launcherId: old.launcherId,
-          reason: old.reason,
-          cwd: old.cwd,
-          maxAgents: old.maxAgents,
-          agents: List.unmodifiable([
-            ...old.agents.where((a) => a.agentId != agent.agentId),
-            agent,
-          ]),
-        );
-      },
-      message:
-          'Started. Open it from Home.',
-    );
+    ManagedAgent? launched;
+    await _run(() async {
+      final agent = await _repo.launch(
+        projectId,
+        name,
+        acknowledgeUnknown: acknowledgeUnknown,
+      );
+      launched = agent;
+      _repo.refreshDiscovery();
+      return AgentAvailability(
+        available: old.available,
+        launcherId: old.launcherId,
+        reason: old.reason,
+        cwd: old.cwd,
+        maxAgents: old.maxAgents,
+        agents: List.unmodifiable([
+          ...old.agents.where((a) => a.agentId != agent.agentId),
+          agent,
+        ]),
+      );
+    }, message: 'Started. Open it from Home.');
+    return !_disposed && !state.invalid && !state.needsReconciliation
+        ? launched
+        : null;
   }
 
   Future<void> stop(String id, {required bool confirmed}) async {

@@ -1,4 +1,6 @@
 import 'package:app/data/agents/agent_repository_impl.dart';
+import 'package:app/data/agents/session_control_repository_impl.dart';
+import 'package:app/domain/contracts/session_control_repository.dart';
 import 'package:app/ui/agents/viewmodels/agents_viewmodel.dart';
 import 'dart:async';
 import 'dart:io' show Platform;
@@ -131,6 +133,9 @@ Future<void> setupDependencies() async {
   );
 
   _injector.addOther<AgentMutationJournal>(AgentMutationJournal.new);
+  _injector.addRepository<SessionControlRepository>(
+    () => SessionControlRepositoryImpl(_injector.get<ConnectionManager>()),
+  );
 
   // ViewModels
   _injector.addViewModel<AgentsViewModel>(
@@ -149,6 +154,7 @@ Future<void> setupDependencies() async {
       _injector.get<ConnectionManager>(),
       _injector.get<Preferences>(),
       _injector.get<PairingStorage>(),
+      sessionControls: _injector.get<SessionControlRepository>(),
     ),
   );
   _injector.addViewModel<HomeViewModel>(

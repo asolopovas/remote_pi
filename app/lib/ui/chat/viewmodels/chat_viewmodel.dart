@@ -8,6 +8,7 @@ import 'package:app/data/sync/sync_events.dart';
 import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/domain/session_state.dart';
+import 'package:app/domain/contracts/session_control_repository.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/states/chat_state.dart';
@@ -26,6 +27,7 @@ class ChatViewModel extends ViewModel<ChatState> {
   final ConnectionManager _conn;
   final Preferences _prefs;
   final PairingStorage _storage;
+  final SessionControlRepository? _sessionControls;
 
   StreamSubscription<List<MessageRecord>>? _msgsSub;
   StreamSubscription<RuntimeRecord>? _runtimeSub;
@@ -60,8 +62,15 @@ class ChatViewModel extends ViewModel<ChatState> {
   String? _peerOfflineReason;
   ConnectionStatus? _lastStatus;
 
-  ChatViewModel(this._read, this._sync, this._conn, this._prefs, this._storage)
-    : super(const ChatReady(messages: [])) {
+  ChatViewModel(
+    this._read,
+    this._sync,
+    this._conn,
+    this._prefs,
+    this._storage, {
+    SessionControlRepository? sessionControls,
+  }) : _sessionControls = sessionControls,
+       super(const ChatReady(messages: [])) {
     // Plan/32f — do NOT seed _streaming/_working from the shared SyncService
     // here: it may still be bound to the PREVIOUS chat (this VM is recreated
     // on session switch, before _bootstrap rebinds via activate). Seeding now
@@ -76,6 +85,31 @@ class ChatViewModel extends ViewModel<ChatState> {
     _statusSub = _conn.statusStream.listen(_onStatus);
     // ignore: discarded_futures
     _bootstrap();
+  }
+
+  Future<SessionStopCapability> inspectSessionStop(
+    String peer,
+    String room,
+  ) async {
+    if (_disposed ||
+        activePeer?.remoteEpk != peer ||
+        activeRoom?.roomId != room) {
+      throw const SessionControlFailure('Agent changed or disconnected.');
+    }
+    return _sessionControls?.inspect(peer, room) ??
+        SessionStopCapability(peer: peer, room: room, canStop: false);
+  }
+
+  Future<SessionStopOutcome> stopSession(
+    SessionStopCapability capability,
+  ) async {
+    if (_disposed ||
+        activePeer?.remoteEpk != capability.peer ||
+        activeRoom?.roomId != capability.room ||
+        _sessionControls == null) {
+      throw const SessionControlFailure('Agent changed or disconnected.');
+    }
+    return _sessionControls.stop(capability);
   }
 
   // --- AppBar-facing getters (relay/connection queries, not message data) ---

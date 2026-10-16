@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:app/domain/contracts/agent_repository.dart';
+import 'package:app/routing/adaptive.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'viewmodels/agents_viewmodel.dart';
@@ -17,13 +19,17 @@ class AgentsPage extends StatefulWidget {
   State<AgentsPage> createState() => _AgentsPageState();
 }
 
+enum _LauncherAction { agents, lock }
+
 class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
-  final _pin = TextEditingController(), _name = TextEditingController();
+  final _pin = TextEditingController();
   String? _selected, _identity, _projectDefinition;
   ({String id, String identity, String definition})? _selectionCandidate;
+  bool _confirming = false, _targetChanged = false;
+
   String _definition(LauncherProject project) =>
       '${project.projectId}:${project.name}:${project.cwd}:${project.allowedFolders.join('\u0000')}';
-  bool _confirming = false, _targetChanged = false;
+
   @override
   void initState() {
     super.initState();
@@ -43,7 +49,6 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _pin.clear();
     _pin.dispose();
-    _name.dispose();
     super.dispose();
   }
 
@@ -68,65 +73,37 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _shutdown() async {
-    if (_confirming) return;
-    setState(() => _confirming = true);
-    final vm = context.read<AgentsViewModel>();
-    final identity = _identity;
-    final launcherId = vm.security?.launcherId, epoch = vm.security?.epoch;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (dialog) => AlertDialog(
-        title: const Text('Stop all and lock?'),
-        content: const Text(
-          'Stops your managed agents; locks all launcher access. Other agents, OS and Relay stay running.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialog, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialog, true),
-            child: const Text('Shut down'),
-          ),
-        ],
-      ),
-    );
-    if (!mounted) return;
-    setState(() => _confirming = false);
-    if (ok == true &&
-        !_targetChanged &&
-        identity == _identity &&
-        launcherId == vm.security?.launcherId &&
-        epoch == vm.security?.epoch) {
-      _pin.clear();
-      await vm.lock(shutdown: true);
-    }
+  Future<void> _unlock(AgentsViewModel vm) async {
+    if (vm.state.busy || vm.state.invalid || _targetChanged) return;
+    final pin = _pin.text;
+    _pin.clear();
+    await vm.unlock(pin);
   }
 
-  Future<void> _confirm({String? id, String? name}) async {
-    if (_confirming) return;
-    setState(() => _confirming = true);
+  Future<void> _confirm({ManagedAgent? stop}) async {
+    if (!mounted || _confirming || _targetChanged) return;
     final vm = context.read<AgentsViewModel>();
-    final projectId = _selected ?? '', label = _name.text;
-    final projects = vm.projects.where(
-      (project) => project.projectId == projectId,
-    );
-    final directory = projects.isEmpty ? '' : projects.first.cwd;
-    final identity = _identity;
+    if (!vm.unlocked || vm.state.invalid || vm.state.busy) return;
+    final projectId = _selected;
+    final projects = vm.projects.where((p) => p.projectId == projectId);
+    final project = projects.firstOrNull;
+    if (stop == null && project == null) return;
+    final identity = _identity, definition = _projectDefinition;
     final launcherId = vm.security?.launcherId, epoch = vm.security?.epoch;
-    final definition = _projectDefinition;
     final warnedUnknown = vm.hasUnknownLaunch;
+    final extraFolders =
+        project?.allowedFolders.where((path) => path != project.cwd).toList() ??
+        const <String>[];
+    setState(() => _confirming = true);
     final ok = await showDialog<bool>(
       context: context,
       builder: (dialog) => AlertDialog(
         scrollable: true,
-        title: Text(id == null ? 'Start agent?' : 'Stop $name?'),
+        title: Text(stop == null ? 'Start agent?' : 'Stop agent?'),
         content: Text(
-          id == null
-              ? '${vm.hasUnknownLaunch ? 'Outcome unknown; it may still start/appear. Starting another may create a second agent.\n\n' : ''}Host: ${widget.target.host}\nSession: ${widget.target.session}\nDirectory: $directory\n\nOnly start in a project whose local code you trust. This fresh Pi process survives phone disconnects but stops when the launching Pi closes, or its session is replaced, resumed or reloaded. No initial prompt is sent.'
-              : 'Stop this managed Pi process on ${widget.target.host}? Its session will no longer be online.',
+          stop == null
+              ? '${warnedUnknown ? 'Earlier start unconfirmed. Starting another may create a second agent.\n\n' : ''}${widget.target.host} · ${project!.name}\n${project.cwd}${extraFolders.isEmpty ? '' : '\nAccess: ${extraFolders.join(', ')}'}\n\nStops when this launcher closes or reloads.'
+              : '${stop.name}\nStops this agent only.',
         ),
         actions: [
           TextButton(
@@ -135,42 +112,55 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(dialog, true),
-            child: Text(id == null ? 'Start' : 'Stop'),
+            child: Text(stop == null ? 'Start' : 'Stop'),
           ),
         ],
       ),
     );
     if (!mounted) return;
     setState(() => _confirming = false);
-    if (_targetChanged ||
+    if (ok != true ||
+        _targetChanged ||
         identity != _identity ||
         vm.security?.launcherId != launcherId ||
         vm.security?.epoch != epoch) {
       return;
     }
-    if (id == null) {
-      if (identity != _identity ||
-          definition != _projectDefinition ||
-          _selected != projectId) {
-        return;
-      }
-      await vm.launch(
-        projectId,
-        label.isEmpty ? null : label,
-        confirmed: ok == true,
-        acknowledgeUnknown: warnedUnknown,
-      );
-    } else {
-      await vm.stop(id, confirmed: ok == true);
+    if (stop != null) {
+      await vm.stop(stop.agentId, confirmed: true);
+      return;
+    }
+    if (definition != _projectDefinition || _selected != projectId) return;
+    final agent = await vm.launch(
+      projectId!,
+      null,
+      confirmed: true,
+      acknowledgeUnknown: warnedUnknown,
+    );
+    if (!mounted || agent == null) return;
+    final router = GoRouter.maybeOf(context);
+    if (router != null) {
+      context.read<SessionSelection>().clear();
+      router.go('/home');
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final vm = context.watch<AgentsViewModel>(), colors = context.colors;
-    final state = vm.state, availability = state.availability;
-    final identity =
-        '${widget.target.peer}:${widget.target.room}:${vm.security?.launcherId}:${vm.security?.epoch}';
+  void _showAgents(AgentsViewModel vm) {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => ChangeNotifierProvider<AgentsViewModel>.value(
+          value: vm,
+          child: _RunningAgentsPage(
+            host: widget.target.host,
+            onStop: (agent) => _confirm(stop: agent),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _reconcileSelection(AgentsViewModel vm, String identity) {
+    final state = vm.state;
     if (vm.reconcilingSelection && !state.invalid && !_targetChanged) {
       if (_selected != null &&
           _identity != null &&
@@ -181,7 +171,6 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
           definition: _projectDefinition!,
         );
       }
-      // Only a definition candidate survives: never selection authority or PIN.
       _selected = null;
       _pin.clear();
     } else {
@@ -215,196 +204,269 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
     }
     _identity = identity;
     if (state.invalid) _pin.clear();
+  }
+
+  Widget _retry(AgentsViewModel vm) => FilledButton(
+    onPressed: vm.state.busy || vm.state.invalid || _targetChanged
+        ? null
+        : vm.refresh,
+    child: const Text('Retry'),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final vm = context.watch<AgentsViewModel>();
+    final identity =
+        '${widget.target.peer}:${widget.target.room}:${vm.security?.launcherId}:${vm.security?.epoch}';
+    _reconcileSelection(vm, identity);
+    final state = vm.state;
     final disabled =
         state.busy || state.invalid || _confirming || _targetChanged;
+    final agents =
+        vm.state.availability?.agents
+            .where((a) => a.state != 'stopped')
+            .toList() ??
+        const <ManagedAgent>[];
     return Scaffold(
-      backgroundColor: colors.bg,
-      appBar: AppBar(title: const Text('Start agent')),
+      backgroundColor: context.colors.bg,
+      appBar: AppBar(
+        title: const Text('Start agent'),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh',
+            onPressed: disabled ? null : vm.refresh,
+            icon: const Icon(Icons.refresh),
+          ),
+          if (vm.unlocked && !state.invalid)
+            PopupMenuButton<_LauncherAction>(
+              tooltip: 'Agent options',
+              enabled: !disabled,
+              onSelected: (action) {
+                switch (action) {
+                  case _LauncherAction.agents:
+                    _showAgents(vm);
+                  case _LauncherAction.lock:
+                    _pin.clear();
+                    vm.lock();
+                }
+              },
+              itemBuilder: (_) => [
+                if (agents.isNotEmpty)
+                  const PopupMenuItem(
+                    value: _LauncherAction.agents,
+                    child: Text('Started here'),
+                  ),
+                const PopupMenuItem(
+                  value: _LauncherAction.lock,
+                  child: Text('Lock access'),
+                ),
+              ],
+            ),
+        ],
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           spacing: AppSpacing.md,
           children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              spacing: AppSpacing.xs,
-              children: [
-                Text(
-                  'Host: ${widget.target.host}',
-                  style: context.typo.sansBody,
+            Text('Host: ${widget.target.host}', style: context.typo.sansBody),
+            ..._content(vm, disabled, agents),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _content(
+    AgentsViewModel vm,
+    bool disabled,
+    List<ManagedAgent> agents,
+  ) {
+    final state = vm.state, security = vm.security;
+    if (state.busy) return [const LinearProgressIndicator()];
+    if (state.invalid || _targetChanged) {
+      return [Text(state.message ?? 'Host changed. Reopen the launcher.')];
+    }
+    if (security == null) {
+      return [Text(state.message ?? 'Host unavailable.'), _retry(vm)];
+    }
+    if (!security.configured) {
+      return [
+        Text('Host setup required', style: context.typo.sansBody),
+        const Text('Create a PIN on the PC, then retry.'),
+        FilledButton.icon(
+          key: const Key('copy-launcher-setup'),
+          onPressed: () => Clipboard.setData(
+            const ClipboardData(text: 'remote-pi-launcher pin-setup'),
+          ),
+          icon: const Icon(Icons.copy, size: 18),
+          label: const Text('Copy setup command'),
+        ),
+        TextButton(onPressed: vm.refresh, child: const Text('Check again')),
+      ];
+    }
+    if (!vm.unlocked) {
+      final cooldown =
+          security.cooldownUntil > DateTime.now().millisecondsSinceEpoch;
+      return [
+        if (state.message != null) Text(state.message!),
+        if (cooldown && state.message == null)
+          const Text('Too many attempts. Try again shortly.'),
+        TextField(
+          key: const Key('launcher-pin'),
+          controller: _pin,
+          enabled: !disabled,
+          obscureText: true,
+          enableSuggestions: false,
+          autocorrect: false,
+          autofillHints: const [],
+          keyboardType: TextInputType.number,
+          textInputAction: TextInputAction.done,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          maxLength: 12,
+          decoration: const InputDecoration(labelText: 'PIN', counterText: ''),
+          onChanged: (_) => setState(() {}),
+          onSubmitted: (_) {
+            if (!cooldown) _unlock(vm);
+          },
+        ),
+        FilledButton(
+          onPressed: disabled || cooldown || _pin.text.isEmpty
+              ? null
+              : () => _unlock(vm),
+          style: FilledButton.styleFrom(
+            minimumSize: const Size.fromHeight(AppSpacing.tap),
+          ),
+          child: const Text('Unlock'),
+        ),
+      ];
+    }
+    final availability = state.availability;
+    if (availability?.available != true) {
+      return [
+        Text(state.message ?? availability?.reason ?? 'Launching unavailable.'),
+        _retry(vm),
+      ];
+    }
+    if (vm.projects.isEmpty) {
+      return [const Text('No approved projects on this PC.'), _retry(vm)];
+    }
+    final full =
+        agents
+            .where((a) => a.state == 'running' || a.state == 'starting')
+            .length >=
+        availability!.maxAgents;
+    return [
+      if (state.message != null) Text(state.message!),
+      RadioGroup<String>(
+        groupValue: _selected,
+        onChanged: (value) {
+          if (disabled) return;
+          setState(() {
+            _selected = value;
+            _projectDefinition = value == null
+                ? null
+                : _definition(
+                    vm.projects.firstWhere((p) => p.projectId == value),
+                  );
+          });
+        },
+        child: Column(
+          children: [
+            for (final project in vm.projects)
+              RadioListTile<String>(
+                key: ValueKey('launch-project-${project.projectId}'),
+                value: project.projectId,
+                enabled: !disabled,
+                selected: _selected == project.projectId,
+                controlAffinity: ListTileControlAffinity.trailing,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.sm,
                 ),
-                Text(
-                  widget.target.session,
-                  style: context.typo.monoSmall.copyWith(color: colors.muted),
-                ),
-              ],
-            ),
-            if (state.busy) const LinearProgressIndicator(),
-            if (state.message != null)
-              Text(state.message!, style: context.typo.sansBody),
-            if (state.message == null && !state.busy)
-              Text(
-                vm.security == null
-                    ? 'Host update required.'
-                    : !vm.security!.configured
-                    ? 'Set a PIN on the host.'
-                    : vm.unlocked
-                    ? 'Unlocked'
-                    : 'Locked',
-                style: context.typo.monoSmall.copyWith(color: colors.muted),
-              ),
-            if (availability?.available == false &&
-                availability?.reason != null &&
-                state.message == null)
-              Text(
-                availability!.reason!,
-                style: context.typo.sansBody.copyWith(color: colors.error),
-              ),
-            if (availability?.available == true)
-              Text(
-                '${availability!.agents.where((a) => a.state == 'running' || a.state == 'starting').length}/${availability.maxAgents} agents',
-                style: context.typo.monoSmall.copyWith(color: colors.muted),
-              ),
-            if ((vm.security?.cooldownUntil ?? 0) >
-                DateTime.now().millisecondsSinceEpoch)
-              Text('Too many attempts. Try later.'),
-            if (!vm.unlocked) ...[
-              TextField(
-                controller: _pin,
-                enabled: !disabled && vm.security?.configured == true,
-                obscureText: true,
-                enableSuggestions: false,
-                autocorrect: false,
-                autofillHints: const [],
-                keyboardType: TextInputType.number,
-                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                maxLength: 12,
-                decoration: const InputDecoration(
-                  labelText: 'PIN',
-                  counterText: '',
-                ),
-              ),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(AppSpacing.tap),
-                ),
-                onPressed: disabled || vm.security?.configured != true
-                    ? null
-                    : () {
-                        final pin = _pin.text;
-                        _pin.clear();
-                        vm.unlock(pin);
-                      },
-                child: const Text('Unlock'),
-              ),
-            ],
-            DropdownButtonFormField<String>(
-              isExpanded: true,
-              initialValue: _selected,
-              key: ValueKey(
-                '$identity:$_selected:${vm.projects.map((p) => p.projectId).join(',')}',
-              ),
-              decoration: const InputDecoration(labelText: 'Project'),
-              items: vm.projects
-                  .map(
-                    (p) => DropdownMenuItem(
-                      value: p.projectId,
-                      child: Text(
-                        p.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  )
-                  .toList(),
-              onChanged: disabled || !vm.unlocked
-                  ? null
-                  : (value) => setState(() {
-                      _selected = value;
-                      _projectDefinition = value == null
-                          ? null
-                          : _definition(
-                              vm.projects.firstWhere(
-                                (p) => p.projectId == value,
-                              ),
-                            );
-                    }),
-            ),
-            for (final project in vm.projects.where(
-              (p) => p.projectId == _selected,
-            ))
-              Text(
-                'Directory: ${project.cwd}\nAllowed folders:\n${project.allowedFolders.join('\n')}',
-              ),
-            Wrap(
-              spacing: AppSpacing.sm,
-              runSpacing: AppSpacing.sm,
-              children: [
-                TextButton(
-                  onPressed: disabled || vm.security == null
-                      ? null
-                      : () {
-                          _pin.clear();
-                          vm.lock();
-                        },
-                  child: const Text('Lock'),
-                ),
-                TextButton(
-                  onPressed: disabled || vm.security == null ? null : _shutdown,
-                  child: const Text('Stop all and lock'),
-                ),
-              ],
-            ),
-            TextField(
-              controller: _name,
-              enabled: !disabled,
-              decoration: const InputDecoration(labelText: 'Name (optional)'),
-            ),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                minimumSize: const Size.fromHeight(AppSpacing.tap),
-              ),
-              onPressed:
-                  disabled ||
-                      !vm.unlocked ||
-                      _selected == null ||
-                      state.needsReconciliation ||
-                      availability?.available != true
-                  ? null
-                  : () => _confirm(),
-              child: const Text('Start agent'),
-            ),
-            TextButton(
-              onPressed: disabled ? null : vm.refresh,
-              child: const Text('Refresh'),
-            ),
-            if (vm.hasUnknownLaunch)
-              const Text(
-                'Launch unconfirmed. Refresh before retrying; retry may duplicate.',
-              ),
-            const Text('Managed agents'),
-            for (final agent in availability?.agents ?? [])
-              ListTile(
-                title: Text(agent.name),
+                title: Text(project.name),
                 subtitle: Text(
-                  '${agent.cwd}\n${agent.state}${agent.error == null ? '' : ': ${agent.error}'}\nRoom: ${agent.roomId}',
+                  project.cwd,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: context.typo.monoSmall.copyWith(
+                    color: context.colors.muted,
+                  ),
                 ),
-                trailing:
-                    agent.state == 'running' ||
-                        agent.state == 'starting' ||
-                        agent.state == 'failed'
-                    ? TextButton(
-                        onPressed: disabled || !vm.unlocked
-                            ? null
-                            : () =>
-                                  _confirm(id: agent.agentId, name: agent.name),
-                        child: const Text('Stop'),
-                      )
-                    : null,
               ),
           ],
         ),
+      ),
+      if (vm.hasUnknownLaunch)
+        const Text(
+          'Previous start unconfirmed. Retrying may create another agent.',
+        ),
+      if (full) ...[
+        const Text('Agent limit reached.'),
+        FilledButton(
+          onPressed: disabled ? null : () => _showAgents(vm),
+          child: const Text('View agents'),
+        ),
+      ] else
+        FilledButton(
+          key: const Key('launch-agent'),
+          style: FilledButton.styleFrom(
+            minimumSize: const Size.fromHeight(AppSpacing.tap),
+          ),
+          onPressed: disabled || _selected == null || state.needsReconciliation
+              ? null
+              : () => _confirm(),
+          child: const Text('Start agent'),
+        ),
+    ];
+  }
+}
+
+class _RunningAgentsPage extends StatelessWidget {
+  const _RunningAgentsPage({required this.host, required this.onStop});
+  final String host;
+  final ValueChanged<ManagedAgent> onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    final vm = context.watch<AgentsViewModel>();
+    final agents =
+        vm.state.availability?.agents
+            .where((a) => a.state != 'stopped')
+            .toList() ??
+        const <ManagedAgent>[];
+    return Scaffold(
+      backgroundColor: context.colors.bg,
+      appBar: AppBar(title: const Text('Started here')),
+      body: ListView(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        children: [
+          Text(host, style: context.typo.monoSmall),
+          if (vm.state.busy) const LinearProgressIndicator(),
+          if (vm.state.invalid || !vm.unlocked)
+            const Text('Unlock the host to manage agents.'),
+          if (agents.isEmpty) const Text('No running agents.'),
+          for (final agent in agents)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(
+                agent.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                '${agent.state}${agent.error == null ? '' : ': ${agent.error}'}',
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: TextButton(
+                onPressed: vm.state.busy || vm.state.invalid || !vm.unlocked
+                    ? null
+                    : () => onStop(agent),
+                child: const Text('Stop'),
+              ),
+            ),
+        ],
       ),
     );
   }

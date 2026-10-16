@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:app/data/transport/peer_channel.dart';
+import 'package:app/data/transport/channel.dart';
 import 'package:app/domain/contracts/agent_repository.dart';
 import 'package:app/data/transport/ws_transport.dart';
 import 'package:app/protocol/protocol.dart';
@@ -145,7 +146,32 @@ void main() {
             request.toJson(),
           );
         }
+        for (final request in <ClientMessage>[
+          SessionControlStatus('session-control:status', 'project'),
+          SessionStop('session-control:stop', 'project', 'opaque'),
+        ]) {
+          await ch.send(request);
+        }
         final results = [
+          {
+            'type': 'session_control_status_result',
+            'in_reply_to': 'session-control:status',
+            'room_id': 'project',
+            'can_stop': true,
+            'token': 'opaque',
+          },
+          {
+            'type': 'session_stop_result',
+            'in_reply_to': 'session-control:stop',
+            'room_id': 'project',
+            'state': 'requested',
+          },
+          {
+            'type': 'error',
+            'in_reply_to': 'session-control:stop',
+            'code': 'invalid_message',
+            'message': 'Expired confirmation',
+          },
           {
             'type': 'launcher_status_result',
             'in_reply_to': 'launcher_status',
@@ -182,7 +208,10 @@ void main() {
         await done;
         expect(messages.whereType<LauncherStatusResult>().length, 2);
         expect(messages.whereType<ProjectListResult>().length, 1);
-        expect(messages.whereType<ErrorMessage>().length, 1);
+        expect(messages.whereType<ErrorMessage>().length, 2);
+        expect(messages.whereType<SessionControlStatusResult>().length, 1);
+        expect(messages.whereType<SessionStopResult>().length, 1);
+        expect(messages.whereType<SessionControlError>().length, 1);
       } finally {
         await sub.cancel();
         await ch.close();

@@ -928,6 +928,10 @@ sealed class ServerMessage {
       'launcher_status_result' ||
       'launcher_shutdown_result' => LauncherStatusResult.fromJson(json),
       'project_list_result' => ProjectListResult.fromJson(json),
+      'session_control_status_result' => SessionControlStatusResult.fromJson(
+        json,
+      ),
+      'session_stop_result' => SessionStopResult.fromJson(json),
       'agent_list_result' => AgentListResult.fromJson(json),
       'agent_launch_result' ||
       'agent_stop_result' => AgentMutationResult.fromJson(json),
@@ -1823,6 +1827,101 @@ class ExtensionUiResponse extends ClientMessage {
     if (confirmed != null) m['confirmed'] = confirmed;
     if (ask != null) m['ask'] = ask!.toJson();
     return m;
+  }
+}
+
+class SessionControlStatus extends ClientMessage {
+  SessionControlStatus(this.id, this.roomId);
+  final String id, roomId;
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'session_control_status',
+    'id': id,
+    'room_id': roomId,
+  };
+}
+
+class SessionStop extends ClientMessage {
+  SessionStop(this.id, this.roomId, this.token);
+  final String id, roomId, token;
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'session_stop',
+    'id': id,
+    'room_id': roomId,
+    'token': token,
+  };
+}
+
+String _sessionControlText(Object? value, {int limit = 128}) {
+  if (value is! String ||
+      value.isEmpty ||
+      value.length > limit ||
+      RegExp(r'[\x00-\x1f\x7f-\x9f]').hasMatch(value)) {
+    throw const FormatException('Invalid session control field');
+  }
+  return value;
+}
+
+class SessionControlStatusResult extends ServerMessage {
+  const SessionControlStatusResult(
+    this.inReplyTo,
+    this.roomId,
+    this.canStop,
+    this.token,
+    this.reason,
+  );
+  final String inReplyTo, roomId;
+  final bool canStop;
+  final String? token, reason;
+  factory SessionControlStatusResult.fromJson(Map<String, dynamic> json) {
+    if (json.keys.any(
+      (key) => !const {
+        'type',
+        'in_reply_to',
+        'room_id',
+        'can_stop',
+        'token',
+        'reason',
+      }.contains(key),
+    )) {
+      throw const FormatException('Unknown session control field');
+    }
+    final canStop = json['can_stop'];
+    if (canStop is! bool ||
+        canStop && json['token'] == null ||
+        !canStop && json.containsKey('token')) {
+      throw const FormatException('Invalid session stop capability');
+    }
+    return SessionControlStatusResult(
+      _sessionControlText(json['in_reply_to']),
+      _sessionControlText(json['room_id']),
+      canStop,
+      json.containsKey('token') ? _sessionControlText(json['token']) : null,
+      json.containsKey('reason')
+          ? _sessionControlText(json['reason'], limit: 512)
+          : null,
+    );
+  }
+}
+
+class SessionStopResult extends ServerMessage {
+  const SessionStopResult(this.inReplyTo, this.roomId, this.state);
+  final String inReplyTo, roomId, state;
+  factory SessionStopResult.fromJson(Map<String, dynamic> json) {
+    if (json.keys.any(
+      (key) => !const {'type', 'in_reply_to', 'room_id', 'state'}.contains(key),
+    )) {
+      throw const FormatException('Unknown session stop field');
+    }
+    if (json['state'] != 'requested' && json['state'] != 'stopped') {
+      throw const FormatException('Invalid session stop outcome');
+    }
+    return SessionStopResult(
+      _sessionControlText(json['in_reply_to']),
+      _sessionControlText(json['room_id']),
+      json['state'] as String,
+    );
   }
 }
 

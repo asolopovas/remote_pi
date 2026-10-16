@@ -18,6 +18,7 @@ import 'package:app/data/local/records/runtime_record.dart';
 import 'package:app/data/local/records/session_index_record.dart';
 import 'package:app/data/sync/sync_events.dart';
 import 'package:app/data/transport/connection_manager.dart';
+import 'package:app/data/transport/channel.dart';
 import 'package:app/domain/contracts/service.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
@@ -445,6 +446,7 @@ class SyncService extends Service {
   }
 
   void _onServerMessage(ServerMessage msg, [String? originEpk]) {
+    if (msg is SessionControlError) return;
     // Plan/32f — drop frames from a peer whose channel is no longer the active
     // session (a stale connection still draining after `switchTo`). Without
     // this, a straggler write targets `_activeEpk` — which already points at
@@ -661,6 +663,8 @@ class SyncService extends Service {
       case ProjectListResult():
       case AgentListResult():
       case AgentMutationResult():
+      case SessionControlStatusResult():
+      case SessionStopResult():
       case ModelsList():
         break;
     }

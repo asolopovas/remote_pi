@@ -107,8 +107,16 @@ class PlainPeerChannel implements IChannel, IControlLink {
   void _handleFrame(Uint8List bytes, {ScopedPeerPayload? scope}) {
     try {
       var msg = decodeServer(utf8.decode(bytes));
-      if (msg is ErrorMessage && scope != null) {
-        msg = ScopedPeerError(msg, peer: scope.peer, room: scope.room);
+      if (msg is ErrorMessage) {
+        if (msg.inReplyTo?.startsWith(sessionControlRequestPrefix) == true) {
+          msg = SessionControlError(
+            msg,
+            peer: scope?.peer ?? '',
+            room: scope?.room,
+          );
+        } else if (scope != null) {
+          msg = ScopedPeerError(msg, peer: scope.peer, room: scope.room);
+        }
       }
       if (!_controller.isClosed) _controller.add(msg);
     } on UnsupportedTypeException {

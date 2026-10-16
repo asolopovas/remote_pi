@@ -437,6 +437,54 @@ void main() {
   });
 
   test(
+    'session controls and their errors never alter chat work or history',
+    () async {
+      final s = await setup();
+      s.ch.push(UserInput(id: 'u-control', text: 'Continue working'));
+      s.ch.push(AgentChunk(inReplyTo: 'u-control', delta: 'partial'));
+      await _settle();
+      final before = messages(s.epk).length;
+      s.ch.push(
+        const SessionControlStatusResult(
+          'session-control:status',
+          'main',
+          true,
+          'private-capability',
+          null,
+        ),
+      );
+      s.ch.push(
+        const SessionStopResult('session-control:stop', 'main', 'requested'),
+      );
+      s.ch.push(
+        SessionControlError(
+          ErrorMessage(
+            inReplyTo: 'session-control:stop',
+            code: 'invalid_message',
+            message: 'Confirmation expired',
+          ),
+          peer: s.epk,
+          room: 'main',
+        ),
+      );
+      await _settle();
+      expect(s.sync.isWorking, isTrue);
+      expect(s.sync.streaming?.buffer, 'partial');
+      expect(messages(s.epk).length, before);
+      expect(
+        messages(s.epk).any(
+          (m) =>
+              m.text.contains('private-capability') ||
+              m.text.contains('Confirmation expired'),
+        ),
+        isFalse,
+      );
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
     'server error clears pending chunk flush so chat does not stay working',
     () async {
       final s = await setup();

@@ -26,6 +26,13 @@ abstract class IScopedPeerTransport {
 }
 
 /// Local ingress evidence for management error settlement; not a wire field.
+const sessionControlRequestPrefix = 'session-control:';
+
+/// Local-only classification: control errors must never become chat history.
+class SessionControlError extends ScopedPeerError {
+  SessionControlError(super.error, {required super.peer, required super.room});
+}
+
 class ScopedPeerError extends ErrorMessage {
   ScopedPeerError(ErrorMessage error, {required this.peer, required this.room})
     : super(

@@ -156,13 +156,12 @@ void main() {
       );
       await tester.pumpWidget(page('launcher'));
       await tester.pumpAndSettle();
-      bool canStart() =>
-          tester
-              .widget<FilledButton>(
-                find.widgetWithText(FilledButton, 'Start agent'),
-              )
-              .onPressed !=
-          null;
+      bool canStart() {
+        final button = find.widgetWithText(FilledButton, 'Start agent');
+        return button.evaluate().isNotEmpty &&
+            tester.widget<FilledButton>(button).onPressed != null;
+      }
+
       Future<void> delayedRefresh({
         bool expectRestore = true,
         bool changeTarget = false,
@@ -182,14 +181,7 @@ void main() {
         expect(h.repo.launcherStatus, null);
         expect(h.repo.projects, isEmpty);
         expect(canStart(), false);
-        expect(
-          tester
-              .widget<DropdownButtonFormField<String>>(
-                find.byType(DropdownButtonFormField<String>),
-              )
-              .onChanged,
-          null,
-        );
+        expect(find.byType(RadioGroup<String>), findsNothing);
         await tester.runAsync(() async {
           h.delayStatus = false;
           h.status(h.waitingStatus!);

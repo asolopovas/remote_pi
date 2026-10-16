@@ -131,6 +131,8 @@ class WsTransport implements PeerTransport, IControlLink, IScopedPeerTransport {
                       'project_list_result',
                       'agent_launch_result',
                       'agent_stop_result',
+                      'session_control_status_result',
+                      'session_stop_result',
                     ].contains(inner['type']) ||
                     (inner['type'] == 'error' &&
                         transport._agentRequestIds.contains(
@@ -283,6 +285,8 @@ class WsTransport implements PeerTransport, IControlLink, IScopedPeerTransport {
           'launcher_agent_stop',
           'agent_launch',
           'agent_stop',
+          'session_control_status',
+          'session_stop',
         ].contains(inner['type'])) {
       _agentRequestIds.add(inner['id'] as String);
       if (_agentRequestIds.length > 128) {

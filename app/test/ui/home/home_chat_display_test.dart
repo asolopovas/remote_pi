@@ -10,6 +10,7 @@ import 'package:app/data/repositories/session_read_repository.dart';
 import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/voice/speech_service.dart';
 import 'package:app/domain/contracts/update_checker.dart';
+import 'package:app/domain/contracts/session_control_repository.dart';
 import 'package:app/domain/contracts/dismissed_update_store.dart';
 import 'package:app/domain/contracts/url_opener.dart';
 import 'package:app/pairing/storage.dart';
@@ -147,6 +148,26 @@ class _Sync extends SyncService {
   ];
 }
 
+class _SessionControls extends SessionControlRepository {
+  int stops = 0;
+  @override
+  Future<SessionStopCapability> inspect(String peer, String room) async =>
+      SessionStopCapability(
+        peer: peer,
+        room: room,
+        canStop: true,
+        token: 'opaque',
+      );
+  @override
+  Future<SessionStopOutcome> stop(SessionStopCapability capability) async {
+    stops++;
+    return SessionStopOutcome.requested;
+  }
+
+  @override
+  void dispose() {}
+}
+
 void main() {
   setUpAll(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
@@ -217,6 +238,7 @@ void main() {
         final actions = _Actions(h.cm);
         final attach = AttachmentViewModel(_Picker(), actions);
         ChatViewModel? chat;
+        final sessionControls = _SessionControls();
         Map<String, dynamic>? navigation;
         AgentsTarget? launchTarget;
         final router = GoRouter(
@@ -240,6 +262,7 @@ void main() {
                   h.cm,
                   prefs,
                   h.storage,
+                  sessionControls: sessionControls,
                 );
                 return ChangeNotifierProvider<ChatViewModel>.value(
                   value: chat!,
@@ -438,7 +461,7 @@ void main() {
         expect(find.text('r1'), findsOneWidget);
         expect(find.text('/synthetic/duplicate'), findsOneWidget);
         expect(find.text('Renamed <plain>'), findsNWidgets(2));
-        await tester.tap(find.text('Close'));
+        await tester.tap(find.byTooltip('Close info'));
         await tester.pumpAndSettle();
         await h.cm.setRoomLocalName(
           data.peer.remoteEpk,
@@ -472,15 +495,25 @@ void main() {
         await patch({'working': false}, 'duplicate');
         expect(notices, priorNotices + 1); // State emit must not double-notify.
         expect(find.text('synthetic retained message'), findsOneWidget);
-        // Closing the view never terminates the host or deletes its session.
+        // The info X only dismisses info; actual Stop is a separate confirmed action.
         await tester.tap(find.byTooltip('Session info'));
         await tester.pumpAndSettle();
-        await tester.tap(find.byKey(const Key('close-agent-view')));
+        await tester.tap(find.byKey(const Key('close-session-info')));
         await tester.pumpAndSettle();
         expect(find.byType(AlertDialog), findsNothing);
+        expect(find.byType(ChatPage), findsOneWidget);
+        expect(selection.current?.roomId, 'r1');
+        expect(h.cm.isRoomLive(data.peer.remoteEpk, 'r1'), isTrue);
+        expect(h.storage.rooms.any((r) => r.roomId == 'r1'), isTrue);
+        await tester.tap(find.byTooltip('Session info'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('stop-session-agent')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, 'Stop'));
+        await tester.pumpAndSettle();
+        expect(sessionControls.stops, 1);
         expect(find.byType(ChatPage), findsNothing);
         expect(selection.current, isNull);
-        expect(h.cm.isRoomLive(data.peer.remoteEpk, 'r1'), isTrue);
         expect(h.storage.rooms.any((r) => r.roomId == 'r1'), isTrue);
         await tester.tap(tile('r1'));
         await tester.pumpAndSettle();

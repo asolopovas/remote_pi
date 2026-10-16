@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:app/ui/core/session_status_indicator.dart';
 import 'package:app/ui/agents/agents_page.dart';
 import 'package:app/routing/adaptive.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
+import 'package:app/domain/contracts/session_control_repository.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/themes/themes.dart';
@@ -403,6 +406,66 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
+  Future<void> _stopAgentFromInfo(
+    _SessionInfoLease lease, {
+    required bool Function() isCurrent,
+    required VoidCallback onAccepted,
+  }) async {
+    if (!mounted ||
+        !isCurrent() ||
+        lease.stopBusy ||
+        lease.readSnapshot() == null) {
+      return;
+    }
+    lease.setStopBusy(true);
+    try {
+      final capability = await lease.refreshControls();
+      if (!mounted || capability?.canStop != true || !isCurrent()) return;
+      final snapshot = lease.readSnapshot();
+      if (snapshot == null) return;
+      final name = sessionDisplayName(snapshot.room, snapshot.peer);
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialog) => AlertDialog(
+          title: const Text('Stop agent?'),
+          content: Text(
+            '$name\n\nStops this Pi process and any agents it launched. History is kept.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialog).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: dialog.colors.error,
+                foregroundColor: dialog.colors.onAccent,
+              ),
+              onPressed: () => Navigator.of(dialog).pop(true),
+              child: const Text('Stop'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted ||
+          confirmed != true ||
+          !isCurrent() ||
+          lease.readSnapshot() == null) {
+        return;
+      }
+      await lease.vm.stopSession(capability!);
+      if (mounted && isCurrent() && lease.readSnapshot() != null) onAccepted();
+    } on SessionControlFailure catch (error) {
+      lease.reportStopError(
+        error.outcomeUnknown
+            ? 'Stop result unknown. Refresh sessions.'
+            : error.message,
+      );
+    } finally {
+      lease.setStopBusy(false);
+    }
+  }
+
   /// Session details dialog — surfaced from the AppBar info action.
   /// Shows the human name, the Pi-side path (cwd), the owning device,
   /// plus model/room/paired-date when known.
@@ -442,7 +505,7 @@ class _ChatPageState extends State<ChatPage> {
             final model = snapshot?.room.model;
             final pairedAt = snapshot?.peer.pairedAt ?? '—';
             return AlertDialog(
-              scrollable: true,
+              scrollable: false,
               backgroundColor: colors.bg,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(10),
@@ -460,80 +523,109 @@ class _ChatPageState extends State<ChatPage> {
                     ),
                   ),
                   IconButton(
-                    key: const Key('close-agent-view'),
-                    tooltip: 'Close chat',
+                    key: const Key('close-session-info'),
+                    tooltip: 'Close info',
                     icon: const Icon(Icons.close),
-                    onPressed: snapshot == null
-                        ? null
-                        : () {
-                            if (closeChat ||
-                                ModalRoute.of(dCtx)?.isCurrent != true) {
-                              return;
-                            }
-                            closeChat = true;
-                            Navigator.of(dCtx).pop();
-                          },
+                    onPressed: () {
+                      if (ModalRoute.of(dCtx)?.isCurrent == true) {
+                        Navigator.of(dCtx).pop();
+                      }
+                    },
                   ),
                 ],
               ),
-              content: snapshot == null
-                  ? Text(
-                      'Session unavailable',
-                      style: TextStyle(color: colors.text),
-                    )
-                  : Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _InfoRow(
-                          label: 'Name',
-                          value: sessionDisplayName(
-                            snapshot.room,
-                            snapshot.peer,
-                            fallback: 'Remote Pi',
+              content: SingleChildScrollView(
+                child: snapshot == null
+                    ? Text(
+                        'Session unavailable',
+                        style: TextStyle(color: colors.text),
+                      )
+                    : Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _InfoRow(
+                            label: 'Name',
+                            value: sessionDisplayName(
+                              snapshot.room,
+                              snapshot.peer,
+                              fallback: 'Remote Pi',
+                            ),
                           ),
-                        ),
-                        _InfoRow(
-                          label: 'Path',
-                          value: snapshot.room.cwd ?? '—',
-                        ),
-                        _InfoRow(
-                          label: 'Owner',
-                          value: _peerDisplayName(snapshot.peer, null),
-                        ),
-                        if (model != null && model.isNotEmpty)
-                          _InfoRow(label: 'Model', value: model),
-                        _InfoRow(label: 'Room', value: snapshot.room.roomId),
-                        _InfoRow(
-                          label: 'Paired',
-                          value: pairedAt.split('T').first,
-                        ),
-                      ],
-                    ),
+                          _InfoRow(
+                            label: 'Path',
+                            value: snapshot.room.cwd ?? '—',
+                          ),
+                          _InfoRow(
+                            label: 'Owner',
+                            value: _peerDisplayName(snapshot.peer, null),
+                          ),
+                          if (model != null && model.isNotEmpty)
+                            _InfoRow(label: 'Model', value: model),
+                          _InfoRow(label: 'Room', value: snapshot.room.roomId),
+                          _InfoRow(
+                            label: 'Paired',
+                            value: pairedAt.split('T').first,
+                          ),
+                          if (lease.stopError != null ||
+                              lease.stopCapability?.canStop == false &&
+                                  lease.stopCapability?.reason != null)
+                            Text(
+                              lease.stopError ?? lease.stopCapability!.reason!,
+                              style: dCtx.typo.monoSmall.copyWith(
+                                color: colors.error,
+                              ),
+                            ),
+                        ],
+                      ),
+              ),
               actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dCtx).pop(),
-                  child: Text(
-                    'Close',
-                    style: TextStyle(
-                      fontFamily: kMonoFamily,
-                      color: colors.accent,
+                if (snapshot != null && lease.controlsLoading)
+                  const Padding(
+                    padding: EdgeInsets.all(AppSpacing.sm),
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
                     ),
                   ),
-                ),
+                if (snapshot != null &&
+                    !lease.controlsLoading &&
+                    lease.stopCapability?.canStop == true)
+                  TextButton.icon(
+                    key: const Key('stop-session-agent'),
+                    style: TextButton.styleFrom(foregroundColor: colors.error),
+                    onPressed: lease.stopBusy
+                        ? null
+                        : () => _stopAgentFromInfo(
+                            lease,
+                            isCurrent: () =>
+                                dCtx.mounted &&
+                                ModalRoute.of(dCtx)?.isCurrent == true,
+                            onAccepted: () {
+                              closeChat = true;
+                              Navigator.of(dCtx).pop();
+                            },
+                          ),
+                    icon: const Icon(Icons.stop_circle_outlined, size: 18),
+                    label: const Text('Stop agent'),
+                  ),
               ],
             );
           },
         ),
       );
       navigator.push<void>(route);
+      unawaited(lease.refreshControls());
       // The pop-result Future completes before the reverse animation. Keep the
       // lease (including page invalidation) through actual overlay teardown.
       await route.completed;
       if (closeChat && mounted && lease.readSnapshot() != null) {
-        final router = GoRouter.of(this.context);
-        this.context.read<SessionSelection>().clear();
-        router.go('/home');
+        final router = GoRouter.maybeOf(this.context);
+        if (router != null) {
+          this.context.read<SessionSelection>().clear();
+          router.go('/home');
+        }
       }
     } finally {
       _infoDialogs.remove(lease);
@@ -1075,6 +1167,55 @@ class _SessionInfoLease extends ChangeNotifier {
   bool _valid = true;
   bool _disposed = false;
   bool _notificationPending = false;
+  int _controlsRevision = 0;
+  bool controlsLoading = false, stopBusy = false;
+  SessionStopCapability? stopCapability;
+  String? stopError;
+
+  Future<SessionStopCapability?> refreshControls() async {
+    if (_disposed || readSnapshot() == null) return null;
+    final revision = ++_controlsRevision;
+    controlsLoading = true;
+    stopError = null;
+    _notify();
+    try {
+      final capability = await vm.inspectSessionStop(peerEpk, roomId);
+      if (_disposed ||
+          revision != _controlsRevision ||
+          readSnapshot() == null) {
+        return null;
+      }
+      if (capability.peer != peerEpk || capability.room != roomId) return null;
+      stopCapability = capability;
+      return capability;
+    } on SessionControlFailure catch (error) {
+      if (!_disposed &&
+          revision == _controlsRevision &&
+          readSnapshot() != null) {
+        stopCapability = null;
+        stopError = error.message;
+      }
+      return null;
+    } finally {
+      if (!_disposed && revision == _controlsRevision) {
+        controlsLoading = false;
+        _notify();
+      }
+    }
+  }
+
+  void setStopBusy(bool value) {
+    if (_disposed) return;
+    stopBusy = value;
+    _notify();
+  }
+
+  void reportStopError(String message) {
+    if (_disposed) return;
+    stopError = message;
+    stopCapability = null;
+    _notify();
+  }
 
   ({PeerRecord peer, RoomInfo room})? readSnapshot() {
     if (_disposed || !_valid) return null;

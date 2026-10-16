@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:app/domain/contracts/session_control_repository.dart';
 
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/images/image_picker_service.dart';
@@ -132,7 +133,14 @@ class _Sync extends SyncService {
 // Deliberately controlled presentation scope for lifecycle cases only; the
 // mounted metadata test below uses the real roomsStream and production VM.
 class _ScopeChat extends ChatViewModel {
-  _ScopeChat(super.read, super.sync, super.conn, super.prefs, super.storage);
+  _ScopeChat(
+    super.read,
+    super.sync,
+    super.conn,
+    super.prefs,
+    super.storage, {
+    super.sessionControls,
+  });
   PeerRecord? peer = data.peer.copyWith(roomId: 'r1');
   RoomInfo? room = const RoomInfo(
     startedAt: 1,
@@ -160,6 +168,35 @@ class _ScopeChat extends ChatViewModel {
   }
 
   void changed() => notifyListeners();
+}
+
+class _StopControls extends SessionControlRepository {
+  int inspections = 0, stops = 0;
+  Completer<SessionStopCapability>? pending;
+  bool unknown = false;
+  @override
+  Future<SessionStopCapability> inspect(String peer, String room) async {
+    inspections++;
+    return pending?.future ??
+        SessionStopCapability(
+          peer: peer,
+          room: room,
+          canStop: true,
+          token: 'opaque',
+        );
+  }
+
+  @override
+  Future<SessionStopOutcome> stop(SessionStopCapability capability) async {
+    stops++;
+    if (unknown) {
+      throw const SessionControlFailure('Lost reply', outcomeUnknown: true);
+    }
+    return SessionStopOutcome.requested;
+  }
+
+  @override
+  void dispose() {}
 }
 
 class _PushFailingNavigator extends Navigator {
@@ -213,6 +250,7 @@ class _DialogLifecycleHarness {
     WidgetTester tester, {
     _Storage? storage,
     bool realVm = false,
+    SessionControlRepository? sessionControls,
   }) async {
     final h = (await tester.runAsync(
       () => data.Harness.create(storage ?? _Storage()),
@@ -225,8 +263,22 @@ class _DialogLifecycleHarness {
     final boxes = LocalBoxes();
     final sync = _Sync(h.cm, boxes);
     final vm = realVm
-        ? ChatViewModel(_Read(boxes), sync, h.cm, prefs, h.storage)
-        : _ScopeChat(_Read(boxes), sync, h.cm, prefs, h.storage);
+        ? ChatViewModel(
+            _Read(boxes),
+            sync,
+            h.cm,
+            prefs,
+            h.storage,
+            sessionControls: sessionControls,
+          )
+        : _ScopeChat(
+            _Read(boxes),
+            sync,
+            h.cm,
+            prefs,
+            h.storage,
+            sessionControls: sessionControls,
+          );
     return _DialogLifecycleHarness(h, prefs, sync, vm);
   }
 
@@ -283,6 +335,92 @@ class _DialogLifecycleHarness {
 }
 
 void main() {
+  for (final outcome in ['cancel', 'confirm', 'switch', 'unknown']) {
+    testWidgets('Stop agent is explicit, exact and non-replayed: $outcome', (
+      tester,
+    ) async {
+      final controls = _StopControls()..unknown = outcome == 'unknown';
+      final h = await _DialogLifecycleHarness.create(
+        tester,
+        sessionControls: controls,
+      );
+      await h.mount(tester);
+      await tester.tap(find.byTooltip('Session info'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('stop-session-agent')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('stop-session-agent')));
+      await tester.pumpAndSettle();
+      expect(find.text('Stop agent?'), findsOneWidget);
+      expect(find.textContaining('History is kept'), findsOneWidget);
+      expect(controls.stops, 0);
+      if (outcome == 'switch') {
+        (h.vm as _ScopeChat).room = const RoomInfo(
+          roomId: 'other-room',
+          startedAt: 2,
+        );
+        (h.vm as _ScopeChat).changed();
+        await tester.pump();
+      }
+      await tester.tap(
+        outcome == 'cancel'
+            ? find.text('Cancel')
+            : find.widgetWithText(FilledButton, 'Stop'),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        controls.stops,
+        outcome == 'cancel' || outcome == 'switch' ? 0 : 1,
+      );
+      expect(controls.inspections, 2); // Fresh authority before confirmation.
+      if (outcome == 'confirm') expect(find.byType(AlertDialog), findsNothing);
+      if (outcome == 'unknown') {
+        expect(
+          find.text('Stop result unknown. Refresh sessions.'),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('stop-session-agent')), findsNothing);
+      }
+      if (outcome != 'confirm') {
+        await tester.tap(find.byTooltip('Close info'));
+        await tester.pumpAndSettle();
+      }
+      expect(tester.takeException(), isNull);
+      await h.dispose(tester);
+    });
+  }
+  testWidgets(
+    'late stop capability cannot enable controls for a replaced room',
+    (tester) async {
+      final controls = _StopControls()
+        ..pending = Completer<SessionStopCapability>();
+      final h = await _DialogLifecycleHarness.create(
+        tester,
+        sessionControls: controls,
+      );
+      await h.mount(tester);
+      await tester.tap(find.byTooltip('Session info'));
+      await tester.pump();
+      (h.vm as _ScopeChat).room = const RoomInfo(
+        roomId: 'other-room',
+        startedAt: 2,
+      );
+      (h.vm as _ScopeChat).changed();
+      controls.pending!.complete(
+        SessionStopCapability(
+          peer: data.peer.remoteEpk,
+          room: 'r1',
+          canStop: true,
+          token: 'late',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('stop-session-agent')), findsNothing);
+      expect(controls.stops, 0);
+      await tester.tap(find.byTooltip('Close info'));
+      await tester.pumpAndSettle();
+      await h.dispose(tester);
+    },
+  );
   setUpAll(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
     GoogleFonts.config.allowRuntimeFetching = false;
@@ -536,8 +674,8 @@ void main() {
         await tester.pumpAndSettle();
         final dialogRect = tester.getRect(find.byType(AlertDialog));
         expect(dialogRect.contains(tester.getCenter(paired)), isTrue);
-        expect(find.text('Close').hitTestable(), findsOneWidget);
-        await tester.tap(find.text('Close'));
+        expect(find.byTooltip('Close info').hitTestable(), findsOneWidget);
+        await tester.tap(find.byTooltip('Close info'));
         await tester.pumpAndSettle();
         final noticesAfterClose = notices;
         await tester.runAsync(
@@ -676,7 +814,7 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('Session unavailable'), findsOneWidget);
       }
-      await tester.tap(find.text('Close'));
+      await tester.tap(find.byTooltip('Close info'));
       await tester.pumpAndSettle();
       expect(find.byType(AlertDialog), findsNothing);
       await tester.pumpWidget(const SizedBox());
@@ -718,7 +856,7 @@ void main() {
       route.popped.then((_) => popped = true);
       final closing = scenario.startsWith('closing');
       if (closing) {
-        await tester.tap(find.text('Close'));
+        await tester.tap(find.byTooltip('Close info'));
         // Process the pop-result Future but NOT the reverse animation/unmount.
         await tester.pump();
         expect(popped, isTrue);
@@ -815,7 +953,7 @@ void main() {
       expect(find.text('Session unavailable'), findsOneWidget);
       expect(tester.takeException(), isNull);
       if (scenario != 'closing root teardown') {
-        if (!closing) await tester.tap(find.text('Close'));
+        if (!closing) await tester.tap(find.byTooltip('Close info'));
         await tester.pumpAndSettle();
         expect(dialog.mounted, isFalse);
         expect(find.byType(AlertDialog), findsNothing);
@@ -879,7 +1017,7 @@ void main() {
       await tester.runAsync(() => deletion);
       storage.pendingRooms = null;
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Close'));
+      await tester.tap(find.byTooltip('Close info'));
       await tester.pumpAndSettle();
       await h.dispose(tester);
       expect(tester.takeException(), isNull);
@@ -995,7 +1133,7 @@ void main() {
       await tester.pump();
       expect(find.text('Session unavailable'), findsOneWidget);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Close'));
+      await tester.tap(find.byTooltip('Close info'));
       await tester.pumpAndSettle();
       await h.dispose(tester);
       expect(tester.takeException(), isNull);
