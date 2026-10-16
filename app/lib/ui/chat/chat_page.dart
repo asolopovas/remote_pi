@@ -20,6 +20,7 @@ import 'package:app/ui/chat/widgets/accordion_viewport.dart';
 import 'package:app/ui/chat/widgets/accordion_expansion.dart';
 import 'package:app/ui/chat/widgets/activity_scroll_controller.dart';
 import 'package:app/ui/chat/widgets/activity_presentation.dart';
+import 'package:app/ui/chat/widgets/activity_issue_notice.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:app/ui/chat/widgets/extension_ui_sheet.dart';
 import 'package:app/ui/core/session_label.dart';
@@ -246,7 +247,7 @@ class _ChatPageState extends State<ChatPage> {
     // response, show "working…" instead of online/offline.
     final isWorking = vm.isWorking;
     final reading = state is ChatReady && isWorking
-        ? activeReadLabel(state.messages)
+        ? activeActivityLabel(state.messages)
         : null;
 
     // Plan/24-fix-title: pass the navigation hint into the helpers so
@@ -585,7 +586,7 @@ class _ChatPageState extends State<ChatPage> {
               ? SubagentInvocation.fromTool(message)
               : null;
           if (invocation == null) {
-            if (!isReadActivity(message) &&
+            if (isFeedActivity(message) &&
                 (!hideToolCalls || message is! ToolEvent)) {
               mainMessages.add(message);
             }
@@ -895,10 +896,13 @@ class _MessageListState extends State<_MessageList> {
                     child: switch (msg) {
                       UserMsg() => UserBubble(msg),
                       AssistantMsg() => AssistantBubble(msg),
-                      ToolEvent() => ToolRequestCard(
-                        tool: msg,
-                        onDecide: widget.onDecide,
-                      ),
+                      ToolEvent() =>
+                        isRoutineActivity(msg)
+                            ? ActivityIssueNotice(tool: msg)
+                            : ToolRequestCard(
+                                tool: msg,
+                                onDecide: widget.onDecide,
+                              ),
                       CompactionMsg() => CompactionBubble(msg),
                     },
                   ),

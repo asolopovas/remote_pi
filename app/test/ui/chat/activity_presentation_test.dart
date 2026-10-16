@@ -1,6 +1,8 @@
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/compact_output_header.dart';
 import 'package:app/ui/chat/widgets/activity_presentation.dart';
+import 'package:app/ui/chat/widgets/activity_issue_notice.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:ui' show Tristate;
@@ -20,6 +22,139 @@ ToolEvent read(
 );
 
 void main() {
+  test(
+    'routine coordination and inspection never become successful feed rows',
+    () {
+      final tools = [
+        'functions.subagent_supervisor',
+        'subagents_enable',
+        'contact_supervisor',
+        'mcp__remote__list_peers',
+        'agent_send',
+        'agent_request',
+        'project_report',
+        'module_report',
+        'symbol_search',
+        'effective_config',
+        'lens_diagnostics',
+        'pi_lens_activate_tools',
+        'tool_search',
+        'lsp_navigation',
+        'ast_grep_search',
+        'functions.subagent',
+      ];
+      for (final name in tools) {
+        for (final status in ToolEventStatus.values) {
+          final tool = ToolEvent(
+            id: name,
+            toolCallId: name,
+            tool: name,
+            args: name == 'functions.subagent' ? {'action': 'status'} : {},
+            status: status,
+          );
+          expect(
+            activityRows([tool]),
+            hasActivityIssue(tool) ? [same(tool)] : isEmpty,
+            reason: '$name $status',
+          );
+        }
+      }
+    },
+  );
+
+  test(
+    'human messages, mutations, real delegation and unknown tools retain identity',
+    () {
+      final messages = <ChatMessage>[
+        const UserMsg(id: 'u', text: 'Change direction'),
+        const AssistantMsg(id: 'a', text: 'A decision is needed'),
+        for (final name in [
+          'edit',
+          'write',
+          'bash',
+          'codemode',
+          'custom_check',
+          'ask_user',
+          'request_approval',
+        ])
+          ToolEvent(
+            id: name,
+            toolCallId: name,
+            tool: name,
+            args: {'code': 'subagent_supervisor()'},
+            status: ToolEventStatus.completed,
+          ),
+        const ToolEvent(
+          id: 'launch',
+          toolCallId: 'launch',
+          tool: 'subagent',
+          args: {'agent': 'worker', 'task': 'Implement the selected change'},
+        ),
+      ];
+      expect(activityRows(messages), orderedEquals(messages));
+      expect(isRoutineActivity(messages.last as ToolEvent), isFalse);
+    },
+  );
+
+  test(
+    'routine activity occupies only current status, never stale progress',
+    () {
+      const tool = ToolEvent(
+        id: 's',
+        toolCallId: 's',
+        tool: 'functions.subagent_supervisor',
+        args: {'action': 'reply'},
+      );
+      expect(activeActivityLabel([tool]), 'Coordinating agents…');
+      expect(
+        activeActivityLabel([tool.copyWith(status: ToolEventStatus.completed)]),
+        isNull,
+      );
+      expect(
+        activeActivityLabel([
+          const ToolEvent(
+            id: 'd',
+            toolCallId: 'd',
+            tool: 'lens_diagnostics',
+            args: {},
+          ),
+        ]),
+        'Checking project…',
+      );
+      expect(
+        activeActivityLabel([
+          read('r', 'main.dart', status: ToolEventStatus.pending),
+        ]),
+        'Reading main.dart…',
+      );
+    },
+  );
+
+  testWidgets('coordination failures are compact notices, not accordions', (
+    tester,
+  ) async {
+    const tool = ToolEvent(
+      id: 's',
+      toolCallId: 's',
+      tool: 'subagent_supervisor',
+      args: {},
+      status: ToolEventStatus.failed,
+      result: {'message': 'Worker unavailable\nInternal diagnostic payload'},
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildDarkTheme(),
+        home: const Scaffold(body: ActivityIssueNotice(tool: tool)),
+      ),
+    );
+    expect(find.text('Agent coordination failed'), findsOneWidget);
+    expect(find.text('Worker unavailable'), findsOneWidget);
+    expect(find.textContaining('Internal diagnostic payload'), findsNothing);
+    expect(find.byType(CompactOutputHeader), findsNothing);
+    expect(find.byType(IconButton), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   test('all read states stay out of the feed; changes retain identity', () {
     const edit = ToolEvent(
       id: 'edit',

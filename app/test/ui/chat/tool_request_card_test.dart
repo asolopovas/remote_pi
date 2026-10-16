@@ -66,14 +66,11 @@ void main() {
         );
         final disclosure = find.byKey(const Key('tool-disclosure'));
         final output = find.byTooltip('Copy output');
-        for (final target in [disclosure, output]) {
-          expect(tester.getSize(target).height, greaterThanOrEqualTo(48));
-        }
-        expect(tester.getSize(output).width, greaterThanOrEqualTo(48));
+        expect(tester.getSize(disclosure).height, greaterThanOrEqualTo(48));
+        expect(output, findsNothing); // Details/copy stay behind disclosure.
         if (scale == 1) {
-          // One 48dp header plus the 6dp outer margin and 2dp border.
-          expect(tester.getSize(find.byType(ToolRequestCard)).height, 56);
-          expect(tester.getRect(output).top, tester.getRect(disclosure).top);
+          // One borderless 48dp activity row plus the 6dp outer margin.
+          expect(tester.getSize(find.byType(ToolRequestCard)).height, 54);
         }
         await tester.tap(disclosure);
         await tester.pumpAndSettle();

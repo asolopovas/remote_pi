@@ -1050,6 +1050,36 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Reading new.py…'), findsNothing);
       expect(find.text('print("new row")'), findsNothing);
+      const supervisor = ToolEvent(
+        id: 'supervisor',
+        toolCallId: 'supervisor',
+        tool: 'functions.subagent_supervisor',
+        args: {'action': 'reply'},
+        result: 'Internal coordination payload',
+      );
+      messages.add(supervisor);
+      vm.testWorking = true;
+      vm.emit(ChatReady(messages: messages.toList()));
+      await tester.pump();
+      expect(find.text('Coordinating agents…'), findsOneWidget);
+      expect(find.text('Internal coordination payload'), findsNothing);
+      expect(find.byType(ToolRequestCard), findsNothing);
+      messages[messages.length - 1] = supervisor.copyWith(
+        status: ToolEventStatus.failed,
+        error: 'Worker unavailable',
+      );
+      vm.testWorking = false;
+      vm.emit(ChatReady(messages: messages.toList()));
+      await tester.pumpAndSettle();
+      expect(find.text('Agent coordination failed'), findsOneWidget);
+      expect(find.text('Worker unavailable'), findsOneWidget);
+      expect(find.byType(ToolRequestCard), findsNothing);
+      messages[messages.length - 1] = supervisor.copyWith(
+        status: ToolEventStatus.completed,
+      );
+      vm.emit(ChatReady(messages: messages.toList()));
+      await tester.pumpAndSettle();
+      expect(find.text('Agent coordination failed'), findsNothing);
       await tester.tap(find.byKey(const Key('thread-toggle')));
       await tester.pumpAndSettle();
       expect(find.text('Synthetic task'), findsOneWidget);

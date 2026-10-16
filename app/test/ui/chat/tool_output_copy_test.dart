@@ -65,25 +65,31 @@ void main() {
         await tester.pumpWidget(
           MaterialApp(
             home: Scaffold(
-              body: ToolRequestCard(
-                key: const Key('owner'),
-                tool: ToolEvent(
-                  id: 'owner',
-                  toolCallId: 'owner',
-                  tool: 'codemode',
-                  args: const {'code': 'not copied'},
-                  status: ToolEventStatus.completed,
-                  result: result,
+              body: SingleChildScrollView(
+                child: ToolRequestCard(
+                  key: const Key('owner'),
+                  tool: ToolEvent(
+                    id: 'owner',
+                    toolCallId: 'owner',
+                    tool: 'codemode',
+                    args: const {'code': 'not copied'},
+                    status: ToolEventStatus.completed,
+                    result: result,
+                  ),
                 ),
               ),
             ),
           ),
         );
         await tester.pumpAndSettle();
+        if (find.byTooltip('Copy output').evaluate().isEmpty) {
+          await tester.tap(find.byKey(const Key('tool-disclosure')));
+          await tester.pumpAndSettle();
+        }
         await tester.tap(find.byTooltip('Copy output'));
         await tester.pumpAndSettle();
         expect(copied, readableToolOutput('codemode', result) ?? result);
-        expect(find.text('Output'), findsNothing);
+        expect(find.text('Output'), findsOneWidget);
       }
     },
   );
@@ -174,9 +180,21 @@ void main() {
           Finder inside(String key, Finder action) =>
               find.descendant(of: find.byKey(Key(key)), matching: action);
           final copy = find.byTooltip('Copy output');
+          expect(copy, findsNothing);
+          for (final key in ['first', 'second']) {
+            final disclosure = inside(
+              key,
+              find.byKey(const Key('tool-disclosure')),
+            );
+            await tester.ensureVisible(disclosure);
+            await tester.tap(disclosure);
+            await tester.pumpAndSettle();
+          }
           expect(copy, findsNWidgets(2));
           expect(inside('absent', copy), findsNothing);
           final firstCopy = inside('first', copy);
+          await tester.ensureVisible(firstCopy);
+          await tester.pumpAndSettle();
           expect(
             tester.getSize(firstCopy).shortestSide,
             greaterThanOrEqualTo(48),
@@ -193,13 +211,13 @@ void main() {
           await tester.tap(firstCopy);
           await tester.pumpAndSettle();
           expect(copied, readableToolOutput('bash', result));
-          expect(find.text('Output'), findsNothing);
+          expect(inside('first', find.text('Output')), findsOneWidget);
+          await tester.ensureVisible(inside('second', copy));
+          await tester.pumpAndSettle();
           await tester.tap(inside('second', copy));
           await tester.pumpAndSettle();
           expect(copied, raw);
-          await tester.tap(
-            inside('first', find.byKey(const Key('tool-disclosure'))),
-          );
+          await tester.ensureVisible(firstCopy);
           await tester.pumpAndSettle();
           await tester.tap(
             inside('first', find.byKey(const Key('code-wrap'))).first,

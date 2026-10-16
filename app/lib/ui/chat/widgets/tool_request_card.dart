@@ -107,8 +107,8 @@ class _ToolRequestCardState extends State<ToolRequestCard>
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 3),
         decoration: BoxDecoration(
-          color: context.colors.codeBg,
-          border: Border.all(color: context.colors.border),
+          color: _expanded ? context.colors.codeBg : null,
+          border: _expanded ? Border.all(color: context.colors.border) : null,
           borderRadius: BorderRadius.circular(8),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -145,7 +145,7 @@ class _ToolRequestCardState extends State<ToolRequestCard>
         updateKeepAlive();
       },
       status: statusLabel,
-      statusAction: tool.result == null
+      statusAction: !_expanded || tool.result == null
           ? null
           : IconButton(
               tooltip: 'Copy output',

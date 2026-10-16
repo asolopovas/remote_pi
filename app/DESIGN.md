@@ -65,6 +65,20 @@ Native widget tests measure launcher inset, field/action gap and target height a
 320px in dark/light themes and 100%/200% text scale. Impeccable's web detector is
 not a Flutter/native validation tool; do not claim a detector pass.
 
+### Human-steering feed
+
+The main timeline prioritizes user intent, assistant decisions, meaningful work,
+and failures. Supervisor replies, agent polling, tool discovery and code-inspection
+plumbing stay out of the timeline; only the current action may appear in the
+existing status line. Coordination failures use a short inline notice, never a
+supervisor accordion. Keep unknown tools and shell/codemode scripts visible rather
+than guessing their intent from source strings. Questions/approvals and actual
+work remain available; underlying history and events are never deleted.
+
+Collapsed work is a borderless activity row. Show the framed output and copy
+controls only after disclosure, retaining 48px targets, keyboard access, lossless
+copying and stable scroll anchors. Do not invent progress or successful outcomes.
+
 ## Components
 
 `SessionStatus.resolve` preserves working > reconnecting > online > offline. `SessionStatusIndicator` rotates only the working renewal glyph (1200ms). Disable-animations or accessible-navigation preferences stop rotation and retain the same green shape and visible label. Decorative glyphs are excluded from semantics; adjacent labels communicate status independently of color.
