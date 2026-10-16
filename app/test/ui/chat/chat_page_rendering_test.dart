@@ -21,6 +21,7 @@ import 'package:app/routing/adaptive.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/chat_page.dart';
 import 'package:app/ui/chat/widgets/input_bar.dart';
+import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:app/ui/chat/widgets/subagent_panel.dart';
 import 'package:app/ui/chat/widgets/accordion_viewport.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
@@ -328,7 +329,7 @@ void main() {
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
         expect(tester.getRect(toggle), fixedControlRect);
-        final readingOffset = mainScroll.offset;
+        var readingOffset = mainScroll.offset;
         final latest = find.byKey(const Key('scroll-to-latest'));
         expect(tester.getSize(latest).height, greaterThanOrEqualTo(48));
         expect(
@@ -345,7 +346,7 @@ void main() {
         );
         expect(find.byTooltip('Scroll to latest message'), findsOneWidget);
         expect(
-          find.bySemanticsLabel('Scroll to latest message'),
+          find.bySemanticsLabel(RegExp('Scroll to latest message')),
           findsOneWidget,
         );
         tester.view.viewInsets = const FakeViewPadding(bottom: 220);
@@ -399,6 +400,7 @@ void main() {
         expect(copied, (tool.args as Map)['command']);
         mainScroll.jumpTo(readingOffset);
         await tester.pumpAndSettle();
+        final readingTop = tester.getTopLeft(find.byType(ToolRequestCard)).dy;
         vm.emit(
           ChatReady(
             messages: [failed, agent],
@@ -410,7 +412,11 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
-        expect(mainScroll.offset, closeTo(readingOffset, 1));
+        expect(
+          tester.getTopLeft(find.byType(ToolRequestCard)).dy,
+          closeTo(readingTop, 0.5),
+        );
+        readingOffset = mainScroll.offset;
         await tester.tap(find.text('Sub-agents'));
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
@@ -463,7 +469,10 @@ void main() {
         final agentReadingOffset = agentScroll.offset;
         await tester.tap(find.text('Main'));
         await tester.pumpAndSettle();
-        expect(mainScroll.offset, closeTo(readingOffset, 1));
+        expect(
+          tester.getTopLeft(find.byType(ToolRequestCard)).dy,
+          closeTo(readingTop, 0.5),
+        );
         await tester.tap(find.text('Sub-agents'));
         await tester.pumpAndSettle();
         expect(agentScroll.offset, closeTo(agentReadingOffset, 1));
@@ -779,12 +788,15 @@ void main() {
       await tester.pumpAndSettle();
       expect(heading, findsNothing);
       expect(find.byKey(const Key('accordion-pinned-heading')), findsNothing);
-      final readingOffset = scroll.offset;
+      final readingTop = tester.getTopLeft(find.byType(ToolRequestCard)).dy;
       tester.view.viewInsets = const FakeViewPadding(bottom: 180);
       addTearDown(tester.view.resetViewInsets);
       await tester.pumpAndSettle();
       expect(heading, findsNothing);
-      expect(scroll.offset, closeTo(readingOffset, 1));
+      expect(
+        tester.getTopLeft(find.byType(ToolRequestCard)).dy,
+        closeTo(readingTop, 0.5),
+      );
       scroll.jumpTo(alignedOffset);
       await tester.ensureVisible(find.byKey(const Key('tool-disclosure')));
       await tester.pumpAndSettle();
@@ -1041,7 +1053,7 @@ void main() {
       await tester.tap(find.byKey(const Key('thread-toggle')));
       await tester.pumpAndSettle();
       await tester.tap(
-        find.byKey(const Key('tool-disclosure')).hitTestable().first,
+        find.byKey(const Key('code-disclosure')).hitTestable().first,
       );
       await tester.pumpAndSettle();
       expect(
@@ -1138,6 +1150,14 @@ void main() {
           status: ToolEventStatus.completed,
           result: 'directory',
         ),
+        const ToolEvent(
+          id: 'tool-two',
+          toolCallId: 'tool-two',
+          tool: 'bash',
+          args: {'command': 'ls'},
+          status: ToolEventStatus.completed,
+          result: 'second directory',
+        ),
       ];
       Future<void> show(
         List<ChatMessage> messages, [
@@ -1149,34 +1169,132 @@ void main() {
       }
 
       await show(history);
-      await tester.tap(find.byKey(const Key('tool-disclosure')).hitTestable());
-      await tester.pump();
+      await tester.tap(
+        find.descendant(
+          of: find.widgetWithText(ToolRequestCard, 'BASH · ls'),
+          matching: find.byKey(const Key('tool-disclosure')),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('BASH · pwd'),
+        150,
+        scrollable: find
+            .descendant(
+              of: find.byWidgetPredicate((w) => w is ListView && w.reverse),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.descendant(
+          of: find.widgetWithText(ToolRequestCard, 'BASH · pwd'),
+          matching: find.byKey(const Key('tool-disclosure')),
+        ),
+      );
+      await tester.pumpAndSettle();
       final list = find.byWidgetPredicate((w) => w is ListView && w.reverse);
       final scroll = tester.widget<ListView>(list).controller!;
+      await tester.pumpAndSettle();
       scroll.jumpTo(1400);
-      await tester.pump();
+      await tester.pumpAndSettle();
+      final reading = find
+          .descendant(
+            of: list,
+            matching: find.byWidgetPredicate(
+              (w) =>
+                  w is SelectableText &&
+                  (w.data?.startsWith('Prompt ') ?? false),
+            ),
+          )
+          .hitTestable()
+          .first;
+      final readingText = tester.widget<SelectableText>(reading).data!;
+      final readingY = tester.getTopLeft(reading).dy;
+      final readingRow = find.descendant(
+        of: list,
+        matching: find.byWidgetPredicate(
+          (w) => w is SelectableText && w.data == readingText,
+        ),
+      );
       for (var i = 0; i < 5; i++) {
+        await show([
+          ...history,
+          ToolEvent(
+            id: 'new-$i',
+            toolCallId: 'new-$i',
+            tool: 'edit',
+            args: {
+              'path': 'file-$i.dart',
+              'edits': [
+                {'oldText': 'before', 'newText': 'after'},
+              ],
+            },
+            status: ToolEventStatus.completed,
+          ),
+        ]);
+        expect(tester.getTopLeft(readingRow).dy, closeTo(readingY, 0.5));
+        expect(find.text('New activity'), findsOneWidget);
         await show(
           history,
-          StreamingMessage(inReplyTo: 'streaming', buffer: 'Streaming $i'),
+          StreamingMessage(
+            inReplyTo: 'streaming',
+            buffer: 'Streaming $i\n' * 8,
+          ),
         );
+        expect(tester.getTopLeft(readingRow).dy, closeTo(readingY, 0.5));
         await show([
           ...history,
           AssistantMsg(id: 'streaming', text: 'Persisted $i'),
         ]);
+        expect(tester.getTopLeft(readingRow).dy, closeTo(readingY, 0.5));
         await show(history.toList());
+        expect(tester.getTopLeft(readingRow).dy, closeTo(readingY, 0.5));
       }
-      // Settle any anchor correction after the retained rows move, then
-      // return to the actual bottom before hitting their controls.
+      // Explicit navigation respects reduced motion; arriving updates alone
+      // must never leave the reading position above.
+      tester.platformDispatcher.accessibilityFeaturesTestValue =
+          const FakeAccessibilityFeatures(disableAnimations: true);
+      addTearDown(
+        tester.platformDispatcher.clearAccessibilityFeaturesTestValue,
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('scroll-to-latest')));
+      await tester.pump();
+      expect(scroll.offset, 0);
+      expect(find.text('New activity'), findsNothing);
+      await show([
+        ...history,
+        const AssistantMsg(id: 'bottom-update', text: 'Arrived at bottom'),
+      ]);
+      expect(scroll.offset, 0);
+      expect(find.text('New activity'), findsNothing);
+      await show(history);
       scroll.jumpTo(0);
       await tester.pumpAndSettle();
       scroll.jumpTo(0);
+      await tester.pumpAndSettle();
+      expect(find.text('second directory'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('directory'),
+        150,
+        scrollable: find
+            .descendant(of: list, matching: find.byType(Scrollable))
+            .first,
+      );
       await tester.pumpAndSettle();
       expect(find.text('directory'), findsOneWidget);
+      history.removeLast();
+      await show(history.toList());
+      scroll.jumpTo(0);
+      await tester.pumpAndSettle();
       // Explicit collapse and wrap choices survive offscreen keepalive/remapping.
-      await tester.tap(find.byKey(const Key('code-wrap')).hitTestable());
+      await tester.tap(find.byKey(const Key('code-wrap')).hitTestable().first);
       await tester.pump();
-      await tester.tap(find.byKey(const Key('tool-disclosure')).hitTestable());
+      await tester.tap(
+        find.byKey(const Key('tool-disclosure')).hitTestable().first,
+      );
       await tester.pump();
       scroll.jumpTo(1400);
       await tester.pump();
@@ -1192,7 +1310,9 @@ void main() {
       scroll.jumpTo(0);
       await tester.pumpAndSettle();
       expect(find.text('directory'), findsNothing);
-      await tester.tap(find.byKey(const Key('tool-disclosure')).hitTestable());
+      await tester.tap(
+        find.byKey(const Key('tool-disclosure')).hitTestable().first,
+      );
       await tester.pump();
       expect(find.byTooltip('Wrap code').hitTestable(), findsOneWidget);
 

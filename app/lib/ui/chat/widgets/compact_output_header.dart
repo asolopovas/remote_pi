@@ -1,5 +1,6 @@
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 /// The disclosure target is separate from copy/wrap controls.
 class CompactOutputHeader extends StatelessWidget {
@@ -31,29 +32,43 @@ class CompactOutputHeader extends StatelessWidget {
     final disclosure = Semantics(
       button: true,
       expanded: expanded,
-      child: InkWell(
-        key: disclosureKey,
-        onTap: onToggle,
-        borderRadius: BorderRadius.circular(8),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
-          child: Row(
-            children: [
-              Icon(
-                expanded ? Icons.expand_less : Icons.chevron_right,
-                size: 18,
-                color: context.colors.muted2,
+      child: CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.arrowRight): () {
+            if (!expanded) onToggle();
+          },
+          const SingleActivator(LogicalKeyboardKey.arrowLeft): () {
+            if (expanded) onToggle();
+          },
+        },
+        child: Tooltip(
+          message: title,
+          excludeFromSemantics: true,
+          child: InkWell(
+            key: disclosureKey,
+            onTap: onToggle,
+            borderRadius: BorderRadius.circular(8),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+              child: Row(
+                children: [
+                  Icon(
+                    expanded ? Icons.expand_less : Icons.chevron_right,
+                    size: 18,
+                    color: context.colors.muted2,
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: context.typo.monoSmall,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 4),
-              Expanded(
-                child: Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: context.typo.monoSmall,
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),

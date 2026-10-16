@@ -280,8 +280,20 @@ class _ToolRequestCardState extends State<ToolRequestCard>
                         _buildToolSummary(context),
                       if (tool.result != null) ...[
                         const SizedBox(height: 8),
-                        Text('Output', style: context.typo.monoSmall),
-                        SourceCode(output, language: _outputLanguage()),
+                        if (tool.status == ToolEventStatus.completed &&
+                            _formatToolDisplay(tool.tool, tool.args) != null)
+                          CodeViewport(
+                            label: 'Execution output',
+                            text: output,
+                            child: SourceCode(
+                              output,
+                              language: _outputLanguage(),
+                            ),
+                          )
+                        else ...[
+                          Text('Output', style: context.typo.monoSmall),
+                          SourceCode(output, language: _outputLanguage()),
+                        ],
                       ],
                       if (tool.error?.isNotEmpty ?? false) ...[
                         const SizedBox(height: 8),
@@ -376,7 +388,11 @@ class _ToolRequestCardState extends State<ToolRequestCard>
     action = action.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (action.isEmpty) return tool.tool;
     final brief = action.split('\n').first;
-    return '${tool.tool.toUpperCase()} · $brief';
+    final diff = _formatToolDisplay(tool.tool, args);
+    final stats = diff == null
+        ? ''
+        : ' · +${diff.lines.where((l) => l.text.startsWith('+')).length} −${diff.lines.where((l) => l.text.startsWith('-')).length}';
+    return '${tool.tool.toUpperCase()} · $brief$stats';
   }
 
   static String _fullText(Object? value) => value is String
@@ -446,7 +462,16 @@ class _ToolRequestCardState extends State<ToolRequestCard>
     final lines = <_DiffLine>[];
     final hunks = args['hunks'];
     if (hunks is! Iterable) {
-      final edits = args['edits'];
+      final edits =
+          args['edits'] ??
+          (args['old_string'] is String && args['new_string'] is String
+              ? [
+                  {
+                    'oldText': args['old_string'],
+                    'newText': args['new_string'],
+                  },
+                ]
+              : null);
       if (edits is! Iterable) return null;
       for (final edit in edits) {
         if (edit is! Map ||

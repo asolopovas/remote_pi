@@ -17,11 +17,14 @@ import 'package:app/ui/chat/widgets/streaming_bubble.dart';
 import 'package:app/ui/chat/widgets/subagent_panel.dart';
 import 'package:app/ui/chat/widgets/accordion_viewport.dart';
 import 'package:app/ui/chat/widgets/accordion_expansion.dart';
+import 'package:app/ui/chat/widgets/activity_scroll_controller.dart';
+import 'package:app/ui/chat/widgets/read_activity_group.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:app/ui/chat/widgets/extension_ui_sheet.dart';
 import 'package:app/ui/core/session_label.dart';
 import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/scheduler.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -754,8 +757,27 @@ class _MessageList extends StatefulWidget {
 }
 
 class _MessageListState extends State<_MessageList> {
-  final _scroll = ScrollController();
+  final _scroll = ActivityScrollController();
+  final _rowAnchors = <Key, GlobalKey>{};
   bool _awayFromBottom = false;
+  bool _newActivity = false;
+
+  @override
+  void didUpdateWidget(_MessageList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final changed =
+        widget.messages.length != oldWidget.messages.length ||
+        widget.streaming != oldWidget.streaming ||
+        !listEquals(widget.messages, oldWidget.messages);
+    if (!changed) return;
+    _scroll.preserve(_rowAnchors.values);
+    if (_scroll.hasClients && _scroll.offset > 1) {
+      _newActivity = true;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _scroll.releaseAnchor();
+    });
+  }
 
   @override
   void initState() {
@@ -764,8 +786,13 @@ class _MessageListState extends State<_MessageList> {
   }
 
   void _onScroll() {
-    final away = _scroll.hasClients && _scroll.offset > 120;
-    if (away != _awayFromBottom) setState(() => _awayFromBottom = away);
+    final away = _scroll.hasClients && _scroll.offset > 1;
+    if (away != _awayFromBottom || (!away && _newActivity)) {
+      setState(() {
+        _awayFromBottom = away;
+        if (!away) _newActivity = false;
+      });
+    }
   }
 
   @override
@@ -776,7 +803,16 @@ class _MessageListState extends State<_MessageList> {
 
   @override
   Widget build(BuildContext context) {
-    final messages = widget.messages;
+    final messages = activityRows(widget.messages);
+    final changedPaths = widget.messages
+        .whereType<ToolEvent>()
+        .where(
+          (tool) =>
+              tool.status == ToolEventStatus.completed &&
+              {'edit', 'write'}.contains(activityToolName(tool.tool)),
+        )
+        .map(activityFilePath)
+        .toSet();
     final streaming = widget.streaming;
     final offset = streaming == null ? 1 : 2;
     // IDs are scoped to a message role: user and assistant share a request
@@ -785,10 +821,12 @@ class _MessageListState extends State<_MessageList> {
     final occurrences = <(Type, String), int>{};
     final keys = <Key>[];
     for (final message in messages) {
-      final identity = (message.runtimeType, message.id);
+      final identity = message is List<ToolEvent>
+          ? (ReadActivityGroup, message.first.toolCallId)
+          : ((message as ChatMessage).runtimeType, message.id);
       final occurrence = occurrences[identity] ?? 0;
       occurrences[identity] = occurrence + 1;
-      keys.add(ValueKey((message.runtimeType, message.id, occurrence)));
+      keys.add(ValueKey((identity.$1, identity.$2, occurrence)));
     }
     final streamingKey = streaming == null
         ? null
@@ -798,6 +836,10 @@ class _MessageListState extends State<_MessageList> {
         keys[i]: messages.length - 1 - i + offset,
     };
     if (streamingKey != null) indices[streamingKey] = 1;
+    _rowAnchors.removeWhere((key, _) => !indices.containsKey(key));
+    for (final key in indices.keys) {
+      _rowAnchors.putIfAbsent(key, GlobalKey.new);
+    }
     return AccordionViewport(
       controller: _scroll,
       reverse: true,
@@ -823,49 +865,69 @@ class _MessageListState extends State<_MessageList> {
                 if (streaming != null && i == 1) {
                   return KeyedSubtree(
                     key: streamingKey,
-                    child: StreamingBubble(streaming),
+                    child: ActivityRow(
+                      key: _rowAnchors[streamingKey],
+                      child: StreamingBubble(streaming),
+                    ),
                   );
                 }
                 final messageIndex = messages.length - 1 - (i - offset);
                 final msg = messages[messageIndex];
                 return KeyedSubtree(
                   key: keys[messageIndex],
-                  child: switch (msg) {
-                    UserMsg() => UserBubble(msg),
-                    AssistantMsg() => AssistantBubble(msg),
-                    ToolEvent() => ToolRequestCard(
-                      tool: msg,
-                      onDecide: widget.onDecide,
-                    ),
-                    CompactionMsg() => CompactionBubble(msg),
-                  },
+                  child: ActivityRow(
+                    key: _rowAnchors[keys[messageIndex]],
+                    child: switch (msg) {
+                      List<ToolEvent>() => ReadActivityGroup(
+                        reads: msg,
+                        changedPaths: changedPaths,
+                      ),
+                      UserMsg() => UserBubble(msg),
+                      AssistantMsg() => AssistantBubble(msg),
+                      ToolEvent() => ToolRequestCard(
+                        tool: msg,
+                        onDecide: widget.onDecide,
+                      ),
+                      CompactionMsg() => CompactionBubble(msg),
+                      _ => const SizedBox.shrink(),
+                    },
+                  ),
                 );
               },
             ),
-            if (_awayFromBottom && _scroll.hasClients && _scroll.offset > 120)
+            if ((_awayFromBottom || _newActivity) &&
+                _scroll.hasClients &&
+                _scroll.offset > 1)
               Positioned(
                 bottom: 8,
                 right: 16,
-                child: IconButton.filledTonal(
-                  key: const Key('scroll-to-latest'),
-                  tooltip: 'Scroll to latest message',
-                  constraints: const BoxConstraints(
-                    minWidth: 48,
-                    minHeight: 48,
-                  ),
-                  style: IconButton.styleFrom(
-                    foregroundColor: context.colors.accent,
-                    backgroundColor: context.colors.surface,
-                  ),
-                  onPressed: () => _scroll.animateTo(
-                    0,
-                    duration: const Duration(milliseconds: 200),
-                    curve: Curves.easeOut,
-                  ),
-                  icon: const Icon(
-                    Icons.keyboard_arrow_down,
-                    size: 24,
-                    semanticLabel: 'Scroll to latest message',
+                child: Tooltip(
+                  message: 'Scroll to latest message',
+                  excludeFromSemantics: true,
+                  child: FilledButton.tonalIcon(
+                    key: const Key('scroll-to-latest'),
+                    style: FilledButton.styleFrom(
+                      foregroundColor: context.colors.accent,
+                      backgroundColor: context.colors.surface,
+                    ),
+                    onPressed: () {
+                      _scroll.releaseAnchor();
+                      if (MediaQuery.disableAnimationsOf(context)) {
+                        _scroll.jumpTo(0);
+                      } else {
+                        _scroll.animateTo(
+                          0,
+                          duration: const Duration(milliseconds: 200),
+                          curve: Curves.easeOut,
+                        );
+                      }
+                    },
+                    label: Text(_newActivity ? 'New activity' : 'Latest'),
+                    icon: const Icon(
+                      Icons.keyboard_arrow_down,
+                      size: 24,
+                      semanticLabel: 'Scroll to latest message',
+                    ),
                   ),
                 ),
               ),
