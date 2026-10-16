@@ -1,6 +1,6 @@
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/compact_output_header.dart';
-import 'package:app/ui/chat/widgets/read_activity_group.dart';
+import 'package:app/ui/chat/widgets/activity_presentation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:ui' show Tristate;
@@ -20,56 +20,54 @@ ToolEvent read(
 );
 
 void main() {
-  test(
-    'groups adjacent reads without losing invocation identity or errors',
-    () {
-      final first = read('one', 'lib/main.dart');
-      final rows = activityRows([
-        first,
-        read('two', 'lib/main.dart'),
-        const ToolEvent(id: 'edit', toolCallId: 'edit', tool: 'edit', args: {}),
-        read('three', 'lib/other.dart', status: ToolEventStatus.failed),
-      ]);
-      expect(rows.length, 3);
-      expect((rows.first as List<ToolEvent>).first, same(first));
-      expect((rows.first as List<ToolEvent>).length, 2);
-      expect(
-        (rows.last as List<ToolEvent>).single.status,
-        ToolEventStatus.failed,
-      );
-    },
-  );
+  test('all read states stay out of the feed; changes retain identity', () {
+    const edit = ToolEvent(
+      id: 'edit',
+      toolCallId: 'edit',
+      tool: 'edit',
+      args: {},
+    );
+    final rows = activityRows([
+      for (final status in ToolEventStatus.values)
+        read('$status', 'lib/main.dart', status: status),
+      const ToolEvent(
+        id: 'symbol',
+        toolCallId: 'symbol',
+        tool: 'read_symbol',
+        args: {},
+      ),
+      const ToolEvent(
+        id: 'enclosing',
+        toolCallId: 'enclosing',
+        tool: 'functions.read_enclosing',
+        args: {},
+      ),
+      edit,
+    ]);
+    expect(rows, [same(edit)]);
+  });
 
-  testWidgets(
-    'read contents are opt-in; path summary and changed hint remain compact',
-    (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: ReadActivityGroup(
-              reads: [
-                read('one', 'lib/main.dart'),
-                read('two', 'lib/main.dart'),
-              ],
-              changedPaths: const {'lib/main.dart'},
-            ),
-          ),
-        ),
-      );
-      expect(
-        find.textContaining('Read 1 file · 1 also edited · lib/main.dart'),
-        findsOneWidget,
-      );
-      expect(find.text('file contents one'), findsNothing);
-      await tester.tap(find.byKey(const Key('code-disclosure')));
-      await tester.pumpAndSettle();
-      expect(find.text('file contents one'), findsNothing);
-      await tester.tap(find.byKey(const Key('tool-disclosure')).first);
-      await tester.pumpAndSettle();
-      expect(find.text('file contents one'), findsOneWidget);
-      expect(find.text('file contents two'), findsNothing);
-    },
-  );
+  test('only the current running read appears in status', () {
+    final running = read(
+      'one',
+      'lib/main.dart',
+      status: ToolEventStatus.allowed,
+    );
+    expect(activeReadLabel([running]), 'Reading lib/main.dart…');
+    expect(activeReadLabel([read('one', 'lib/main.dart')]), isNull);
+    expect(
+      activeReadLabel([
+        running,
+        const ToolEvent(id: 'edit', toolCallId: 'edit', tool: 'edit', args: {}),
+      ]),
+      isNull,
+    );
+    expect(
+      activeReadLabel([read('one', '', status: ToolEventStatus.pending)]),
+      'Reading…',
+    );
+    expect(activeReadLabel([]), isNull);
+  });
 
   testWidgets(
     'disclosure supports keyboard activation, arrows, semantics and stable focus',

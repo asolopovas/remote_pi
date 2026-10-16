@@ -18,7 +18,7 @@ import 'package:app/ui/chat/widgets/subagent_panel.dart';
 import 'package:app/ui/chat/widgets/accordion_viewport.dart';
 import 'package:app/ui/chat/widgets/accordion_expansion.dart';
 import 'package:app/ui/chat/widgets/activity_scroll_controller.dart';
-import 'package:app/ui/chat/widgets/read_activity_group.dart';
+import 'package:app/ui/chat/widgets/activity_presentation.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:app/ui/chat/widgets/extension_ui_sheet.dart';
 import 'package:app/ui/core/session_label.dart';
@@ -244,6 +244,9 @@ class _ChatPageState extends State<ChatPage> {
     // Plan-18 follow-up — when the agent is currently producing a
     // response, show "working…" instead of online/offline.
     final isWorking = vm.isWorking;
+    final reading = state is ChatReady && isWorking
+        ? activeReadLabel(state.messages)
+        : null;
 
     // Plan/24-fix-title: pass the navigation hint into the helpers so
     // either line of the AppBar (room or peer) shows it instead of
@@ -313,7 +316,7 @@ class _ChatPageState extends State<ChatPage> {
                           isOnline: isOnline,
                         );
                         final label = switch (status) {
-                          SessionStatus.working => 'working…',
+                          SessionStatus.working => reading ?? 'working…',
                           SessionStatus.reconnecting => 'reconnecting…',
                           _ => status.label.toLowerCase(),
                         };
@@ -325,6 +328,8 @@ class _ChatPageState extends State<ChatPage> {
                             Flexible(
                               child: Text(
                                 label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                                 style: context.typo.monoSmall.copyWith(
                                   color: status.color(colors),
                                 ),
@@ -558,7 +563,8 @@ class _ChatPageState extends State<ChatPage> {
               ? SubagentInvocation.fromTool(message)
               : null;
           if (invocation == null) {
-            if (!hideToolCalls || message is! ToolEvent) {
+            if (!isReadActivity(message) &&
+                (!hideToolCalls || message is! ToolEvent)) {
               mainMessages.add(message);
             }
           } else {
@@ -804,15 +810,6 @@ class _MessageListState extends State<_MessageList> {
   @override
   Widget build(BuildContext context) {
     final messages = activityRows(widget.messages);
-    final changedPaths = widget.messages
-        .whereType<ToolEvent>()
-        .where(
-          (tool) =>
-              tool.status == ToolEventStatus.completed &&
-              {'edit', 'write'}.contains(activityToolName(tool.tool)),
-        )
-        .map(activityFilePath)
-        .toSet();
     final streaming = widget.streaming;
     final offset = streaming == null ? 1 : 2;
     // IDs are scoped to a message role: user and assistant share a request
@@ -821,9 +818,7 @@ class _MessageListState extends State<_MessageList> {
     final occurrences = <(Type, String), int>{};
     final keys = <Key>[];
     for (final message in messages) {
-      final identity = message is List<ToolEvent>
-          ? (ReadActivityGroup, message.first.toolCallId)
-          : ((message as ChatMessage).runtimeType, message.id);
+      final identity = (message.runtimeType, message.id);
       final occurrence = occurrences[identity] ?? 0;
       occurrences[identity] = occurrence + 1;
       keys.add(ValueKey((identity.$1, identity.$2, occurrence)));
@@ -878,10 +873,6 @@ class _MessageListState extends State<_MessageList> {
                   child: ActivityRow(
                     key: _rowAnchors[keys[messageIndex]],
                     child: switch (msg) {
-                      List<ToolEvent>() => ReadActivityGroup(
-                        reads: msg,
-                        changedPaths: changedPaths,
-                      ),
                       UserMsg() => UserBubble(msg),
                       AssistantMsg() => AssistantBubble(msg),
                       ToolEvent() => ToolRequestCard(
@@ -889,7 +880,6 @@ class _MessageListState extends State<_MessageList> {
                         onDecide: widget.onDecide,
                       ),
                       CompactionMsg() => CompactionBubble(msg),
-                      _ => const SizedBox.shrink(),
                     },
                   ),
                 );

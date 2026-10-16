@@ -96,6 +96,9 @@ class _FakePicker implements IImagePickerService {
 class _SessionVM extends ChatViewModel {
   _SessionVM(super.read, super.sync, super.conn, super.prefs, super.storage);
   PeerRecord? testPeer;
+  bool? testWorking;
+  @override
+  bool get isWorking => testWorking ?? super.isWorking;
   @override
   PeerRecord? get activePeer => testPeer;
 }
@@ -1028,9 +1031,25 @@ void main() {
           result: 'print("new row")',
         ),
       );
+      vm.testWorking = true;
+      vm.emit(ChatReady(messages: messages.toList()));
+      await tester.pump();
+      expect(find.text('Reading new.py…'), findsOneWidget);
+      expect(find.text('print("new row")'), findsNothing);
+      expect(find.textContaining('Read 1 file'), findsNothing);
+      vm.testWorking = false;
+      messages[messages.length - 1] = const ToolEvent(
+        id: 'new-bulk',
+        toolCallId: 'new-bulk',
+        tool: 'read',
+        args: {'path': 'new.py'},
+        status: ToolEventStatus.completed,
+        result: 'print("new row")',
+      );
       vm.emit(ChatReady(messages: messages.toList()));
       await tester.pumpAndSettle();
-      expect(find.text('print("new row")'), findsOneWidget);
+      expect(find.text('Reading new.py…'), findsNothing);
+      expect(find.text('print("new row")'), findsNothing);
       await tester.tap(find.byKey(const Key('thread-toggle')));
       await tester.pumpAndSettle();
       expect(find.text('Synthetic task'), findsOneWidget);
@@ -1218,6 +1237,19 @@ void main() {
           (w) => w is SelectableText && w.data == readingText,
         ),
       );
+      await show([
+        ...history,
+        const ToolEvent(
+          id: 'quiet-read',
+          toolCallId: 'quiet-read',
+          tool: 'read',
+          args: {'path': 'context.dart'},
+          status: ToolEventStatus.pending,
+        ),
+      ]);
+      expect(tester.getTopLeft(readingRow).dy, closeTo(readingY, 0.5));
+      expect(find.text('New activity'), findsNothing);
+      expect(find.textContaining('context.dart'), findsNothing);
       for (var i = 0; i < 5; i++) {
         await show([
           ...history,
