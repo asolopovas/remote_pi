@@ -9,6 +9,7 @@ export interface SessionControlTarget {
   reason: string;
   readonly completion: "requested" | "stopped";
   stop(): Promise<boolean> | void;
+  finishStop?(): void;
 }
 interface Capability { owner: string; room: string; target: SessionControlTarget; expires: number }
 export class SessionControl {
@@ -38,10 +39,14 @@ export class SessionControl {
       reply({ type: "session_stop_result", in_reply_to: request.id, room_id: request.room_id, state: "requested" });
       if (cap.target.current() && cap.target.eligible()) cap.target.stop();
     } else {
-      const stopped = await cap.target.stop();
-      if (!await cap.target.authorized(true) || !cap.target.current()) return;
-      if (!stopped) throw new Error("Session stop not confirmed");
-      reply({ type: "session_stop_result", in_reply_to: request.id, room_id: request.room_id, state: "stopped" });
+      try {
+        const stopped = await cap.target.stop();
+        if (!await cap.target.authorized(true) || !cap.target.current()) return;
+        if (!stopped) throw new Error("Session stop not confirmed");
+        reply({ type: "session_stop_result", in_reply_to: request.id, room_id: request.room_id, state: "stopped" });
+      } finally {
+        cap.target.finishStop?.();
+      }
     }
   }
 }

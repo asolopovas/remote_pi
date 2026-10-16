@@ -115,7 +115,6 @@ export class ManagedRoom {
     } catch { return; }
     const epoch = this.opts.currentEpoch();
     this.inflight++;
-    let stoppingThisRequest = false;
     void (async () => {
       try {
         if (message.type === "session_control_status" || message.type === "session_stop") {
@@ -126,6 +125,9 @@ export class ManagedRoom {
           const authorized = async () => await this.opts.authorized(epoch) && current() && this.opts.hasGrant(epoch);
           const reply = (result: ServerMessage) => this.send(JSON.stringify({ peer: this.opts.owner, ct: Buffer.from(JSON.stringify(result)).toString("base64") }));
           let grant = false;
+          // This flag belongs to the captured capability, not the completed
+          // status request whose target is retained for later confirmation.
+          let ownsStopDeferral = false;
           const room = this;
           // A locked but paired Owner may discover unavailability, never a token.
           await this.control.handle(this.opts.owner, message, {
@@ -139,9 +141,15 @@ export class ManagedRoom {
             get reason() { return grant && room.opts.hasGrant(epoch) ? "Stop this managed Pi process." : "Unlock the launching host first."; },
             completion: "stopped",
             stop: async () => {
-              if (!await authorized() || !current() || !this.opts.ownsChild()) return false;
-              this.stopping = true; stoppingThisRequest = true;
+              if (!await authorized() || !current() || !this.opts.ownsChild() || this.stopping) return false;
+              this.stopping = true; ownsStopDeferral = true;
               return await this.opts.stopChild(authorized);
+            },
+            finishStop: () => {
+              if (!ownsStopDeferral) return;
+              ownsStopDeferral = false;
+              this.stopping = false;
+              if (this.closeDeferred) this.close();
             },
           }, reply);
           return;
@@ -159,7 +167,7 @@ export class ManagedRoom {
       } catch {
         const paired = await this.opts.paired();
         if (paired && !this.closed && this.opts.current() && epoch === this.opts.currentEpoch()) this.send(JSON.stringify({ peer: this.opts.owner, ct: Buffer.from(JSON.stringify({ type: "error", in_reply_to: typeof message.id === "string" && message.id.length > 0 && message.id.length <= 128 && !/[\x00-\x1f\x7f-\x9f]/.test(message.id) ? message.id : undefined, code: "invalid_message", message: "Session control denied; refresh session controls" })).toString("base64") }));
-      } finally { this.inflight--; if (stoppingThisRequest) { this.stopping = false; if (this.closeDeferred) this.close(); } }
+      } finally { this.inflight--; }
     })().catch(() => {});
   };
   private publish = (raw: unknown): void => {

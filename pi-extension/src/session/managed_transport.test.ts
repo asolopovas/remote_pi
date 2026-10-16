@@ -189,6 +189,9 @@ test("session control managed exact owned child stops once and reports actual ex
   expect(controlReplies(f).at(-1)).toMatchObject({ type: "session_stop_result", state: "stopped", in_reply_to: "stop" });
   controlSend(f, { type: "session_stop", id: "replay", room_id: "assigned-room", token: status.token }); await settle(); expect(f.stopChild).toHaveBeenCalledTimes(1);
   expect(f.child.send).toHaveBeenCalledTimes(1); // new controls are never forwarded into the child/model
+  expect(f.ws.readyState).toBe(3);
+  expect(f.child.listenerCount("exit")).toBe(0);
+  expect(f.child.listenerCount("message")).toBe(0);
 });
 test.each(["lock", "unpair", "replace", "replaceChild", "exit", "foreign-room", "foreign-owner"])("session control managed %s invalidates captured child capability", async action => {
   const f = await fixture(); const status = await controlStatus(f);
@@ -215,6 +218,9 @@ test("session control managed expires authority during exit and suppresses stopp
   controlSend(f, { type: "session_stop", id: "stop", room_id: "assigned-room", token: status.token }); await settle();
   expect(f.stopChild).toHaveBeenCalledTimes(1);
   expect(controlReplies(f).some(m => m.type === "session_stop_result")).toBe(false);
+  expect(f.ws.readyState).toBe(3);
+  expect(f.child.listenerCount("exit")).toBe(0);
+  expect(f.child.listenerCount("message")).toBe(0);
 });
 test("session control managed rejects malformed known fields with correlated error", async () => {
   const f = await fixture(); controlSend(f, { type: "session_control_status", id: "bad", room_id: "assigned-room", pid: 123 }); await settle();
