@@ -6617,3 +6617,80 @@ describe("managed phone child startup and orphan guard", () => {
     }
   });
 });
+
+// Exact-session stop never uses fallback command contexts or arbitrary processes.
+describe("session control root routing", () => {
+  let nativeId: string;
+  let ctx: ReturnType<typeof makeMockCtx> & { mode: "tui"; shutdown: ReturnType<typeof vi.fn>; sessionManager: { getSessionId(): string } };
+  let relay: MockRelay;
+  let room: string;
+  const frames = () => relay.send.mock.calls.map(([line]) => decodeSentCt(line).inner as Record<string, unknown>);
+  const send = (message: object, peer = OWNER_STANDARD_FIXTURE) => relay.emit("message", JSON.stringify({ peer, ct: Buffer.from(JSON.stringify(message)).toString("base64") }));
+  const settle = () => new Promise<void>(resolve => setImmediate(resolve));
+  const status = async () => { send({ type: "session_control_status", id: "status", room_id: room }); await settle(); return frames().findLast(m => m.type === "session_control_status_result")!; };
+  beforeEach(async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv("PI_SUBAGENT_CHILD", undefined);
+    vi.stubEnv("REMOTE_PI_MANAGED_CHILD", undefined);
+    await captureHandler("remote-pi stop")("", makeMockCtx());
+    _setDisposedForTest(false); _setAutoInitedForTest(true);
+    _knownPeers.length = 0; _tokenStatus = "ok";
+    nativeId = "native-a";
+    ctx = { ...makeMockCtx("/tmp/session-control-root"), mode: "tui", shutdown: vi.fn(), sessionManager: { getSessionId: () => nativeId } };
+    await _pairForTestWithCtx(OWNER_STANDARD_FIXTURE, ctx);
+    captureEventHandler("session_start")({ type: "session_start" }, ctx);
+    relay = relayRef.current!;
+    room = (relay.connect.mock.calls[0][0] as { roomId: string }).roomId;
+    relay.send.mockClear();
+  });
+  afterEach(async () => {
+    await captureHandler("remote-pi stop")("", makeMockCtx());
+    _setDisposedForTest(false); _setAutoInitedForTest(false); vi.unstubAllEnvs();
+  });
+  test("paired exact session acknowledges before abort/shutdown and rejects token replay", async () => {
+    const result = await status(); expect(result.can_stop).toBe(true);
+    ctx.abort.mockImplementation(() => expect(frames().at(-1)).toMatchObject({ state: "requested" }));
+    send({ type: "session_stop", id: "stop", room_id: room, token: result.token }); await settle();
+    expect(ctx.abort).toHaveBeenCalledOnce(); expect(ctx.shutdown).toHaveBeenCalledOnce();
+    send({ type: "session_stop", id: "replay", room_id: room, token: result.token }); await settle();
+    expect(frames().at(-1)).toMatchObject({ type: "error", in_reply_to: "replay" }); expect(ctx.shutdown).toHaveBeenCalledOnce();
+  });
+  test.each(["foreign-room", "native-replacement", "session-start", "revocation", "reconnect"])("%s denies stale authority", async failure => {
+    const result = await status();
+    if (failure === "native-replacement") nativeId = "native-b";
+    if (failure === "session-start") captureEventHandler("session_start")({ type: "session_start" }, { ...ctx });
+    if (failure === "revocation") _knownPeers.length = 0;
+    if (failure === "reconnect") relay.emit("close");
+    send({ type: "session_stop", id: "stop", room_id: failure === "foreign-room" ? "other" : room, token: result.token }); await settle();
+    expect(ctx.abort).not.toHaveBeenCalled(); expect(ctx.shutdown).not.toHaveBeenCalled();
+  });
+  test("unpaired and malformed requests never expose capability or enter history", async () => {
+    const before = _getMessageBufferForTest();
+    send({ type: "session_control_status", id: "unpaired", room_id: room }, OTHER_OWNER_STANDARD_FIXTURE);
+    send({ type: "session_control_status", id: "invalid", room_id: room, pid: 1 }); await settle();
+    expect(frames().some(m => m.token)).toBe(false); expect(frames().find(m => m.in_reply_to === "invalid")).toMatchObject({ type: "error", in_reply_to: "invalid" });
+    expect(_getMessageBufferForTest()).toEqual(before); expect(ctx.shutdown).not.toHaveBeenCalled();
+  });
+  test.each(["native", "lifecycle", "pairing", "context"])("late pairing lookup cannot outlive %s changes", async change => {
+    const storage = await import("./pairing/storage.js");
+    const pending = deferred<StoredPeer[]>();
+    vi.mocked(storage.listPeers).mockImplementationOnce(() => pending.promise);
+    send({ type: "session_control_status", id: "late", room_id: room });
+    if (change === "native") nativeId = "native-b";
+    if (change === "lifecycle") _setDisposedForTest(true);
+    if (change === "pairing") _knownPeers.length = 0;
+    if (change === "context") captureEventHandler("session_start")({ type: "session_start" }, { ...ctx });
+    pending.resolve([..._knownPeers]); await settle();
+    expect(frames().some(m => m.token)).toBe(false); expect(ctx.shutdown).not.toHaveBeenCalled();
+  });
+  test.each(["rpc", "print", "json"])("%s mode reports unsupported without token", async mode => {
+    captureEventHandler("session_start")({ type: "session_start" }, { ...ctx, mode });
+    expect(await status()).toMatchObject({ can_stop: false }); expect(frames().some(m => m.token)).toBe(false);
+    expect(ctx.shutdown).not.toHaveBeenCalled();
+  });
+  test("managed child direct root route never bypasses launching host grant", async () => {
+    vi.stubEnv("REMOTE_PI_MANAGED_CHILD", "1");
+    expect(await status()).toMatchObject({ can_stop: false, reason: "Use the launching host session." });
+    expect(frames().some(m => m.token)).toBe(false); expect(ctx.shutdown).not.toHaveBeenCalled();
+  });
+});

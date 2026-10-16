@@ -225,7 +225,15 @@ export type LauncherResult =
   | { type: "launcher_status_result"; in_reply_to: string; status: LauncherStatus }
   | { type: "launcher_shutdown_result"; in_reply_to: string; stopped: boolean; status: LauncherStatus };
 
+export type SessionControlRequest =
+  | { type: "session_control_status"; id: string; room_id: string }
+  | { type: "session_stop"; id: string; room_id: string; token: string };
+export type SessionControlResult =
+  | { type: "session_control_status_result"; in_reply_to: string; room_id: string; can_stop: boolean; token?: string; reason?: string }
+  | { type: "session_stop_result"; in_reply_to: string; room_id: string; state: "requested" | "stopped" };
+
 export type ClientMessage =
+  | SessionControlRequest
   | LauncherRequest
   | AgentRequest
   | { type: "pair_request"; id: string; token: string; device_name: string }
@@ -316,6 +324,7 @@ export type SessionHistoryEvent =
   | { ts: number; type: "compaction"; summary: string; tokens_before: number };
 
 export type ServerMessage =
+  | SessionControlResult
   | LauncherResult
   | AgentResult
   | {

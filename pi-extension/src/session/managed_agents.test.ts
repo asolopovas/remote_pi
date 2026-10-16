@@ -369,3 +369,18 @@ test("managedChildEnv strips inherited worker/session/display identities but kee
     expect(Object.hasOwn(env, key)).toBe(false);
   }
 });
+
+test("session control owned stop uses exact captured child and rechecks late authority before effects", async () => {
+  const h = harness(); const record = agent(await h.launch()); const child = h.children[0];
+  expect(h.manager.ownsChild("owner-a", record.agent_id, child)).toBe(true);
+  expect(await h.manager.stopOwnedChild("other-owner", record.agent_id, child, allowed)).toBe(false);
+  expect(await h.manager.stopOwnedChild("owner-a", record.agent_id, new ChildProcess(), allowed)).toBe(false);
+  let release!: (ok: boolean) => void;
+  const pending = h.manager.stopOwnedChild("owner-a", record.agent_id, child, () => new Promise(resolve => { release = resolve; }));
+  child.emit("exit", 0, null); release(true);
+  expect(await pending).toBe(false); expect(child.kill).not.toHaveBeenCalled();
+  const next = agent(await h.launch("next"));
+  expect(await h.manager.stopOwnedChild("owner-a", next.agent_id, child, allowed)).toBe(false);
+  expect(await h.manager.stopOwnedChild("owner-a", next.agent_id, h.children[1], allowed)).toBe(true);
+  expect(h.children[1].kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+});

@@ -1,6 +1,8 @@
-import type { AgentRequest, LauncherRequest, ClientMessage, ServerMessage } from "./types.js";
+import type { SessionControlRequest, SessionControlResult, AgentRequest, LauncherRequest, ClientMessage, ServerMessage } from "./types.js";
 
 const SERVER_TYPES = new Set<ServerMessage["type"]>([
+  "session_control_status_result",
+  "session_stop_result",
   "project_list_result",
   "launcher_status_result",
   "launcher_shutdown_result",
@@ -57,6 +59,7 @@ export function decodeServer(line: string): ServerMessage {
   if (!SERVER_TYPES.has(t as ServerMessage["type"])) {
     throw new DecodeError("unsupported_type", `unknown type: ${t}`);
   }
+  if (t === "session_control_status_result" || t === "session_stop_result") return decodeSessionControlResult(obj);
   return obj as ServerMessage;
 }
 
@@ -111,4 +114,23 @@ export function decodeLauncherRequest(value: unknown): LauncherRequest {
   if (o.type === "launcher_agent_stop") { keys.push("agent_id"); if (!text(o.agent_id)) throw new DecodeError("invalid_message", "Invalid agent ID"); }
   if (Object.keys(o).some(k => !keys.includes(k))) throw new DecodeError("invalid_message", "Unexpected launcher field");
   return o as LauncherRequest;
+}
+
+const controlText = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0 && v.length <= 128 && !/[\x00-\x1f\x7f-\x9f]/.test(v);
+export function decodeSessionControlRequest(value: unknown): SessionControlRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new DecodeError("invalid_message", "Invalid session control");
+  const o = value as Record<string, unknown>;
+  const keys = ["type", "id", "room_id", ...(o.type === "session_stop" ? ["token"] : [])];
+  if (!["session_control_status", "session_stop"].includes(String(o.type)) || !controlText(o.id) || !controlText(o.room_id) || o.type === "session_stop" && !controlText(o.token) || Object.keys(o).some(k => !keys.includes(k))) throw new DecodeError("invalid_message", "Invalid session control");
+  return o as SessionControlRequest;
+}
+export function decodeSessionControlResult(value: unknown): SessionControlResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new DecodeError("invalid_message", "Invalid session control result");
+  const o = value as Record<string, unknown>;
+  const status = o.type === "session_control_status_result";
+  const keys = ["type", "in_reply_to", "room_id", ...(status ? ["can_stop", "token", "reason"] : ["state"])];
+  if (!controlText(o.in_reply_to) || !controlText(o.room_id) || Object.keys(o).some(k => !keys.includes(k)) ||
+      (status ? typeof o.can_stop !== "boolean" || (o.can_stop ? !controlText(o.token) : o.token !== undefined) || o.reason !== undefined && !controlText(o.reason)
+        : o.type !== "session_stop_result" || !["requested", "stopped"].includes(String(o.state)))) throw new DecodeError("invalid_message", "Invalid session control result");
+  return o as SessionControlResult;
 }

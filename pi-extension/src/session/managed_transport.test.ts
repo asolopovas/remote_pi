@@ -38,16 +38,17 @@ const rooms: InstanceType<typeof ManagedRoom>[] = [];
 afterEach(() => { for (const room of rooms) room.close(); rooms.length = 0; sockets.length = 0; });
 async function fixture() {
   const child = Object.assign(new EventEmitter(), { connected: true, send: vi.fn(), kill: vi.fn(), exitCode: null, signalCode: null }) as unknown as ChildProcess;
-  let epoch = "e", unlocked = true, paired = true, current = true;
+  let epoch = "e", unlocked = true, paired = true, current = true, owned = true;
+  const stopChild = vi.fn(async (authorized: () => Promise<boolean>) => { if (!await authorized() || !owned) return false; owned = false; child.emit("exit", 0, null); return true; });
   const authorized = vi.fn(async (e: string) => paired && current && unlocked && e === epoch);
   const pairedCheck = vi.fn(async () => paired);
   const room = new ManagedRoom({ agent: { agent_id: "a", name: "assigned", cwd: "/assigned", room_id: "assigned-room", state: "running" }, child, owner: "owner", url: "ws://fixture", keypair: generateEd25519Keypair(),
-    currentEpoch: () => epoch, authorized,
+    currentEpoch: () => epoch, authorized, ownsChild: () => owned, stopChild,
     paired: pairedCheck, current: () => current, hasGrant: e => unlocked && e === epoch });
   rooms.push(room); await room.connect(); const ws = sockets.at(-1)!;
   const emit = (message: object) => child.emit("message", { type: "managed_event", epoch, message });
   const meta = (value: object) => child.emit("message", { type: "managed_metadata", epoch, meta: value });
-  return { child, room, ws, emit, meta, authorized, pairedCheck, lock() { epoch = "locked"; unlocked = false; room.revoke(); }, unlock() { epoch = "unlocked"; unlocked = true; room.revoke(); }, unpair() { paired = false; }, replace() { current = false; } };
+  return { child, room, ws, emit, meta, authorized, pairedCheck, stopChild, expire() { unlocked = false; }, replaceChild() { owned = false; }, lock() { epoch = "locked"; unlocked = false; room.revoke(); }, unlock() { epoch = "unlocked"; unlocked = true; room.revoke(); }, unpair() { paired = false; }, replace() { current = false; } };
 }
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 
@@ -170,4 +171,53 @@ test("closing during pending managed completion neither retries nor kills an alr
   f.room.close(); f.ws.callbacks[0]!(); f.ws.callbacks[0]!();
   expect(f.child.kill).not.toHaveBeenCalled();
   expect(f.ws.readyState).toBe(3);
+});
+
+
+const controlSend = (f: Awaited<ReturnType<typeof fixture>>, message: object, peer = "owner") => f.ws.emit("message", Buffer.from(JSON.stringify({ peer, ct: Buffer.from(JSON.stringify(message)).toString("base64") })));
+const controlReplies = (f: Awaited<ReturnType<typeof fixture>>) => f.ws.sent.map(line => JSON.parse(line)).filter(m => m.ct).map(m => JSON.parse(Buffer.from(m.ct, "base64").toString()));
+const controlStatus = async (f: Awaited<ReturnType<typeof fixture>>) => { controlSend(f, { type: "session_control_status", id: "status", room_id: "assigned-room" }); await settle(); return controlReplies(f).at(-1); };
+test("session control managed status while locked never returns a token", async () => {
+  const f = await fixture(); f.lock();
+  expect(await controlStatus(f)).toEqual({ type: "session_control_status_result", in_reply_to: "status", room_id: "assigned-room", can_stop: false, reason: "Unlock the launching host first." });
+  expect(f.stopChild).not.toHaveBeenCalled(); expect(f.child.send).toHaveBeenCalledTimes(2); // init + revoke only
+});
+test("session control managed exact owned child stops once and reports actual exit", async () => {
+  const f = await fixture(); const status = await controlStatus(f); expect(status.can_stop).toBe(true);
+  controlSend(f, { type: "session_stop", id: "stop", room_id: "assigned-room", token: status.token }); await settle();
+  expect(f.stopChild).toHaveBeenCalledTimes(1);
+  expect(controlReplies(f).at(-1)).toMatchObject({ type: "session_stop_result", state: "stopped", in_reply_to: "stop" });
+  controlSend(f, { type: "session_stop", id: "replay", room_id: "assigned-room", token: status.token }); await settle(); expect(f.stopChild).toHaveBeenCalledTimes(1);
+  expect(f.child.send).toHaveBeenCalledTimes(1); // new controls are never forwarded into the child/model
+});
+test.each(["lock", "unpair", "replace", "replaceChild", "exit", "foreign-room", "foreign-owner"])("session control managed %s invalidates captured child capability", async action => {
+  const f = await fixture(); const status = await controlStatus(f);
+  if (action === "lock") f.lock();
+  if (action === "unpair") f.unpair();
+  if (action === "replace") f.replace();
+  if (action === "replaceChild") f.replaceChild();
+  if (action === "exit") f.child.emit("exit", 0, null);
+  controlSend(f, { type: "session_stop", id: "stop", room_id: action === "foreign-room" ? "other" : "assigned-room", token: status.token }, action === "foreign-owner" ? "other" : "owner"); await settle();
+  expect(f.stopChild).not.toHaveBeenCalled();
+});
+test("session control managed late grant lookup cannot outlive revocation", async () => {
+  const f = await fixture(); const status = await controlStatus(f);
+  let release!: (ok: boolean) => void;
+  f.authorized.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  controlSend(f, { type: "session_stop", id: "stop", room_id: "assigned-room", token: status.token });
+  await settle(); f.lock(); release(true); await settle(); expect(f.stopChild).not.toHaveBeenCalled();
+});
+
+test("session control managed expires authority during exit and suppresses stopped reply", async () => {
+  const f = await fixture(); const status = await controlStatus(f);
+  const original = f.stopChild.getMockImplementation()!;
+  f.stopChild.mockImplementationOnce(async authorized => { const stopped = await original(authorized); f.expire(); return stopped; });
+  controlSend(f, { type: "session_stop", id: "stop", room_id: "assigned-room", token: status.token }); await settle();
+  expect(f.stopChild).toHaveBeenCalledTimes(1);
+  expect(controlReplies(f).some(m => m.type === "session_stop_result")).toBe(false);
+});
+test("session control managed rejects malformed known fields with correlated error", async () => {
+  const f = await fixture(); controlSend(f, { type: "session_control_status", id: "bad", room_id: "assigned-room", pid: 123 }); await settle();
+  expect(controlReplies(f).at(-1)).toMatchObject({ type: "error", in_reply_to: "bad" });
+  expect(f.stopChild).not.toHaveBeenCalled();
 });

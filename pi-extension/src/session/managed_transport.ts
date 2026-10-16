@@ -3,6 +3,8 @@ import type { ChildProcess } from "node:child_process";
 import type { ClientMessage, ManagedAgent, ServerMessage } from "../protocol/types.js";
 import { RelayClient } from "../transport/relay_client.js";
 import type { Ed25519Keypair } from "../pairing/crypto.js";
+import { SessionControl } from "./session_control.js";
+import { decodeSessionControlRequest } from "../protocol/codec.js";
 import { DecodeError } from "../protocol/codec.js";
 
 export const MANAGED_CONTROL_TYPES = new Set(["user_message", "queued_message_set", "queued_message_clear", "cancel", "ping", "session_sync", "model_set", "thinking_set", "list_models", "extension_ui_response"]);
@@ -37,6 +39,9 @@ export function decodeManagedControl(value: unknown): ClientMessage {
 const OUTBOUND = new Set(["user_input", "queued_message_state", "steer_consumed", "agent_chunk", "agent_done", "agent_message", "tool_request", "tool_result", "error", "cancelled", "pong", "session_history", "extension_ui_request", "action_ok", "action_error", "models_list"]);
 interface Options {
   agent: ManagedAgent; owner: string; child: ChildProcess; url: string; keypair: Ed25519Keypair;
+  /** Immutable per-launch record + actual ChildProcess, never a transcript/PID lookup. */
+  ownsChild(): boolean;
+  stopChild(authorized: () => Promise<boolean>): Promise<boolean>;
   currentEpoch(): string;
   authorized(epoch: string): Promise<boolean>;
   paired(): Promise<boolean>;
@@ -47,6 +52,9 @@ interface Options {
  * No private key, pair record, arbitrary destination or mesh operation reaches IPC. */
 export class ManagedRoom {
   private relay: RelayClient;
+  private readonly control = new SessionControl();
+  private stopping = false;
+  private closeDeferred = false;
   private closed = false;
   private sequence = 0;
   private used = new Set<string>();
@@ -96,18 +104,48 @@ export class ManagedRoom {
     finally { this.metadataBusy = false; if (this.metadataDirty) this.scheduleMetadata(); }
   }
   private receive = (line: string): void => {
-    if (this.closed || Buffer.byteLength(line) > 6_000_000 || this.inflight >= 8) return;
+    if (this.closed || this.stopping || Buffer.byteLength(line) > 6_000_000 || this.inflight >= 8) return;
     let outer: { peer?: unknown; ct?: unknown };
     let message: ClientMessage;
     try {
       outer = JSON.parse(line) as typeof outer;
       if (outer.peer !== this.opts.owner || typeof outer.ct !== "string") return;
-      message = decodeManagedControl(JSON.parse(Buffer.from(outer.ct, "base64").toString("utf8")));
+      const raw = JSON.parse(Buffer.from(outer.ct, "base64").toString("utf8")) as { type?: string };
+      message = raw?.type === "session_control_status" || raw?.type === "session_stop" ? raw as ClientMessage : decodeManagedControl(raw);
     } catch { return; }
     const epoch = this.opts.currentEpoch();
     this.inflight++;
+    let stoppingThisRequest = false;
     void (async () => {
       try {
+        if (message.type === "session_control_status" || message.type === "session_stop") {
+          message = decodeSessionControlRequest(message);
+          if (message.room_id !== this.opts.agent.room_id) throw new Error("Wrong assigned room");
+          const current = () => !this.closed && this.opts.current() && epoch === this.opts.currentEpoch() &&
+            (this.live() && this.opts.ownsChild() || this.stopping);
+          const authorized = async () => await this.opts.authorized(epoch) && current() && this.opts.hasGrant(epoch);
+          const reply = (result: ServerMessage) => this.send(JSON.stringify({ peer: this.opts.owner, ct: Buffer.from(JSON.stringify(result)).toString("base64") }));
+          let grant = false;
+          const room = this;
+          // A locked but paired Owner may discover unavailability, never a token.
+          await this.control.handle(this.opts.owner, message, {
+            current,
+            authorized: async forStop => {
+              grant = await authorized();
+              const paired = await this.opts.paired();
+              return paired && current() && (!forStop || grant && this.opts.hasGrant(epoch));
+            },
+            eligible: () => grant && this.opts.hasGrant(epoch) && this.live() && this.opts.ownsChild(),
+            get reason() { return grant && room.opts.hasGrant(epoch) ? "Stop this managed Pi process." : "Unlock the launching host first."; },
+            completion: "stopped",
+            stop: async () => {
+              if (!await authorized() || !current() || !this.opts.ownsChild()) return false;
+              this.stopping = true; stoppingThisRequest = true;
+              return await this.opts.stopChild(authorized);
+            },
+          }, reply);
+          return;
+        }
         if (!await this.opts.authorized(epoch) || !this.live() || epoch !== this.opts.currentEpoch() || !this.opts.hasGrant(epoch) || !managedChildConnected(this.opts.child)) {
           if (!this.closed && await this.opts.paired()) this.send(JSON.stringify({ peer: this.opts.owner, ct: Buffer.from(JSON.stringify({ type: "error", in_reply_to: message.id, code: "invalid_message", message: "Launcher locked, expired or unavailable; unlock the launching host" })).toString("base64") }));
           return;
@@ -118,7 +156,10 @@ export class ManagedRoom {
           this.used.add(message.id);
         }
         sendToManagedChild(this.opts.child, { type: "managed_control", epoch, sequence: ++this.sequence, message });
-      } finally { this.inflight--; }
+      } catch {
+        const paired = await this.opts.paired();
+        if (paired && !this.closed && this.opts.current() && epoch === this.opts.currentEpoch()) this.send(JSON.stringify({ peer: this.opts.owner, ct: Buffer.from(JSON.stringify({ type: "error", in_reply_to: typeof message.id === "string" && message.id.length > 0 && message.id.length <= 128 && !/[\x00-\x1f\x7f-\x9f]/.test(message.id) ? message.id : undefined, code: "invalid_message", message: "Session control denied; refresh session controls" })).toString("base64") }));
+      } finally { this.inflight--; if (stoppingThisRequest) { this.stopping = false; if (this.closeDeferred) this.close(); } }
     })().catch(() => {});
   };
   private publish = (raw: unknown): void => {
@@ -146,5 +187,5 @@ export class ManagedRoom {
   };
   private send(line: string): void { if (!this.closed) this.relay.sendManaged(line, this.fail); }
   private fail = (): void => { if (this.closed) return; this.close(); this.opts.child.kill("SIGKILL"); };
-  close = (): void => { this.closed = true; if (this.metadataTimer) clearTimeout(this.metadataTimer); this.metadataTimer = undefined; this.opts.child.off("exit", this.close); this.relay.off("message", this.receive); this.relay.off("close", this.fail); this.opts.child.off("message", this.publish); this.relay.terminateManaged(); }
+  close = (): void => { if (this.stopping) { this.closeDeferred = true; return; } this.closed = true; if (this.metadataTimer) clearTimeout(this.metadataTimer); this.metadataTimer = undefined; this.opts.child.off("exit", this.close); this.relay.off("message", this.receive); this.relay.off("close", this.fail); this.opts.child.off("message", this.publish); this.relay.terminateManaged(); }
 }

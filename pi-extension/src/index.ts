@@ -33,6 +33,8 @@
 import { EventEmitter } from "node:events";
 import { childBridge, decodeManagedMetadata } from "./session/managed_pipe.js";
 import { decodeManagedControl } from "./session/managed_transport.js";
+import { SessionControl } from "./session/session_control.js";
+import { decodeSessionControlRequest } from "./protocol/codec.js";
 import { SecureLauncher } from "./session/secure_launcher.js";
 import { decodeLauncherRequest, LAUNCHER_REQUEST_TYPES } from "./protocol/codec.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -2124,7 +2126,7 @@ let _lastCtx: Pick<ExtensionContext, "ui" | "abort" | "cwd"> | null = null;
 // (an app Quick Action OR a `/new` typed in the Pi TUI). It carries only
 // base-ctx methods (no newSession — that's command-ctx only), so command ops
 // keep using `_lastCtx`.
-let _lastEventCtx: Pick<ExtensionContext, "compact" | "abort" | "ui"> | null = null;
+let _lastEventCtx: Pick<ExtensionContext, "compact" | "abort" | "ui" | "shutdown" | "sessionManager" | "mode"> | null = null;
 const _noopCtx = { ui: { notify: () => undefined }, abort: () => undefined };
 
 // A single Pi process can load this extension TWICE in the SAME session:
@@ -4633,11 +4635,60 @@ async function _routeAgentRequest(sender: PlainPeerChannel, raw: unknown): Promi
   }
 }
 
+const _sessionControl = new SessionControl();
+async function _routeSessionControl(sender: PlainPeerChannel, raw: unknown): Promise<void> {
+  const rawId = (raw as { id?: unknown } | null)?.id;
+  let id = typeof rawId === "string" && rawId.length > 0 && rawId.length <= 128 && !/[\x00-\x1f\x7f-\x9f]/.test(rawId) ? rawId : undefined;
+  const owner = [..._activePeers].find(([, channel]) => channel === sender)?.[0];
+  const ctx = _lastEventCtx;
+  const root = _rootLifecycleGeneration;
+  const relay = _relayLifecycleGeneration;
+  const channelCurrent = () => !!owner && !_disposed && _lastEventCtx === ctx &&
+    root === _rootLifecycleGeneration && relay === _relayLifecycleGeneration && _activePeers.get(owner) === sender;
+  let replied = false;
+  try {
+    const request = decodeSessionControlRequest(raw); id = request.id;
+    if (!owner || !channelCurrent() || _myRoomId !== request.room_id) throw new Error("Exact paired session required");
+    let nativeId: string | undefined;
+    try { nativeId = ctx?.sessionManager.getSessionId(); } catch { /* unsupported context */ }
+    const current = () => {
+      try { return channelCurrent() && !!ctx && !!nativeId && ctx.sessionManager.getSessionId() === nativeId && _myRoomId === request.room_id; }
+      catch { return false; }
+    };
+    // 0.79.10 RPC only checks shutdown on the next RPC input, not idle external control.
+    const supported = !!nativeId && ctx?.mode === "tui" && typeof ctx?.shutdown === "function" && typeof ctx?.abort === "function";
+    if (!supported && request.type === "session_control_status") {
+      const paired = await _findKnownPeer(owner);
+      if (paired && channelCurrent() && _myRoomId === request.room_id) sender.send({ type: "session_control_status_result", in_reply_to: request.id, room_id: request.room_id, can_stop: false, reason: "Orderly shutdown is unavailable in this Pi runtime." });
+      return;
+    }
+    await _sessionControl.handle(owner, request, {
+      current,
+      authorized: async () => !!await _findKnownPeer(owner) && current(),
+      eligible: () => process.env[MANAGED_CHILD_ENV] !== "1" && supported,
+      reason: process.env[MANAGED_CHILD_ENV] === "1" ? "Use the launching host session." : "Stopping this Pi also closes its managed children.",
+      completion: "requested",
+      stop: () => {
+        if (!current()) return;
+        ctx!.abort();
+        if (current()) ctx!.shutdown();
+      },
+    }, result => { replied = true; sender.send(result); });
+  } catch {
+    if (replied || !owner) return; // Requested + lost ack/SDK failure remains unknown, never replayed.
+    try {
+      const paired = await _findKnownPeer(owner);
+      if (paired && channelCurrent()) sender.send({ type: "error", ...(id ? { in_reply_to: id } : {}), code: "invalid_message", message: "Session control denied; refresh session controls" });
+    } catch { /* pairing unavailable: fail closed */ }
+  }
+}
+
 export function _routeClientMessageFrom(
   sender: PlainPeerChannel,
   msg: ClientMessage,
   ctx: Pick<ExtensionContext, "abort">,
 ): void {
+  if (msg.type === "session_control_status" || msg.type === "session_stop") { void _routeSessionControl(sender, msg); return; }
   if (isRoomDisplayMessage(msg)) return;
   if (LAUNCHER_REQUEST_TYPES.has(msg.type)) { void _routeLauncherRequest(sender, msg); return; }
   if (msg.type === "agent_list" || msg.type === "agent_launch" || msg.type === "agent_stop") {

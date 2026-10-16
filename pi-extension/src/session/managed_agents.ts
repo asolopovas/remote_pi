@@ -313,6 +313,18 @@ export class ManagedAgents {
     if (!await wait()) { child.kill("SIGKILL"); if (!await wait()) throw new AgentFailure("timeout", "Pi did not exit after SIGKILL; host shutdown will retry cleanup"); }
   }
 
+  /** Captured owned process only; never resolve a replacement by PID/name/cwd. */
+  ownsChild(owner: string, agentId: string, child: ChildProcess): boolean {
+    const entry = this.entries.get(agentId);
+    return !this.closing && !!entry && entry.owner === owner && entry.child === child && !entry.stopRequested;
+  }
+  async stopOwnedChild(owner: string, agentId: string, child: ChildProcess, authorized: () => Promise<boolean>): Promise<boolean> {
+    if (!await authorized() || !this.ownsChild(owner, agentId, child)) return false;
+    const entry = this.entries.get(agentId)!;
+    await this.stop(entry);
+    return !entry.child && entry.agent.state === "stopped";
+  }
+
   async shutdownOwner(owner: string): Promise<boolean> {
     const owned = [...this.entries.values()].filter(entry => entry.owner === owner);
     const results = await Promise.allSettled(owned.map(entry => this.stop(entry)));
