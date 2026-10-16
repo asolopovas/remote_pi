@@ -77,9 +77,9 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
     final ok = await showDialog<bool>(
       context: context,
       builder: (dialog) => AlertDialog(
-        title: const Text('Stop your managed agents and lock access?'),
+        title: const Text('Stop all and lock?'),
         content: const Text(
-          'Stops only your Owner’s managed agents and locks launcher access globally. Does not stop the OS, Relay, or other Owners’ agents.',
+          'Stops your managed agents; locks all launcher access. Other agents, OS and Relay stay running.',
         ),
         actions: [
           TextButton(
@@ -227,10 +227,7 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
             'Host: ${widget.target.host}',
             style: TextStyle(color: colors.text),
           ),
-          Text(
-            'Session: ${widget.target.session}\nRoom: ${widget.target.room}',
-            style: TextStyle(color: colors.muted),
-          ),
+          Text(widget.target.session, style: TextStyle(color: colors.muted)),
           const SizedBox(height: 16),
           if (state.busy) const LinearProgressIndicator(),
           if (state.message != null)
@@ -241,23 +238,21 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
           if (availability != null)
             Text(
               availability.available
-                  ? 'Available · maximum ${availability.maxAgents} live agents'
+                  ? '${availability.agents.where((a) => a.state == 'running' || a.state == 'starting').length}/${availability.maxAgents} agents'
                   : 'Unavailable: ${availability.reason ?? 'Launching disabled on this host'}',
             ),
           Text(
             vm.security == null
-                ? 'Launcher status unavailable. Refresh; update/setup the host extension if unsupported.'
+                ? 'Launcher unavailable.'
                 : !vm.security!.configured
-                ? 'Set up a PIN and registered projects on the host.'
+                ? 'Host setup required: PIN and projects.'
                 : vm.unlocked
                 ? 'Launcher unlocked'
                 : 'Launcher locked',
           ),
           if ((vm.security?.cooldownUntil ?? 0) >
               DateTime.now().millisecondsSinceEpoch)
-            Text(
-              'PIN cooldown active until ${DateTime.fromMillisecondsSinceEpoch(vm.security!.cooldownUntil).toLocal()}. Refresh after waiting.',
-            ),
+            Text('Too many attempts. Try later.'),
           if (!vm.unlocked) ...[
             TextField(
               controller: _pin,
@@ -312,9 +307,6 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
             Text(
               'Directory: ${project.cwd}\nAllowed folders:\n${project.allowedFolders.join('\n')}',
             ),
-          const Text(
-            'Background agents survive phone disconnect, not launcher close/reload. Launch only trusted registered projects.',
-          ),
           TextButton(
             onPressed: disabled || vm.security == null
                 ? null
@@ -322,11 +314,11 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
                     _pin.clear();
                     vm.lock();
                   },
-            child: const Text('Lock (keep agents running)'),
+            child: const Text('Lock'),
           ),
           TextButton(
             onPressed: disabled || vm.security == null ? null : _shutdown,
-            child: const Text('Stop your managed agents and lock access'),
+            child: const Text('Stop all and lock'),
           ),
           TextField(
             controller: _name,
@@ -347,11 +339,11 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
           ),
           TextButton(
             onPressed: disabled ? null : vm.refresh,
-            child: const Text('Refresh agents and discovery'),
+            child: const Text('Refresh'),
           ),
           if (vm.hasUnknownLaunch)
             const Text(
-              'Outcome unknown; a prior attempt may still start/appear. Refresh before explicitly confirming another Start.',
+              'Launch unconfirmed. Refresh before retrying; retry may duplicate.',
             ),
           const Text('Managed agents'),
           for (final agent in availability?.agents ?? [])
@@ -372,9 +364,6 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
                     )
                   : null,
             ),
-          const Text(
-            'New agents appear as regular sessions on Home. Return there to open the discovered online room.',
-          ),
         ],
       ),
     );

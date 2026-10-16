@@ -745,7 +745,7 @@ class _ChatPageState extends State<ChatPage> {
         messenger.showSnackBar(
           SnackBar(
             content: const Text(
-              'Microphone access is off — enable it in Settings to dictate.',
+              'Microphone permission denied.',
             ),
             duration: const Duration(seconds: 5),
             behavior: SnackBarBehavior.floating,

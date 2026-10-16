@@ -94,6 +94,19 @@ class PairingViewModel extends ViewModel<PairingState> {
 por isso states precisam de `==` / `hashCode` corretos (use `equatable` ou
 escreva manualmente). Isso evita rebuilds desnecessários.
 
+## Regra estrita: texto mínimo na UI
+
+- Use apenas o texto indispensável e a menor formulação clara possível.
+- Menus mostram somente labels curtos; não adicione subtítulos explicativos,
+  dicas persistentes, instruções de uso ou mensagens de sucesso rotineiras.
+- Estado normal deve aparecer no próprio controle (ícone/seleção), não em
+  parágrafos auxiliares. Preserve labels acessíveis e tooltips curtos.
+- Exceções: erros acionáveis e confirmações de risco, sempre compactos. Não
+  esconda consequências de segurança, permissões ou estado incerto.
+- Ditado permanece ativo durante silêncio e limites de segmentos nativos;
+  Stop é explícito no botão de ditado. Saída/background e falha real devem
+  liberar o microfone; silêncio nunca equivale a Stop.
+
 ## Como a UI consome o ViewModel
 
 Páginas **nunca** instanciam o ViewModel — o `ViewmodelProvider<T>` declarado

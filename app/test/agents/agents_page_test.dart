@@ -34,25 +34,19 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      final shutdown = find.widgetWithText(
-        TextButton,
-        'Stop your managed agents and lock access',
-      );
+      final shutdown = find.widgetWithText(TextButton, 'Stop all and lock');
       await tester.ensureVisible(shutdown);
       await tester.pumpAndSettle();
       await tester.tap(shutdown);
       await tester.pumpAndSettle();
       expect(
-        find.textContaining('Does not stop the OS, Relay, or other Owners'),
+        find.textContaining('Other agents, OS and Relay stay running.'),
         findsOneWidget,
       );
       expect(repo.shutdowns, 0);
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
-      final lock = find.widgetWithText(
-        TextButton,
-        'Lock (keep agents running)',
-      );
+      final lock = find.widgetWithText(TextButton, 'Lock');
       await tester.ensureVisible(lock);
       await tester.pumpAndSettle();
       await tester.tap(lock);

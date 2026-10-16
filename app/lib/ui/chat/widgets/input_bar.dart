@@ -446,25 +446,17 @@ class _InputBarState extends State<InputBar> with WidgetsBindingObserver {
               ],
             ],
           ),
-          if (voiceActive || voiceState is VoiceFailed || voiceUnavailable)
+          if (voiceState is VoiceFailed || voiceUnavailable)
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
-                starting
-                    ? 'Starting dictation…'
-                    : transcribing
-                    ? 'Finishing dictation…'
-                    : reconnecting
-                    ? 'Restarting local dictation… · Tap mic to stop'
-                    : recording
-                    ? 'Listening · Tap mic to stop'
-                    : voiceState is VoiceUnavailable &&
-                          voiceState.reason ==
-                              VoiceUnavailableReason.permissionDenied
-                    ? 'Microphone or speech permission denied. Enable it in Settings.'
+                voiceState is VoiceUnavailable &&
+                        voiceState.reason ==
+                            VoiceUnavailableReason.permissionDenied
+                    ? 'Microphone permission denied.'
                     : voiceUnavailable
-                    ? 'Local dictation unavailable on this device'
-                    : 'Dictation ended with an error. Review recognized text.',
+                    ? 'Dictation unavailable.'
+                    : 'Dictation failed.',
                 key: const Key('dictation-feedback'),
                 style: TextStyle(color: colors.muted2, fontSize: 12),
               ),
@@ -528,7 +520,7 @@ class _QueuedMessagePreview extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        editable ? 'Queued. Tap to edit.' : 'Queued follow-up.',
+                        'Queued',
                         style: TextStyle(
                           color: colors.accent,
                           fontFamily: kMonoFamily,

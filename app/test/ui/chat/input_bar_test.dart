@@ -39,10 +39,7 @@ void main() {
     expect(find.byIcon(LucideIcons.mic600), findsOneWidget);
     await tester.tap(find.byKey(const Key('input-bar-dictation')));
     await tester.pump();
-    expect(
-      find.text('Local dictation unavailable on this device'),
-      findsOneWidget,
-    );
+    expect(find.text('Dictation unavailable.'), findsOneWidget);
     expect(
       tester.widget<TextField>(find.byType(TextField)).controller!.text,
       'manual draft',

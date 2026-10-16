@@ -6,6 +6,8 @@ import 'package:fake_async/fake_async.dart';
 
 import 'package:app/data/voice/speech_service.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
+import 'package:app/ui/chat/voice/states/voice_input_state.dart';
 
 class _FakeSttPlugin implements SttPlugin {
   bool initializeResult = true;
@@ -143,9 +145,51 @@ void main() {
   });
 
   group('capture lifecycle', () {
+    test(
+      'silence keeps dictation active; live words need no pause; Stop is manual',
+      () {
+        fakeAsync((clock) {
+          final plugin = _FakeSttPlugin();
+          final service = SpeechToTextService(plugin);
+          final voice = VoiceInputViewModel(service);
+          var visible = '';
+          voice.transcripts.listen((text) => visible = text);
+          unawaited(voice.startRecording());
+          clock.flushMicrotasks();
+          plugin.emitResult('first words');
+          expect(visible, 'first words'); // Before any silence/final callback.
+          for (var i = 0; i < 20; i++) {
+            plugin.error!(
+              const SttError('error_speech_timeout', permanent: true),
+            );
+            clock.flushMicrotasks();
+            expect(voice.active, isTrue);
+            if (i == 0) clock.elapse(service.finalWait);
+            clock.elapse(voice.restartDelay);
+            expect(voice.state, isA<VoiceRecording>());
+          }
+          expect(plugin.calls.where((c) => c == 'listen').length, 21);
+          plugin.emitResult('live again');
+          expect(visible, 'first words live again');
+          clock.elapse(const Duration(minutes: 20));
+          expect(voice.active, isTrue);
+          plugin.afterStop = () =>
+              plugin.emitResult('live again', isFinal: true);
+          unawaited(voice.stopAndTranscribe());
+          clock.flushMicrotasks();
+          clock.elapse(const Duration(seconds: 5));
+          expect(voice.state, isA<VoiceIdle>());
+          expect(plugin.calls.where((c) => c == 'listen').length, 21);
+          expect(visible, 'first words live again');
+          voice.dispose();
+          service.dispose();
+          clock.flushMicrotasks();
+        });
+      },
+    );
     for (final code in ['error_no_match', 'error_speech_timeout']) {
       test(
-        '$code retains partial at bound and ignores terminal events after release',
+        '$code retains late final window and ignores terminal events after release',
         () {
           fakeAsync((clock) {
             final plugin = _FakeSttPlugin();

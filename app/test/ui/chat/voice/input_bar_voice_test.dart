@@ -121,7 +121,7 @@ void main() {
       expect(text(tester), 'synthetic retained words');
       expect(sent, isEmpty);
       expect(
-        find.text('Dictation ended with an error. Review recognized text.'),
+        find.text('Dictation failed.'),
         failed ? findsOneWidget : findsNothing,
       );
       expect(vm.state, failed ? isA<VoiceFailed>() : isA<VoiceReconnecting>());
@@ -138,7 +138,7 @@ void main() {
       svc.ended!();
       await tester.pump();
       expect(text(tester), 'synthetic first final');
-      expect(find.textContaining('Restarting local dictation'), findsOneWidget);
+      expect(find.byKey(const Key('dictation-feedback')), findsNothing);
       expect(find.textContaining('Listening'), findsNothing);
       expect(find.bySemanticsLabel('Stop dictation'), findsOneWidget);
       await tester.pump(vm.restartDelay);
@@ -233,10 +233,7 @@ void main() {
     await tester.enterText(find.byType(TextField), 'keep this draft');
     await tapMic(tester);
     expect(find.bySemanticsLabel('Start dictation'), findsOneWidget);
-    expect(
-      find.text('Local dictation unavailable on this device'),
-      findsOneWidget,
-    );
+    expect(find.text('Dictation unavailable.'), findsOneWidget);
     expect(text(tester), 'keep this draft');
     svc.availability = const SpeechReady('en_US');
     await tapMic(tester);
@@ -252,7 +249,7 @@ void main() {
     await tapMic(tester);
     expect(vm.state, isA<VoiceRecording>());
     expect(hints, isEmpty);
-    expect(find.textContaining('Listening'), findsOneWidget);
+    expect(find.byKey(const Key('dictation-feedback')), findsNothing);
   });
 
   testWidgets(
@@ -269,17 +266,10 @@ void main() {
       expect(text(tester), 'yellow world');
       expect(find.byIcon(LucideIcons.send600), findsNothing);
       expect(find.bySemanticsLabel('Stop dictation'), findsOneWidget);
-      expect(
-        tester
-            .getRect(find.byType(TextField))
-            .overlaps(
-              tester.getRect(find.byKey(const Key('dictation-feedback'))),
-            ),
-        isFalse,
-      );
+      expect(find.byKey(const Key('dictation-feedback')), findsNothing);
       await tapMic(tester);
       expect(find.textContaining('Listening'), findsNothing);
-      expect(find.text('Finishing dictation…'), findsOneWidget);
+      expect(find.byKey(const Key('dictation-feedback')), findsNothing);
       svc.stopGate!.complete('yellow world complete');
       await tester.pump();
       expect(text(tester), 'yellow world complete');
@@ -338,7 +328,7 @@ void main() {
       svc.initGate = Completer<void>();
       await pumpBar(tester);
       await tapMic(tester);
-      expect(find.text('Starting dictation…'), findsOneWidget);
+      expect(find.byKey(const Key('dictation-feedback')), findsNothing);
       expect(find.textContaining('Listening'), findsNothing);
       await tapMic(tester);
       svc.initGate!.complete();
@@ -367,20 +357,12 @@ void main() {
       await pumpBar(tester);
       await tapMic(tester);
       expect(hints, [VoiceHint.permissionDenied]);
-      expect(
-        find.text(
-          'Microphone or speech permission denied. Enable it in Settings.',
-        ),
-        findsOneWidget,
-      );
+      expect(find.text('Microphone permission denied.'), findsOneWidget);
       expect(find.byIcon(LucideIcons.mic600), findsOneWidget);
       svc.availability = const SpeechUnsupported();
       await tapMic(tester);
       expect(find.byIcon(LucideIcons.mic600), findsOneWidget);
-      expect(
-        find.text('Local dictation unavailable on this device'),
-        findsOneWidget,
-      );
+      expect(find.text('Dictation unavailable.'), findsOneWidget);
     },
   );
 

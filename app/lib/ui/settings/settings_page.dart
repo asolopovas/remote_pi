@@ -328,13 +328,7 @@ class _DisplaySection extends StatelessWidget {
             'Wrap text by default',
             style: context.typo.sansBody.copyWith(color: colors.text),
           ),
-          subtitle: Text(
-            'Code and tool output. Each block can override with Wrap/Scroll.',
-            style: context.typo.sansBody.copyWith(
-              color: colors.muted,
-              fontSize: 12,
-            ),
-          ),
+
           value: prefs.wrapTextByDefault,
           onChanged: (v) => prefs.setWrapTextByDefault(v),
         ),
@@ -345,13 +339,7 @@ class _DisplaySection extends StatelessWidget {
             'Hide tool calls in chat',
             style: context.typo.sansBody.copyWith(color: colors.text),
           ),
-          subtitle: Text(
-            'Only show your messages and the assistant replies.',
-            style: context.typo.sansBody.copyWith(
-              color: colors.muted,
-              fontSize: 12,
-            ),
-          ),
+
           value: prefs.hideToolCalls,
           onChanged: (v) => prefs.setHideToolCalls(v),
         ),
@@ -362,13 +350,7 @@ class _DisplaySection extends StatelessWidget {
             'Collapse subagents',
             style: context.typo.sansBody.copyWith(color: colors.text),
           ),
-          subtitle: Text(
-            'Start with compact task headers in the Subagents view.',
-            style: context.typo.sansBody.copyWith(
-              color: colors.muted,
-              fontSize: 12,
-            ),
-          ),
+
           value: prefs.collapseSubagents,
           onChanged: (v) => prefs.setCollapseSubagents(v),
         ),

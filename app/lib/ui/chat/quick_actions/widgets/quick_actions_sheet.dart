@@ -140,7 +140,6 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
               key: const Key('qa-compact'),
               icon: LucideIcons.shrink,
               label: 'Compact context',
-              subtitle: 'Summarize old turns to free room.',
               busy: busyAction == ActionName.sessionCompact,
               onTap: () => _onCompact(vm),
             ),
@@ -149,7 +148,6 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
               key: const Key('qa-new-session'),
               icon: LucideIcons.sparkles,
               label: 'New session',
-              subtitle: 'Clears the conversation on the Pi.',
               busy: busyAction == ActionName.sessionNew,
               onTap: () => _onNewSession(vm),
             ),
@@ -330,14 +328,12 @@ class _Divider extends StatelessWidget {
 class _ActionTile extends StatelessWidget {
   final IconData icon;
   final String label;
-  final String subtitle;
   final bool busy;
   final VoidCallback onTap;
   const _ActionTile({
     super.key,
     required this.icon,
     required this.label,
-    required this.subtitle,
     required this.busy,
     required this.onTap,
   });
@@ -354,27 +350,13 @@ class _ActionTile extends StatelessWidget {
             Icon(icon, color: colors.accent, size: 18),
             const SizedBox(width: 14),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    label,
-                    style: TextStyle(
-                      fontFamily: kMonoFamily,
-                      fontSize: 13,
-                      color: colors.text,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: TextStyle(
-                      fontFamily: kMonoFamily,
-                      fontSize: 11,
-                      color: colors.muted,
-                    ),
-                  ),
-                ],
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontFamily: kMonoFamily,
+                  fontSize: 13,
+                  color: colors.text,
+                ),
               ),
             ),
             if (busy)

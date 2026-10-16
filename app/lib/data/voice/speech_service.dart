@@ -128,12 +128,15 @@ class SpeechToTextService implements SpeechService {
             final noSpeech =
                 error.code == 'error_no_match' ||
                 error.code == 'error_speech_timeout';
-            if (!noSpeech) {
+            if (noSpeech && _transcript.isEmpty) {
+              // Silence-only segments have no words to finalize. Resume capture
+              // without the 2s final wait, but preserve late finals after speech.
+              _complete();
+            } else if (!noSpeech) {
               _onError?.call();
             }
-            // Keep the bounded final wait even on failure: a queued native final
-            // can still improve the last partial. The owner suppresses restart
-            // on genuine errors; status/error alone is not a final transcript.
+            // Segments with words retain the bounded wait for queued finals;
+            // the owner suppresses restart only on genuine failures.
             _end();
           },
         );
