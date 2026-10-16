@@ -92,20 +92,11 @@ void main() {
         await tester.tap(find.byTooltip('Copy original output'));
         await tester.pump();
         expect(copied, device);
-        final details = find.descendant(
-          of: find.byKey(const ValueKey('tool-args-device-prefix')),
-          matching: find.byKey(const Key('code-disclosure')),
-        );
-        await tester.ensureVisible(details);
-        await tester.tap(details);
-        await tester.pump();
-        await tester.ensureVisible(find.byTooltip('Copy full details'));
-        await tester.tap(find.byTooltip('Copy full details'));
-        await tester.pump();
         expect(
-          copied,
-          '${const JsonEncoder.withIndent('  ').convert(const {'code': source})}\n\n$device',
+          find.byKey(const ValueKey('tool-args-device-prefix')),
+          findsNothing,
         );
+        expect(find.textContaining('Details ·'), findsNothing);
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox());
       }
@@ -363,14 +354,10 @@ void main() {
               await tester.tap(find.byTooltip('Copy original output'));
               await tester.pump();
               expect(copied, original);
-              final details = find.descendant(
-                of: find.byKey(const ValueKey('tool-args-shell')),
-                matching: find.byKey(const Key('code-disclosure')),
+              expect(
+                find.byKey(const ValueKey('tool-args-shell')),
+                findsNothing,
               );
-              await tester.ensureVisible(details);
-              await tester.tap(details);
-              await tester.pump();
-              expect(find.textContaining(original), findsWidgets);
             } else {
               expect(find.byTooltip('Copy original output'), findsNothing);
             }
@@ -408,7 +395,7 @@ void main() {
     }
   });
   testWidgets(
-    'exact recovered previews copy decoded strings, originals and Details in both themes at 320px/2x',
+    'exact recovered previews copy decoded strings and originals without nested Details in both themes at 320px/2x',
     (tester) async {
       String? copied;
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -536,21 +523,8 @@ void main() {
         await tester.tap(find.byTooltip('Copy original output'));
         await tester.pump();
         expect(copied, result);
-        final details = find.byKey(const ValueKey('tool-args-reported'));
-        final detailsDisclosure = find.descendant(
-          of: details,
-          matching: find.byKey(const Key('code-disclosure')),
-        );
-        await tester.ensureVisible(detailsDisclosure);
-        await tester.tap(detailsDisclosure);
-        await tester.pump();
-        final fullDetails =
-            '${const JsonEncoder.withIndent('  ').convert(fixture['arguments'])}\n\n$result';
-        expect(find.text(fullDetails), findsOneWidget);
-        await tester.ensureVisible(find.byTooltip('Copy full details'));
-        await tester.tap(find.byTooltip('Copy full details'));
-        await tester.pump();
-        expect(copied, fullDetails);
+        expect(find.byKey(const ValueKey('tool-args-reported')), findsNothing);
+        expect(find.textContaining('Details ·'), findsNothing);
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox());
       }

@@ -320,21 +320,6 @@ class _ToolRequestCardState extends State<ToolRequestCard>
               ),
             ),
           ),
-        // Original source/metadata and complete output remain optional, not primary.
-        if (_expanded &&
-            (source != null ||
-                tool.args is Map ||
-                tool.args is List ||
-                _formatToolDisplay(tool.tool, tool.args) != null))
-          CodeViewport(
-            key: ValueKey('tool-args-${tool.id}'),
-            label: 'Details',
-            copyTooltip: 'Copy full details',
-            text: fullDetails,
-            child: SelectionArea(
-              child: SourceCode(fullDetails, language: 'json'),
-            ),
-          ),
       ],
     );
   }

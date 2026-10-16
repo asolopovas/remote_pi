@@ -165,18 +165,12 @@ void main() {
         await tester.tap(find.byTooltip('Copy command'));
         await tester.pump();
         expect(copied, source);
-        await tester.tap(find.byKey(const Key('code-disclosure')).last);
-        await tester.pump();
+        expect(find.textContaining('Details ·'), findsNothing);
+        expect(find.byTooltip('Copy full details'), findsNothing);
         expect(
           find.textContaining('"timeout": 120', findRichText: true),
-          findsOneWidget,
+          findsNothing,
         );
-        await tester.tap(find.byTooltip('Copy full details'));
-        await tester.pump();
-        expect(copied, contains('"command"'));
-        expect(copied, contains('"timeout": 120'));
-        expect(copied, contains('JSON output'));
-        expect(copied, contains('failed output'));
         await tester.pumpWidget(const SizedBox());
       }
     },
@@ -298,17 +292,15 @@ void main() {
           await tester.tap(find.byKey(const Key('code-copy')).first);
           await tester.pump();
           expect(copied, args['content']);
-          await tester.tap(find.byKey(const Key('code-disclosure')));
+        } else {
+          await tester.tap(find.byTooltip('Copy full details'));
           await tester.pump();
+          expect(copied, contains('after'));
+          expect(copied, contains('full result\nnext result'));
+          expect(copied, contains('full error'));
         }
-        await tester.tap(find.byTooltip('Copy full details').last);
-        await tester.pump();
-        expect(
-          copied,
-          contains(args.containsKey('content') ? 'second line' : 'after'),
-        );
-        expect(copied, contains('full result\nnext result'));
-        expect(copied, contains('full error'));
+        expect(find.textContaining('Details ·'), findsNothing);
+        expect(find.byKey(ValueKey('tool-args-${event.id}')), findsNothing);
       }
       await tester.pumpWidget(const SizedBox());
     },
@@ -505,12 +497,10 @@ void main() {
         find.textContaining('   18 },', findRichText: true),
         findsOneWidget,
       );
-      // Full hunk metadata is available without repeating a large rendered diff.
-      expect(find.textContaining('Details ·'), findsOneWidget);
+      // The diff is the content: no nested duplicate raw metadata accordion.
+      expect(find.textContaining('Details ·'), findsNothing);
       expect(find.textContaining('"oldLine"'), findsNothing);
-      await tester.tap(find.byKey(const Key('code-disclosure')));
-      await tester.pump();
-      expect(find.textContaining('"oldLine"'), findsOneWidget);
+      expect(find.byKey(const ValueKey('tool-args-tc2')), findsNothing);
     });
 
     testWidgets('pending state shows RUNNING and no Allow/Deny buttons', (
