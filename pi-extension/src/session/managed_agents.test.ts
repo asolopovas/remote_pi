@@ -4,7 +4,7 @@ import { PassThrough } from "node:stream";
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ManagedAgents, managedChildEnv, type ManagedSpawn } from "./managed_agents.js";
+import { ManagedAgents, managedChildEnv, type ManagedSpawn, type ManagedOptions } from "./managed_agents.js";
 import { roomIdFor } from "../rooms.js";
 import type { AgentRequest, ServerMessage } from "../protocol/types.js";
 
@@ -15,7 +15,7 @@ afterEach(async () => {
   dirs.splice(0).forEach(d => rmSync(d, { recursive: true, force: true }));
 });
 const allowed = async () => true;
-function harness(mode: "ready" | "timeout" | "enoent" | "crash" | "bad-room" | "rpc-only" | "ipc-only" | "output" = "ready", killOn = "SIGTERM") {
+function harness(mode: "ready" | "timeout" | "enoent" | "crash" | "bad-room" | "rpc-only" | "ipc-only" | "output" = "ready", killOn = "SIGTERM", overrides: Partial<ManagedOptions> = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "managed-agent-")); dirs.push(cwd);
   const children: ChildProcess[] = [];
   const spawnMock = vi.fn<ManagedSpawn>().mockImplementation((_command, args, options) => {
@@ -45,7 +45,7 @@ function harness(mode: "ready" | "timeout" | "enoent" | "crash" | "bad-room" | "
     expect(args).toContain("--approve");
     return child;
   });
-  const manager = new ManagedAgents({ cwd, extensionPath: "/extension.js", spawn: spawnMock, readinessMs: 25, stopMs: 10 }); managers.push(manager);
+  const manager = new ManagedAgents({ cwd, extensionPath: "/extension.js", spawn: spawnMock, readinessMs: 25, stopMs: 10, ...overrides }); managers.push(manager);
   type Input = Exclude<AgentRequest, { type: "agent_launch" }> | (Omit<Extract<AgentRequest, { type: "agent_launch" }>, "launcher_id"> & { launcher_id?: string });
   const request = (r: Input, owner = "owner-a", auth = allowed) => manager.handle(owner,
     r.type === "agent_launch" ? { ...r, launcher_id: r.launcher_id ?? manager.launcherId } : r, auth);
@@ -58,6 +58,26 @@ function agent(result: ServerMessage) {
 }
 
 describe("ManagedAgents lifecycle", () => {
+  test("prepared spawn rechecks lock authority synchronously and never starts a revoked child", async () => {
+    let release!: () => void; let entered!: () => void; let granted = true;
+    const waiting = new Promise<void>(r => { release = r; }); const preparing = new Promise<void>(r => { entered = r; });
+    const close = vi.fn(async () => {});
+    const h = harness("ready", "SIGTERM", { admitted: () => granted,
+      prepareSpawn: async () => { entered(); await waiting; return { command: "pi", args: [], options: {}, close }; },
+    });
+    const pending = h.launch(); await preparing; granted = false; release();
+    expect(await pending).toMatchObject({ type: "error", code: "invalid_message" });
+    expect(h.spawnMock).not.toHaveBeenCalled(); expect(close).toHaveBeenCalledTimes(1);
+  });
+  test("owner-only shutdown reports incomplete cleanup, excludes foreign children, and retries safely", async () => {
+    const h = harness("ready", "NEVER");
+    await h.launch("owned"); await h.request({ type: "agent_launch", id: "foreign", cwd: h.cwd }, "owner-b");
+    expect(await h.manager.shutdownOwner("owner-a")).toBe(false);
+    expect(h.children[0].kill).toHaveBeenCalledWith("SIGKILL"); expect(h.children[1].kill).not.toHaveBeenCalled();
+    h.children[0].emit("exit", null, "SIGKILL");
+    expect(await h.manager.shutdownOwner("owner-a")).toBe(true);
+    h.children[1].emit("exit", null, "SIGKILL");
+  });
   test("replacement launcher rejects replay from an old incarnation without spawning", async () => {
     const old = harness(), replacement = harness();
     const request = { type: "agent_launch", id: "lost-reply", launcher_id: old.manager.launcherId, cwd: old.cwd } as const;
@@ -269,7 +289,7 @@ describe("ManagedAgents lifecycle", () => {
   });
   test("rechecks revocation before admission and after readiness; cleanup on shutdown during startup", async () => {
     const h = harness(); let n = 0;
-    expect(await h.request({ type: "agent_launch", id: "revoked", cwd: h.cwd }, "owner-a", async () => ++n < 3)).toMatchObject({ type: "error" });
+    expect(await h.request({ type: "agent_launch", id: "revoked", cwd: h.cwd }, "owner-a", async () => ++n < 4)).toMatchObject({ type: "error" });
     expect(h.children[0].kill).toHaveBeenCalled();
     const slow = harness("timeout"); const pending = slow.launch();
     await vi.waitFor(() => expect(slow.children).toHaveLength(1)); await slow.manager.shutdown();

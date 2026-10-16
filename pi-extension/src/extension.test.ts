@@ -6372,12 +6372,17 @@ describe("UUID-scoped room display producer", () => {
 // ── plan/94: paired channel launch authorization and routing ────────────────
 describe("phone agent request routing", () => {
   let handleSpy: ReturnType<typeof vi.spyOn>;
+  let grantSpy: ReturnType<typeof vi.spyOn>;
+  let authSpy: ReturnType<typeof vi.spyOn>;
   beforeEach(async () => {
     _setDisposedForTest(false);
     _knownPeers.length = 0;
     const stop = captureHandler("remote-pi stop"); await stop("", makeMockCtx());
-    const { ManagedAgents } = await import("./session/managed_agents.js");
-    handleSpy = vi.spyOn(ManagedAgents.prototype, "handle").mockImplementation(async (_owner, request) => ({
+    const { SecureLauncher } = await import("./session/secure_launcher.js");
+    const { LaunchSecurity } = await import("./session/launch_security.js");
+    grantSpy = vi.spyOn(LaunchSecurity.prototype, "hasGrant").mockReturnValue(true);
+    authSpy = vi.spyOn(LaunchSecurity.prototype, "authorized").mockResolvedValue(true);
+    handleSpy = vi.spyOn(SecureLauncher.prototype, "legacy").mockImplementation(async (_owner, request) => ({
       type: "agent_list_result", in_reply_to: request.id, available: true, cwd: "/fixture", max_agents: 4, agents: [],
     }));
     captureHandler("remote-pi");
@@ -6387,14 +6392,14 @@ describe("phone agent request routing", () => {
   afterEach(async () => {
     await captureEventHandler("session_shutdown")({ type: "session_shutdown" });
     _setDisposedForTest(false);
-    handleSpy.mockRestore(); vi.unstubAllEnvs();
+    handleSpy.mockRestore(); grantSpy.mockRestore(); authSpy.mockRestore(); vi.unstubAllEnvs();
     _knownPeers.length = 0;
   });
   const replies = () => relayRef.current!.send.mock.calls.map(c => decodeSentCt(c[0] as string));
   const send = (message: object, peer = OWNER_STANDARD_FIXTURE) => relayRef.current!.emit("message", makeInnerLine(peer,
     "type" in message && message.type === "agent_launch" ? { launcher_id: "fixture-launcher", ...message } : message));
 
-  test("known paired canonical Owner routes launch/list/stop only to the sender", async () => {
+  test("known paired canonical Owner routes legacy requests only to secure launcher and sender", async () => {
     send({ type: "agent_list", id: "list" });
     await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ peer: OWNER_STANDARD_FIXTURE, inner: expect.objectContaining({ in_reply_to: "list" }) })));
     expect(handleSpy).toHaveBeenLastCalledWith(OWNER_STANDARD_FIXTURE, { type: "agent_list", id: "list" }, expect.any(Function));
@@ -6402,6 +6407,73 @@ describe("phone agent request routing", () => {
     send({ type: "agent_stop", id: "stop", agent_id: "server-owned" });
     await vi.waitFor(() => expect(handleSpy).toHaveBeenCalledTimes(3));
     expect(replies().filter(r => ["launch", "stop"].includes(String(r.inner.in_reply_to))).every(r => r.peer === OWNER_STANDARD_FIXTURE)).toBe(true);
+  });
+  test("additive typed launcher frames route only authenticated Owners through exact codec", async () => {
+    const { SecureLauncher } = await import("./session/secure_launcher.js");
+    const handle = vi.spyOn(SecureLauncher.prototype, "handle").mockImplementation(async (_owner, request) => ({
+      type: "launcher_status_result", in_reply_to: request.id,
+      status: { launcher_id: "host", epoch: "epoch", configured: true, unlocked: false, expires_at: null, cooldown_until: 0 },
+    }));
+    try {
+      for (const type of ["launcher_status", "project_list", "launcher_unlock", "launcher_lock", "launcher_shutdown", "project_launch", "launcher_agent_stop"]) {
+        const request = { type, id: type, ...(!["launcher_status", "project_list"].includes(type) ? { launcher_id: "host", epoch: "epoch" } : {}),
+          ...(type === "launcher_unlock" ? { pin: "654321" } : {}), ...(type === "project_launch" ? { project_id: "registered-project" } : {}), ...(type === "launcher_agent_stop" ? { agent_id: "owned-agent" } : {}) };
+        send(request);
+        await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ inner: expect.objectContaining({ in_reply_to: type }) })));
+      }
+      await vi.waitFor(() => expect(handle).toHaveBeenCalledTimes(7));
+      expect(handle.mock.calls.every(call => call[0] === OWNER_STANDARD_FIXTURE)).toBe(true);
+      send({ type: "project_launch", id: "remote-path", launcher_id: "host", epoch: "epoch", project_id: "registered-project", cwd: "/arbitrary" });
+      await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ inner: expect.objectContaining({ type: "error", in_reply_to: "remote-path" }) })));
+      expect(handle).toHaveBeenCalledTimes(7);
+      _knownPeers.length = 0;
+      send({ type: "launcher_unlock", id: "revoked-unlock", launcher_id: "host", epoch: "epoch", pin: "654321" });
+      await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ inner: expect.objectContaining({ type: "error", in_reply_to: "revoked-unlock" }) })));
+      expect(handle).toHaveBeenCalledTimes(7);
+    } finally { handle.mockRestore(); }
+  });
+  test.each(["project_list", "agent_list"].flatMap(type => ["Lock", "channel replacement", "lifecycle replacement"].map(change => [type, change])))("%s final peer lookup cannot publish after %s", async (type, change) => {
+    const { SecureLauncher } = await import("./session/secure_launcher.js");
+    const { setupLaunchPin } = await import("./session/launch_security.js");
+    const { listPeers } = await import("./pairing/storage.js");
+    const home = mkdtempSync(join(tmpdir(), "dispatch-final-")); vi.stubEnv("HOME", home);
+    // Use real verifier, grant and epoch, not permanently-true output guards.
+    grantSpy.mockRestore(); authSpy.mockRestore();
+    let launcher: InstanceType<typeof SecureLauncher> | undefined;
+    const handle = vi.spyOn(SecureLauncher.prototype, "handle").mockImplementation(function(_owner, request) {
+      launcher = this;
+      return Promise.resolve({ type: "launcher_status_result", in_reply_to: request.id,
+        status: { launcher_id: this.agents.launcherId, epoch: this.security.epoch, configured: true, unlocked: false, expires_at: null, cooldown_until: 0 } });
+    });
+    const parked = deferred<StoredPeer[]>(); const entered = deferred<void>();
+    try {
+      send({ type: "launcher_status", id: "capture-launcher" });
+      await vi.waitFor(() => expect(launcher).toBeDefined());
+      await setupLaunchPin("654321", launcher!.security.dir);
+      await launcher!.security.unlock(OWNER_STANDARD_FIXTURE, "local-unlock", launcher!.agents.launcherId, launcher!.security.epoch, "654321", async () => true);
+      expect(launcher!.security.hasGrant(OWNER_STANDARD_FIXTURE, launcher!.security.epoch)).toBe(true);
+      const producer = (_owner: string, request: { id: string }) => {
+        // Installed only AFTER production completes; this is the outbound lookup.
+        vi.mocked(listPeers).mockImplementationOnce(() => { entered.resolve(); return parked.promise; });
+        return Promise.resolve(type === "project_list"
+          ? { type: "project_list_result" as const, in_reply_to: request.id, projects: [{ project_id: "private", name: "private", cwd: "/secret", allowed_folders: ["/secret"] }] }
+          : { type: "agent_list_result" as const, in_reply_to: request.id, available: true, cwd: "/secret", max_agents: 4, agents: [] });
+      };
+      handle.mockImplementation(producer); handleSpy.mockImplementation(producer);
+      send({ type, id: "parked-final" }); await entered.promise;
+      if (change === "Lock") launcher!.lock();
+      else if (change === "channel replacement") {
+        _onPeerDisconnect(OWNER_STANDARD_FIXTURE);
+        send({ type: "ping", id: "new-channel" });
+        await vi.waitFor(() => expect(replies().some(r => r.inner.in_reply_to === "new-channel")).toBe(true));
+      } else {
+        await captureEventHandler("session_shutdown")({ type: "session_shutdown" });
+        _setDisposedForTest(false); // lifecycle generation must reject even after rearming
+      }
+      parked.resolve([..._knownPeers]);
+      await new Promise(r => setTimeout(r, 30));
+      expect(replies().some(r => r.inner.in_reply_to === "parked-final" && ["project_list_result", "agent_list_result"].includes(String(r.inner.type)))).toBe(false);
+    } finally { parked.resolve([..._knownPeers]); handle.mockRestore(); rmSync(home, { recursive: true, force: true }); }
   });
   test("unpaired peer cannot launch or discover capability", async () => {
     send({ type: "agent_launch", id: "unpaired", cwd: "/fixture" }, OTHER_OWNER_STANDARD_FIXTURE);
@@ -6450,6 +6522,42 @@ describe("phone agent request routing", () => {
     const shutdown = vi.spyOn(ManagedAgents.prototype, "shutdown");
     await captureEventHandler("session_shutdown")({ type: "session_shutdown" });
     expect(shutdown).toHaveBeenCalledTimes(1); shutdown.mockRestore();
+  });
+});
+
+describe("sandbox private metadata producers", () => {
+  test("startup snapshot and SDK turn/model/thinking events use only the private metadata frame", async () => {
+    const { installChildBridge } = await import("./session/managed_pipe.js");
+    const { roomIdFor } = await import("./rooms.js");
+    const key = Symbol.for("remote-pi.private-managed-bridge");
+    const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+    const events = new EventEmitter(); const send = vi.fn();
+    vi.stubEnv("REMOTE_PI_SANDBOX_CHILD", "1"); vi.stubEnv("REMOTE_PI_MANAGED_CHILD", "1");
+    vi.stubEnv("REMOTE_PI_DIRECT_CONFIG", JSON.stringify({ agent_name: "private-metadata-fixture" }));
+    installChildBridge({ events, send, connected: true });
+    const harness = captureEventHarness();
+    _setPiForTest({ getThinkingLevel: () => "low" } as unknown as ExtensionAPI);
+    const ctx = { ...makeMockCtx(process.cwd()), model: { id: "initial", name: "initial-model" } };
+    const snapshots = () => send.mock.calls.map(c => c[0]).filter(m => m.type === "managed_metadata");
+    try {
+      (harness.handler("session_start") as (event: AnyEvent, ctx: unknown) => unknown)({ type: "session_start" }, ctx);
+      events.emit("message", { type: "managed_init", owner: OWNER_STANDARD_FIXTURE, room_id: roomIdFor(process.cwd(), "private-metadata-fixture"), epoch: "e" });
+      expect(snapshots().at(-1)).toEqual({ type: "managed_metadata", epoch: "e", meta: { working: false, model: "initial-model", thinking: "low" } });
+      harness.handler("turn_start")({ type: "turn_start" });
+      expect(snapshots().at(-1).meta.working).toBe(true);
+      harness.handler("model_select")({ type: "model_select", model: { id: "next", name: "next-model" } });
+      harness.handler("thinking_level_select")({ type: "thinking_level_select", level: "high" });
+      expect(snapshots().at(-1).meta).toEqual({ working: true, model: "next-model", thinking: "high" });
+      harness.handler("turn_end")({ type: "turn_end" });
+      expect(snapshots().at(-1).meta.working).toBe(false);
+      events.emit("message", { type: "managed_revoke", epoch: "new" });
+      expect(snapshots().at(-1)).toEqual({ type: "managed_metadata", epoch: "new", meta: { working: false, model: "next-model", thinking: "high" } });
+      expect(snapshots().every(m => Object.keys(m).sort().join() === "epoch,meta,type")).toBe(true);
+    } finally {
+      await harness.handler("session_shutdown")({ type: "session_shutdown" });
+      if (previous) Object.defineProperty(globalThis, key, previous); else Reflect.deleteProperty(globalThis, key);
+      vi.unstubAllEnvs(); _setDisposedForTest(false); _setCurrentModelForTest(undefined);
+    }
   });
 });
 

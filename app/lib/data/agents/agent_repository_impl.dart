@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
+import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/domain/contracts/agent_repository.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
@@ -9,15 +10,27 @@ import 'package:app/protocol/uuid7.dart';
 typedef _AgentMutation = ({
   String id,
   String type,
-  String launcherId,
-  ClientMessage message,
+  (String, String) incarnation,
 });
 
 /// App-lifetime request journal: page disposal or reconnect must not forget an
-/// accepted mutation's idempotency key. Never evict an uncertain request.
+/// uncertain launch. No payload or PIN is retained, and nothing is replayed.
 class AgentMutationJournal {
   final _entries = <(String, String), _AgentMutation>{};
+  final _history = <(String, String), List<_AgentMutation>>{};
   static const _limit = 32;
+  int get _retainedCount =>
+      _entries.length +
+      _history.values.fold(0, (count, entries) => count + entries.length);
+
+  void _pruneHistory(
+    (String, String) key,
+    bool Function(_AgentMutation) remove,
+  ) {
+    final history = _history[key];
+    history?.removeWhere(remove);
+    if (history != null && history.isEmpty) _history.remove(key);
+  }
 }
 
 /// Each page owns one pinned channel lease. Reconnect never renews it silently.
@@ -36,7 +49,129 @@ class AgentRepositoryImpl extends AgentRepository {
 
   /// Host readiness (20s) plus failed-child cleanup (up to 6s), with margin.
   final Duration mutationTimeout;
-  String? _peer, _room, _launcherId;
+  String? _peer, _room;
+  (String, String)? _incarnation;
+  LauncherStatus? _security;
+  List<LauncherProject> _projects = const [];
+  Timer? _expiry;
+  bool _reconciled = false;
+  @override
+  bool get hasUnknownLaunch =>
+      _peer != null &&
+      _incarnation != null &&
+      (_journal._entries[(_peer!, _room!)]?.incarnation == _incarnation ||
+          (_journal._history[(_peer!, _room!)]?.any(
+                (entry) => entry.incarnation == _incarnation,
+              ) ??
+              false));
+  @override
+  LauncherStatus? get launcherStatus => _security;
+  @override
+  List<LauncherProject> get projects => _projects;
+  void _revoke() {
+    _reconciled = false;
+    _security = null;
+    _projects = const [];
+    _expiry?.cancel();
+  }
+
+  void _accept(LauncherStatus value) {
+    final changed =
+        _security?.launcherId != value.launcherId ||
+        _security?.epoch != value.epoch;
+    if (changed || !value.permitsControl) _projects = const [];
+    _security = value;
+    _incarnation = (value.launcherId, value.epoch);
+    _expiry?.cancel();
+    if (value.permitsControl) {
+      _expiry = Timer(
+        Duration(
+          milliseconds:
+              value.expiresAt! - DateTime.now().millisecondsSinceEpoch,
+        ),
+        () {
+          _revoke();
+          if (!_invalidations.isClosed) _invalidations.add(null);
+        },
+      );
+    }
+  }
+
+  @override
+  Future<void> status() async {
+    _revoke();
+    final result = await _request(
+      'launcher_status_result',
+      (id) => LauncherRequest('launcher_status', id),
+    );
+    _accept((result as LauncherStatusResult).status);
+  }
+
+  @override
+  Future<void> unlock(String pin) async {
+    final security = _security;
+    if (security == null || !security.configured) {
+      throw const AgentFailure(
+        'Configure the PIN and registered projects on the host.',
+      );
+    }
+    if (!RegExp(r'^\d{6,12}$').hasMatch(pin)) {
+      throw const AgentFailure('PIN must be 6–12 digits.');
+    }
+    if (security.cooldownUntil > DateTime.now().millisecondsSinceEpoch) {
+      throw const AgentFailure(
+        'PIN cooldown active. Wait before trying again.',
+      );
+    }
+    _revoke();
+    final pending = _request(
+      'launcher_status_result',
+      (id) =>
+          LauncherRequest('launcher_unlock', id, status: security, pin: pin),
+    );
+    pin = '';
+    final result = await pending;
+    _accept((result as LauncherStatusResult).status);
+  }
+
+  @override
+  Future<bool> lock({bool shutdown = false}) async {
+    final security = _security;
+    _revoke();
+    if (security == null) {
+      throw const AgentFailure(
+        'Refresh launcher status before locking. Local control is revoked.',
+      );
+    }
+    final result = await _request(
+      shutdown ? 'launcher_shutdown_result' : 'launcher_status_result',
+      (id) => LauncherRequest(
+        shutdown ? 'launcher_shutdown' : 'launcher_lock',
+        id,
+        status: security,
+      ),
+    );
+    final reply = result as LauncherStatusResult;
+    // Never restore local authority from a lock/shutdown response.
+    _accept(
+      LauncherStatus(
+        launcherId: reply.status.launcherId,
+        epoch: reply.status.epoch,
+        configured: reply.status.configured,
+        unlocked: false,
+        expiresAt: null,
+        cooldownUntil: reply.status.cooldownUntil,
+      ),
+    );
+    return reply.stopped ?? true;
+  }
+
+  void _requireUnlocked() {
+    if (_security?.permitsControl != true) {
+      throw const AgentFailure('Unlock the host launcher first.');
+    }
+  }
+
   int? _roomEpoch;
   bool _disposed = false;
   IChannel? _channel;
@@ -44,6 +179,9 @@ class AgentRepositoryImpl extends AgentRepository {
   StreamSubscription<ConnectionStatus>? _status;
   StreamSubscription<Map<String, List<RoomInfo>>>? _rooms;
   final _invalidations = StreamController<void>.broadcast();
+  final _changes = StreamController<void>.broadcast();
+  @override
+  Stream<void> get changes => _changes.stream;
   final _pending =
       <
         String,
@@ -94,13 +232,15 @@ class AgentRepositoryImpl extends AgentRepository {
   }
 
   void _invalidate() {
+    _revoke();
     _channel = null;
     for (final p in _pending.values) {
       p.timer.cancel();
       p.completer.completeError(
         AgentFailure(
           'Host disconnected or session changed. Return home and select it again.',
-          outcomeUnknown: p.type != 'agent_list_result',
+          outcomeUnknown:
+              p.type == 'agent_launch_result' || p.type == 'agent_stop_result',
         ),
       );
     }
@@ -113,16 +253,41 @@ class AgentRepositoryImpl extends AgentRepository {
       _invalidate();
       return;
     }
+    // Legacy chat errors may still arrive without a room. They must never
+    // complete or settle management work, even after request-cache eviction.
+    if (message is ErrorMessage &&
+        (message is! ScopedPeerError ||
+            toStandardB64(message.peer) != toStandardB64(_peer!) ||
+            message.room != _room)) {
+      return;
+    }
     final id = switch (message) {
+      LauncherStatusResult() => message.inReplyTo,
+      ProjectListResult() => message.inReplyTo,
       AgentListResult() => message.inReplyTo,
       AgentMutationResult() => message.inReplyTo,
       ErrorMessage() => message.inReplyTo,
       _ => null,
     };
+    final key = (_peer!, _room!);
+    if (message is AgentMutationResult || message is ErrorMessage) {
+      bool settles(_AgentMutation entry) =>
+          entry.id == id &&
+          (message is ErrorMessage ||
+              (message as AgentMutationResult).type == entry.type);
+      final entry = _journal._entries[key];
+      if (entry != null && settles(entry)) _journal._entries.remove(key);
+      _journal._pruneHistory(key, settles);
+      if (!_changes.isClosed) _changes.add(null);
+    }
     final p = _pending[id];
     if (p == null) return;
     if (message is! ErrorMessage &&
-        (message is AgentListResult
+        (message is LauncherStatusResult
+                ? message.type
+                : message is ProjectListResult
+                ? 'project_list_result'
+                : message is AgentListResult
                 ? 'agent_list_result'
                 : (message as AgentMutationResult).type) !=
             p.type) {
@@ -130,9 +295,9 @@ class AgentRepositoryImpl extends AgentRepository {
     }
     _pending.remove(id);
     p.timer.cancel();
-    final key = (_peer!, _room!);
-    if (_journal._entries[key]?.id == id) _journal._entries.remove(key);
+
     if (message is ErrorMessage) {
+      _revoke();
       p.completer.completeError(AgentFailure(message.message));
     } else {
       p.completer.complete(message);
@@ -141,9 +306,8 @@ class AgentRepositoryImpl extends AgentRepository {
 
   Future<ServerMessage> _request(
     String type,
-    ClientMessage Function(String) create, {
-    _AgentMutation? replay,
-  }) async {
+    ClientMessage Function(String) create,
+  ) {
     if (!_valid) {
       _invalidate();
       throw const AgentFailure(
@@ -151,15 +315,18 @@ class AgentRepositoryImpl extends AgentRepository {
       );
     }
     final key = (_peer!, _room!);
-    final id = replay?.id ?? uuid7();
-    final mutation = type != 'agent_list_result';
-    if (mutation && _launcherId == null) {
+    final id = uuid7();
+    final mutation =
+        type == 'agent_launch_result' || type == 'agent_stop_result';
+    if (mutation && _incarnation == null) {
       throw const AgentFailure(
         'Refresh launcher capabilities before starting an operation.',
       );
     }
     final previous = _journal._entries[key];
-    if (mutation && previous != null && previous.id != id) {
+    if (type == 'agent_launch_result' &&
+        previous != null &&
+        previous.id != id) {
       throw const AgentFailure(
         'Refresh to settle the previous operation before starting another.',
         outcomeUnknown: true,
@@ -167,31 +334,37 @@ class AgentRepositoryImpl extends AgentRepository {
     }
     final pending = _pending[id];
     if (pending != null) return pending.completer.future;
-    final request = replay?.message ?? create(id);
-    if (mutation) {
+    final request = create(id);
+    // Timers retain only operation metadata, never the PIN-bearing message.
+    final securityMutation =
+        request is LauncherRequest &&
+        const [
+          'launcher_unlock',
+          'launcher_lock',
+          'launcher_shutdown',
+        ].contains(request.type);
+    if (type == 'agent_launch_result') {
       if (previous == null &&
-          _journal._entries.length >= AgentMutationJournal._limit) {
+          _journal._retainedCount >= AgentMutationJournal._limit) {
         throw const AgentFailure(
           'Resolve pending agent operations before managing more hosts.',
         );
       }
-      _journal._entries[key] = (
-        id: id,
-        type: type,
-        launcherId: _launcherId!,
-        message: request,
-      );
+      _journal._entries[key] = (id: id, type: type, incarnation: _incarnation!);
     }
     final completer = Completer<ServerMessage>();
-    final deadline = type == 'agent_list_result' ? timeout : mutationTimeout;
+    final deadline = mutation ? mutationTimeout : timeout;
     final timer = Timer(deadline, () {
       final p = _pending.remove(id);
+      _revoke();
       p?.completer.completeError(
         AgentFailure(
-          type == 'agent_list_result'
-              ? 'No capability reply. Update the host Remote Pi extension and try again.'
-              : 'Host response timed out. Refresh before retrying; the operation may have completed.',
-          outcomeUnknown: type != 'agent_list_result',
+          mutation
+              ? 'Host response timed out. Refresh before retrying; the operation may have completed.'
+              : securityMutation
+              ? 'Local control revoked. Host unlock/lock/stop outcome unknown. Refresh status; this action was not retried.'
+              : 'No capability reply. Update/setup the host Remote Pi extension and try again.',
+          outcomeUnknown: mutation || securityMutation,
         ),
       );
     });
@@ -204,11 +377,12 @@ class AgentRepositoryImpl extends AgentRepository {
       ) {
         final p = _pending.remove(id);
         if (p != null) {
+          _revoke();
           p.timer.cancel();
           p.completer.completeError(
             AgentFailure(
               'Could not send to selected host. Refresh before retrying.',
-              outcomeUnknown: type != 'agent_list_result',
+              outcomeUnknown: mutation || securityMutation,
             ),
           );
         }
@@ -219,31 +393,23 @@ class AgentRepositoryImpl extends AgentRepository {
 
   @override
   Future<AgentAvailability> list() async {
+    await status();
+    _requireUnlocked();
+    final projects = await _request(
+      'project_list_result',
+      (id) => LauncherRequest('project_list', id),
+    );
+    _requireUnlocked();
+    _projects = (projects as ProjectListResult).projects;
     final snapshot = await _fetchList();
     final key = (_peer!, _room!);
     final mutation = _journal._entries[key];
-    if (mutation != null) {
-      if (snapshot.launcherId != mutation.launcherId) {
-        _journal._entries.remove(key);
-        throw const AgentFailure(
-          'The launching session changed. The previous operation was not retried. Refresh and confirm a new Start if needed.',
-        );
-      }
-      // A snapshot only verifies incarnation; it cannot settle pending admission.
-      // Replay the exact request. Host checks the incarnation again at execution.
-      try {
-        await _request(
-          mutation.type,
-          (_) => mutation.message,
-          replay: mutation,
-        );
-      } on AgentFailure catch (error) {
-        if (error.outcomeUnknown || !_valid) rethrow;
-        // A correlated host error is a settled outcome. Now fetch its records.
-      }
-      refreshDiscovery();
-      return _fetchList();
+    if (mutation != null && mutation.incarnation != _incarnation) {
+      _journal._entries.remove(key);
     }
+    _requireUnlocked();
+    _journal._pruneHistory(key, (entry) => entry.incarnation != _incarnation);
+    _reconciled = true;
     return snapshot;
   }
 
@@ -258,27 +424,83 @@ class AgentRepositoryImpl extends AgentRepository {
         'Update the host Remote Pi extension: launcher identity is unavailable.',
       );
     }
-    _launcherId = result.launcherId;
+    if (result.launcherId != _security?.launcherId) {
+      _revoke();
+      throw const AgentFailure(
+        'Launcher incarnation changed. Refresh and unlock again.',
+      );
+    }
     return result;
   }
 
   @override
-  Future<ManagedAgent> launch(String cwd, String? name) async {
-    final error = validateAgentInput(cwd, name);
+  Future<ManagedAgent> launch(
+    String projectId,
+    String? name, {
+    bool acknowledgeUnknown = false,
+  }) async {
+    _requireUnlocked();
+    if (!_reconciled) {
+      throw const AgentFailure(
+        'Refresh security, projects and agents before starting.',
+        outcomeUnknown: true,
+      );
+    }
+    if (!_projects.any((p) => p.projectId == projectId)) {
+      throw const AgentFailure('Select a registered project.');
+    }
+    final error = validateAgentInput(projectId, name);
     if (error != null) throw AgentFailure(error);
+    final key = (_peer!, _room!);
+    final previous = _journal._entries[key];
+    if (hasUnknownLaunch && (!acknowledgeUnknown || !_reconciled)) {
+      throw const AgentFailure(
+        'Outcome unknown; it may still start/appear. Refresh, then explicitly confirm another Start.',
+        outcomeUnknown: true,
+      );
+    }
+    if (_journal._retainedCount >= AgentMutationJournal._limit) {
+      throw const AgentFailure(
+        'Resolve pending agent operations before managing more hosts.',
+      );
+    }
+    if (previous != null) {
+      final history = _journal._history.putIfAbsent(key, () => []);
+      history.add(previous);
+      _journal._entries.remove(key);
+    }
+    _reconciled = false;
     final reply = await _request(
       'agent_launch_result',
-      (id) => AgentLaunch(id, cwd, name, _launcherId!),
+      (id) => LauncherRequest(
+        'project_launch',
+        id,
+        status: _security!,
+        projectId: projectId,
+        name: name,
+      ),
     );
+    _reconciled = true;
     refreshDiscovery();
     return (reply as AgentMutationResult).agent;
   }
 
   @override
-  Future<ManagedAgent> stop(String agentId) async =>
-      ((await _request('agent_stop_result', (id) => AgentStop(id, agentId)))
-              as AgentMutationResult)
-          .agent;
+  Future<ManagedAgent> stop(String agentId) async {
+    _requireUnlocked();
+    return ((await _request(
+              'agent_stop_result',
+              (id) => LauncherRequest(
+                'launcher_agent_stop',
+                id,
+                status: _security!,
+                agentId: agentId,
+              ),
+            ))
+            as AgentMutationResult)
+        .agent;
+  }
+
   @override
   void refreshDiscovery() {
     if (_valid) _conn.refreshDiscovery();
@@ -287,10 +509,12 @@ class AgentRepositoryImpl extends AgentRepository {
   @override
   void dispose() {
     _disposed = true;
+    _expiry?.cancel();
     _messages?.cancel();
     _status?.cancel();
     _rooms?.cancel();
     _invalidate();
     _invalidations.close();
+    _changes.close();
   }
 }

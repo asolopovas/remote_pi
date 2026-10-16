@@ -206,7 +206,27 @@ export type AgentResult =
   | { type: "agent_launch_result"; in_reply_to: string; agent: ManagedAgent }
   | { type: "agent_stop_result"; in_reply_to: string; agent: ManagedAgent };
 
+export interface LauncherStatus {
+  launcher_id: string;
+  epoch: string;
+  configured: boolean;
+  unlocked: boolean;
+  expires_at: number | null;
+  cooldown_until: number;
+}
+export type LauncherRequest =
+  | { type: "project_list" | "launcher_status"; id: string }
+  | { type: "launcher_unlock"; id: string; launcher_id: string; epoch: string; pin: string }
+  | { type: "launcher_lock" | "launcher_shutdown"; id: string; launcher_id: string; epoch: string }
+  | { type: "project_launch"; id: string; launcher_id: string; epoch: string; project_id: string; name?: string }
+  | { type: "launcher_agent_stop"; id: string; launcher_id: string; epoch: string; agent_id: string };
+export type LauncherResult =
+  | { type: "project_list_result"; in_reply_to: string; projects: { project_id: string; name: string; cwd: string; allowed_folders: string[] }[] }
+  | { type: "launcher_status_result"; in_reply_to: string; status: LauncherStatus }
+  | { type: "launcher_shutdown_result"; in_reply_to: string; stopped: boolean; status: LauncherStatus };
+
 export type ClientMessage =
+  | LauncherRequest
   | AgentRequest
   | { type: "pair_request"; id: string; token: string; device_name: string }
   // Plan/30: optional `images` carry inline base64 attachments (one today).
@@ -296,6 +316,7 @@ export type SessionHistoryEvent =
   | { ts: number; type: "compaction"; summary: string; tokens_before: number };
 
 export type ServerMessage =
+  | LauncherResult
   | AgentResult
   | {
       type: "pair_ok";

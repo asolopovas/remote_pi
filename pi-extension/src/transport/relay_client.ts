@@ -5,6 +5,8 @@ import type { Ed25519Keypair } from "../pairing/crypto.js";
 import type { ThinkingLevel } from "../protocol/types.js";
 
 const AUTH_TIMEOUT_MS = 5_000;
+/** Managed-only cap, including UTF8/base64 JSON and worst-case WS framing. */
+export const MANAGED_SEND_LIMIT = 12_000_000;
 
 /**
  * Liveness watchdog. The relay sends a WS Ping every ~25s (relay `peer.rs`),
@@ -57,6 +59,8 @@ export interface RoomMetaUpdateFrame {
 export interface ConnectOptions {
   roomId?: string;
   roomMeta?: RoomMeta;
+  /** Private parent-owned managed room: bound hello/auth as well as output. */
+  managed?: true;
 }
 
 /** Relay rejected hello because another peer already holds (pubkey, room_id). */
@@ -127,10 +131,16 @@ export class RelayClient extends EventEmitter {
       this.ws = ws;
 
       ws.on("error", (err) => reject(err));
+      const managedAuthClose = () => { this.emit("close"); reject(new Error("Managed relay closed during authentication")); };
+      if (options.managed) ws.once("close", managedAuthClose);
 
       ws.on("open", async () => {
         try {
           await this._authenticate(ws, options);
+          if (options.managed) {
+            ws.off("close", managedAuthClose);
+            if (ws.readyState !== WebSocket.OPEN) throw new Error("Managed relay closed during authentication");
+          }
 
           // Auth done — wire persistent message handler. Every inbound frame
           // (data, plus the relay's keepalive ping/pong below) refreshes the
@@ -178,13 +188,40 @@ export class RelayClient extends EventEmitter {
     this.ws.send(line);
   }
 
+  private managedPendingBytes = 0;
+  /** No retry queue. Completion accounting also bounds transports whose
+   * bufferedAmount temporarily under-reports asynchronous writes. */
+  sendManaged(line: string, fail: () => void): void {
+    const ws = this.ws;
+    const bytes = Buffer.byteLength(line) + 14;
+    if (!ws || ws.readyState !== WebSocket.OPEN ||
+        (ws.bufferedAmount ?? 0) + this.managedPendingBytes + bytes > MANAGED_SEND_LIMIT) {
+      fail(); return;
+    }
+    this.managedPendingBytes += bytes;
+    let completed = false;
+    const complete = (error?: Error) => {
+      if (completed) return;
+      completed = true;
+      this.managedPendingBytes -= bytes;
+      if (error) fail();
+    };
+    try { ws.send(line, complete); } catch { complete(new Error("Managed send failed")); }
+  }
+  /** Fail-closed managed rooms must not drain queued protected output. */
+  terminateManaged(): void {
+    this._stopLiveness();
+    const ws = this.ws; this.ws = null;
+    ws?.terminate();
+  }
+
   /**
    * Sends a control frame to the relay (not routed to app peer). Used for
    * out-of-band metadata updates like `room_meta_update`. Silently no-ops if
    * the WS isn't open (best-effort: control frames are observational; we
    * don't want them throwing inside SDK event callbacks).
    */
-  sendControl(frame: object): void {
+  sendControl(frame: Record<string, unknown>): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify(frame));
   }
@@ -224,7 +261,7 @@ export class RelayClient extends EventEmitter {
     const hello: HelloMsg = { type: "hello", pubkey: pubkeyB64 };
     if (opts.roomId) hello.room_id = opts.roomId;
     if (opts.roomMeta) hello.room_meta = opts.roomMeta;
-    this._rawSend(ws, JSON.stringify(hello));
+    this._rawSend(ws, JSON.stringify(hello), opts.managed);
 
     const challengeRaw = await this._nextMsg(ws);
     let challenge: ChallengeMsg | { type: "error"; code?: string; message?: string };
@@ -250,7 +287,7 @@ export class RelayClient extends EventEmitter {
       type: "auth",
       sig: Buffer.from(sig).toString("base64"),
     };
-    this._rawSend(ws, JSON.stringify(auth));
+    this._rawSend(ws, JSON.stringify(auth), opts.managed);
 
     // Relay does not send an explicit "ok" — it simply starts routing.
     // Proceed immediately after sending auth.
@@ -270,7 +307,8 @@ export class RelayClient extends EventEmitter {
     });
   }
 
-  private _rawSend(ws: WebSocket, data: string): void {
-    ws.send(data);
+  private _rawSend(ws: WebSocket, data: string, managed = false): void {
+    if (managed) this.sendManaged(data, () => ws.terminate());
+    else ws.send(data);
   }
 }

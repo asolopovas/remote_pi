@@ -1,3 +1,5 @@
+import { LaunchPreflightError } from "./launch_preflight.js";
+import { ManagedLineDecoder, parseManagedFrame, markPipeChild } from "./managed_pipe.js";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
@@ -35,10 +37,12 @@ interface Entry {
   stop?: Promise<void>;
   stopRequested?: boolean;
   reservedStops: number;
+  requestId?: string;
+  dispose?: () => void;
 }
 export type ManagedSpawn = (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
 
-interface Options {
+export interface ManagedOptions {
   cwd: string;
   extensionPath: string;
   piBin?: string;
@@ -46,6 +50,9 @@ interface Options {
   stopMs?: number;
   spawn?: ManagedSpawn;
   env?: NodeJS.ProcessEnv;
+  prepareSpawn?: (agent: ManagedAgent, owner: string, requestId: string) => Promise<{ command: string; args: string[]; options: SpawnOptions; pipe?: boolean; close(): Promise<void> }>;
+  admitted?: (owner: string, requestId: string) => boolean;
+  publish?: (agent: ManagedAgent, owner: string, child: ChildProcess) => Promise<() => void>;
 }
 class AgentFailure extends Error {
   constructor(readonly code: "invalid_message" | "rate_limited" | "timeout" | "internal_error", message: string) { super(message); }
@@ -66,7 +73,7 @@ export class ManagedAgents {
     for (const entry of this.entries.values()) { try { entry.child?.kill("SIGKILL"); } catch { /* already gone */ } }
   };
 
-  constructor(private readonly opts: Options) { process.once("exit", this.killAtExit); }
+  constructor(private readonly opts: ManagedOptions) { process.once("exit", this.killAtExit); }
 
   async handle(owner: string, request: AgentRequest, authorized: () => Promise<boolean>): Promise<ServerMessage> {
     const error = (code: "invalid_message" | "rate_limited" | "timeout" | "internal_error", message: string): ServerMessage =>
@@ -127,6 +134,7 @@ export class ManagedAgents {
         }
         const entry = this.entries.get(request.agent_id);
         if (!entry || entry.owner !== owner) throw new AgentFailure("invalid_message", "Unknown agent or not owned by this Owner");
+        if (!await authorized() || this.closing || this.opts.admitted?.(owner, request.id) === false) throw new AgentFailure("invalid_message", "Control authority changed");
         await this.stop(entry);
         return { type: "agent_stop_result", in_reply_to: request.id, agent: { ...entry.agent } };
       } catch (err) {
@@ -156,11 +164,11 @@ export class ManagedAgents {
     const id = randomUUID();
     const name = `${label}-${id}`;
     const agent: ManagedAgent = { agent_id: id, name, cwd, room_id: roomIdFor(cwd, name), state: "starting" };
-    const entry: Entry = { owner, agent, exited: Promise.resolve(), reservedStops: 0 };
+    const entry: Entry = { owner, agent, exited: Promise.resolve(), reservedStops: 0, requestId: request.id };
     this.entries.set(id, entry);
     try {
-      await this.start(entry);
-      if (this.closing || !await authorized()) throw new AgentFailure("invalid_message", "Launcher closed or Owner revoked during startup");
+      await this.start(entry, authorized);
+      if (this.closing || !await authorized() || this.opts.admitted?.(owner, request.id) === false) throw new AgentFailure("invalid_message", "Launcher closed or Owner revoked during startup");
       if (!entry.child || entry.stopRequested) throw new AgentFailure("internal_error", "Pi stopped or exited during startup");
       entry.agent.state = "running";
       return entry.agent;
@@ -174,14 +182,21 @@ export class ManagedAgents {
     }
   }
 
-  private start(entry: Entry): Promise<void> {
-    return new Promise<void>((resolveReady, reject) => {
+  private async start(entry: Entry, authorized: () => Promise<boolean>): Promise<void> {
+    const prepared = await this.opts.prepareSpawn?.(entry.agent, entry.owner, entry.requestId!).catch(error => {
+      if (error instanceof LaunchPreflightError) throw new AgentFailure("invalid_message", error.message);
+      throw error;
+    });
+    try {
+      if (!await authorized() || this.closing || entry.stopRequested || this.opts.admitted?.(entry.owner, entry.requestId!) === false) throw new AgentFailure("invalid_message", "Launch authority changed");
+      return await new Promise<void>((resolveReady, reject) => {
       const target = resolvePiSpawn(this.opts.piBin ?? "pi");
-      const child = (this.opts.spawn ?? spawn)(target.command,
-        [...target.prefixArgs, ...rpcSpawnArgs(this.opts.extensionPath, entry.agent.name, false)],
-        { cwd: entry.agent.cwd, env: managedChildEnv(this.opts.env ?? process.env, entry.agent.name),
+      const child = (this.opts.spawn ?? spawn)(prepared?.command ?? target.command,
+        prepared?.args ?? [...target.prefixArgs, ...rpcSpawnArgs(this.opts.extensionPath, entry.agent.name, false)],
+        prepared?.options ?? { cwd: entry.agent.cwd, env: managedChildEnv(this.opts.env ?? process.env, entry.agent.name),
           stdio: ["pipe", "pipe", "pipe", "ipc"], windowsHide: true });
       entry.child = child;
+      if (prepared?.pipe) markPipeChild(child);
       let ready = false;
       let rpcReady = false;
       let settled = false;
@@ -198,6 +213,7 @@ export class ManagedAgents {
       entry.exited = new Promise<void>((resolveExit) => {
         child.once("exit", (code, signal) => {
           entry.child = undefined;
+          entry.dispose?.(); entry.dispose = undefined;
           if (entry.agent.state !== "stopped" && !entry.stop) {
             entry.agent.state = "failed";
             entry.agent.error = `Pi exited (code ${code ?? "none"}, signal ${signal ?? "none"}); no automatic restart`;
@@ -212,11 +228,13 @@ export class ManagedAgents {
             : "Unable to start Pi; check executable and directory permissions"));
         });
       });
-      child.stdin?.on("error", () => finish(new AgentFailure("internal_error", "Pi RPC input closed during startup")));
+      child.stdin?.on("error", () => { finish(new AgentFailure("internal_error", "Pi RPC input closed during startup")); if (prepared?.pipe) child.kill("SIGKILL"); });
+      if (prepared?.pipe) child.stdout?.once("end", () => { if (entry.child) child.kill("SIGKILL"); });
       // Never forward project logs (which may contain secrets). Drain stderr;
       // retain no logs, and bound the partial JSON line buffer on stdout.
       child.stderr?.on("data", () => {});
-      child.stdout?.on("data", (chunk: Buffer) => {
+      const decoder = new ManagedLineDecoder();
+      const consume = (chunk: Buffer) => {
         buf += chunk.toString();
         if (buf.length > 65_536) { buf = ""; finish(new AgentFailure("internal_error", "Pi startup output exceeded the RPC line limit")); return; }
         let end: number;
@@ -229,18 +247,38 @@ export class ManagedAgents {
             }
           } catch { /* bounded non-RPC extension output */ }
         }
+      };
+      child.stdout?.on("data", (chunk: Buffer) => {
+        if (!prepared?.pipe) { consume(chunk); return; }
+        try { decoder.push(chunk, line => {
+          const managed = parseManagedFrame(line);
+          if (managed !== undefined) {
+            const kind = (managed as { type?: unknown }).type;
+            if (kind !== "remote_pi_managed_ready" && kind !== "managed_event" && kind !== "managed_metadata") throw new Error("Invalid child frame direction");
+            child.emit("message", managed);
+          } else consume(Buffer.from(line));
+        }); } catch { finish(new AgentFailure("invalid_message", "Invalid managed pipe frame")); child.kill("SIGKILL"); }
       });
+      let publishing = false;
       child.on("message", (message: unknown) => {
         const m = message as { type?: unknown; name?: unknown; room_id?: unknown; ok?: unknown } | null;
         if (m?.type !== "remote_pi_managed_ready") return;
         if (m.ok !== true || m.name !== entry.agent.name || m.room_id !== entry.agent.room_id) {
           finish(new AgentFailure("internal_error", "Child could not publish its independent room; check relay, identity storage and name admission"));
-        } else { ready = true; checkReady(); }
+        } else if (!publishing) {
+          publishing = true;
+          if (this.opts.publish) {
+            void this.opts.publish(entry.agent, entry.owner, child).then(dispose => {
+              if (settled || !entry.child || entry.stopRequested || this.closing) { dispose(); return; }
+              entry.dispose = dispose; ready = true; checkReady();
+            }, () => finish(new AgentFailure("internal_error", "Could not publish managed room")));
+          } else { ready = true; checkReady(); }
+        }
       });
       child.once("spawn", () => {
         child.stdin?.write(JSON.stringify({ type: "get_state", id: entry.agent.agent_id }) + "\n");
       });
-    });
+    }); } finally { await prepared?.close(); }
   }
 
   private markStopped(entry: Entry): void {
@@ -273,6 +311,12 @@ export class ManagedAgents {
     child.stdin?.end();
     child.kill("SIGTERM");
     if (!await wait()) { child.kill("SIGKILL"); if (!await wait()) throw new AgentFailure("timeout", "Pi did not exit after SIGKILL; host shutdown will retry cleanup"); }
+  }
+
+  async shutdownOwner(owner: string): Promise<boolean> {
+    const owned = [...this.entries.values()].filter(entry => entry.owner === owner);
+    const results = await Promise.allSettled(owned.map(entry => this.stop(entry)));
+    return results.every(r => r.status === "fulfilled") && !owned.some(e => e.child || e.agent.state === "starting");
   }
 
   async shutdown(): Promise<void> {

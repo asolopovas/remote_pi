@@ -18,7 +18,50 @@ class Repo extends AgentRepository {
     maxAgents: 4,
     agents: [agent],
   );
-  int launches = 0, stops = 0;
+  int launches = 0, stops = 0, locks = 0, shutdowns = 0;
+  bool unknownLaunch = false;
+  bool partialShutdown = false;
+  final acknowledgements = <bool>[];
+  @override
+  bool get hasUnknownLaunch => unknownLaunch;
+  LauncherStatus security = LauncherStatus(
+    launcherId: 'launcher-1',
+    epoch: 'epoch-1',
+    configured: true,
+    unlocked: true,
+    expiresAt: DateTime.now().millisecondsSinceEpoch + 600000,
+    cooldownUntil: 0,
+  );
+  @override
+  LauncherStatus get launcherStatus => security;
+  List<LauncherProject> projectCatalog = const [
+    LauncherProject('project', 'Registered project', '/project', [
+      '/project',
+      '/shared',
+    ]),
+  ];
+  @override
+  List<LauncherProject> get projects => projectCatalog;
+  @override
+  Future<void> unlock(String pin) async {}
+  @override
+  Future<bool> lock({bool shutdown = false}) async {
+    if (shutdown) {
+      shutdowns++;
+    } else {
+      locks++;
+    }
+    security = const LauncherStatus(
+      launcherId: 'launcher-1',
+      epoch: 'epoch-1',
+      configured: true,
+      unlocked: false,
+      expiresAt: null,
+      cooldownUntil: 0,
+    );
+    return !partialShutdown;
+  }
+
   bool listFails = false;
   final invalid = StreamController<void>.broadcast();
   Completer<ManagedAgent>? pending;
@@ -33,9 +76,25 @@ class Repo extends AgentRepository {
   }
 
   @override
-  Future<ManagedAgent> launch(String cwd, String? name) async {
+  Future<ManagedAgent> launch(
+    String cwd,
+    String? name, {
+    bool acknowledgeUnknown = false,
+  }) async {
+    if (unknownLaunch && !acknowledgeUnknown) {
+      throw const AgentFailure(
+        'Explicit duplicate-risk acknowledgement required',
+        outcomeUnknown: true,
+      );
+    }
+    acknowledgements.add(acknowledgeUnknown);
     launches++;
-    return pending == null ? agent : pending!.future;
+    try {
+      return pending == null ? agent : await pending!.future;
+    } on AgentFailure catch (error) {
+      unknownLaunch = unknownLaunch || error.outcomeUnknown;
+      rethrow;
+    }
   }
 
   @override
@@ -53,6 +112,28 @@ class Repo extends AgentRepository {
 }
 
 void main() {
+  test(
+    'locked machine status blocks Start and Stop; Lock keeps agents, shutdown partial wording',
+    () async {
+      final repo = Repo();
+      final vm = AgentsViewModel(repo);
+      await vm.initialize('peer', 'room');
+      await vm.lock();
+      expect(vm.unlocked, false);
+      expect(vm.state.message, contains('keep running'));
+      await vm.launch('project', null, confirmed: true);
+      await vm.stop('managed', confirmed: true);
+      expect(repo.launches, 0);
+      expect(repo.stops, 0);
+      repo.partialShutdown = true;
+      await vm.lock(shutdown: true);
+      expect(
+        vm.state.message,
+        contains('some of your managed agents could not stop'),
+      );
+      vm.dispose();
+    },
+  );
   test(
     'owned failed records can retry Stop but still require confirmation',
     () async {
@@ -108,8 +189,14 @@ void main() {
       await subject.refresh();
       expect(subject.state.needsReconciliation, false);
       repo.pending = null;
-      await subject.launch('/p', null, confirmed: true);
+      await subject.launch(
+        '/p',
+        null,
+        confirmed: true,
+        acknowledgeUnknown: true,
+      );
       expect(repo.launches, 2);
+      expect(repo.unknownLaunch, true);
       subject.dispose();
     },
   );

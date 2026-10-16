@@ -34,7 +34,7 @@ class WsTransportError implements Exception {
   String toString() => 'WsTransportError: $message';
 }
 
-class WsTransport implements PeerTransport, IControlLink {
+class WsTransport implements PeerTransport, IControlLink, IScopedPeerTransport {
   final WebSocketChannel _ws;
   final _queue = _MsgQueue();
   final _controlController = StreamController<ControlInbound>.broadcast();
@@ -126,6 +126,9 @@ class WsTransport implements PeerTransport, IControlLink {
             if (inner is Map<String, dynamic> &&
                 (const [
                       'agent_list_result',
+                      'launcher_status_result',
+                      'launcher_shutdown_result',
+                      'project_list_result',
                       'agent_launch_result',
                       'agent_stop_result',
                     ].contains(inner['type']) ||
@@ -156,6 +159,7 @@ class WsTransport implements PeerTransport, IControlLink {
             transport._queue.add((
               bytes: bytes,
               roomEpoch: transport._roomEpoch,
+              room: senderRoom,
             ));
             return;
           }
@@ -270,6 +274,13 @@ class WsTransport implements PeerTransport, IControlLink {
     if (inner is Map<String, dynamic> &&
         const [
           'agent_list',
+          'launcher_status',
+          'launcher_unlock',
+          'launcher_lock',
+          'launcher_shutdown',
+          'project_list',
+          'project_launch',
+          'launcher_agent_stop',
           'agent_launch',
           'agent_stop',
         ].contains(inner['type'])) {
@@ -289,11 +300,18 @@ class WsTransport implements PeerTransport, IControlLink {
 
   @override
   Future<Uint8List> receive() async {
+    return (await receiveScoped()).bytes;
+  }
+
+  @override
+  Future<ScopedPeerPayload> receiveScoped() async {
     while (true) {
       final payload = await _queue.next();
       // Includes legacy payloads without sender room: they belong to the
       // selection at ingress, not a later room that drains the same queue.
-      if (payload.roomEpoch == _roomEpoch) return payload.bytes;
+      if (payload.roomEpoch == _roomEpoch) {
+        return (bytes: payload.bytes, peer: _peerPubkey, room: payload.room);
+      }
     }
   }
 
@@ -320,7 +338,7 @@ class WsTransport implements PeerTransport, IControlLink {
 
 // ---------------------------------------------------------------------------
 
-typedef _QueuedPayload = ({Uint8List bytes, int roomEpoch});
+typedef _QueuedPayload = ({Uint8List bytes, int roomEpoch, String? room});
 
 class _MsgQueue {
   final _buf = <_QueuedPayload>[];

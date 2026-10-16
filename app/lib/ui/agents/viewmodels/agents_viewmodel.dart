@@ -16,10 +16,71 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
         );
       }
     });
+    _changes = _repo.changes.listen((_) {
+      if (!_disposed && !state.invalid) {
+        emit(
+          AgentsViewState(
+            busy: state.busy,
+            invalid: state.invalid,
+            needsReconciliation: state.needsReconciliation,
+            availability: state.availability,
+            message: state.message,
+          ),
+        );
+      }
+    });
   }
   final AgentRepository _repo;
-  late final StreamSubscription<void> _subscription;
+  void rejectTargetChange() {
+    emit(
+      const AgentsViewState(
+        invalid: true,
+        message: 'Target changed. Return home and select the host again.',
+      ),
+    );
+  }
+
+  LauncherStatus? get security => _repo.launcherStatus;
+  List<LauncherProject> get projects => _repo.projects;
+  bool get hasUnknownLaunch => _repo.hasUnknownLaunch;
+  bool get unlocked => security?.permitsControl == true;
+  Future<void> unlock(String pin) async {
+    if (state.busy || state.invalid) return;
+    await _run(() async {
+      final pending = _repo.unlock(pin);
+      pin = '';
+      await pending;
+      return _repo.list();
+    }, reconciles: true);
+  }
+
+  Future<void> lock({bool shutdown = false}) async {
+    if (state.busy || state.invalid) return;
+    await _run(
+      () async {
+        final stopped = await _repo.lock(shutdown: shutdown);
+        if (!stopped) {
+          throw const AgentFailure(
+            'Access locked, but some of your managed agents could not stop. Check the host.',
+          );
+        }
+        return AgentAvailability(
+          available: false,
+          cwd: '',
+          maxAgents: 0,
+          agents: const [],
+        );
+      },
+      message: shutdown
+          ? 'Your managed agents stopped. Access locked.'
+          : 'Access locked. Background agents keep running.',
+    );
+  }
+
+  late final StreamSubscription<void> _subscription, _changes;
   bool _disposed = false, _started = false;
+  bool _reconcilingSelection = false;
+  bool get reconcilingSelection => _reconcilingSelection && state.busy;
   Future<void> initialize(String peer, String room) async {
     if (_started) return;
     _started = true;
@@ -36,18 +97,20 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
   }
 
   Future<void> launch(
-    String cwd,
+    String projectId,
     String? name, {
     required bool confirmed,
+    bool acknowledgeUnknown = false,
   }) async {
     if (!confirmed ||
         state.busy ||
         state.invalid ||
+        !unlocked ||
         state.needsReconciliation ||
         state.availability?.available != true) {
       return;
     }
-    final error = validateAgentInput(cwd, name);
+    final error = validateAgentInput(projectId, name);
     if (error != null) {
       emit(AgentsViewState(availability: state.availability, message: error));
       return;
@@ -55,7 +118,11 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
     final old = state.availability!;
     await _run(
       () async {
-        final agent = await _repo.launch(cwd, name);
+        final agent = await _repo.launch(
+          projectId,
+          name,
+          acknowledgeUnknown: acknowledgeUnknown,
+        );
         return AgentAvailability(
           available: old.available,
           launcherId: old.launcherId,
@@ -74,7 +141,7 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
   }
 
   Future<void> stop(String id, {required bool confirmed}) async {
-    if (!confirmed || state.busy || state.invalid) return;
+    if (!confirmed || state.busy || state.invalid || !unlocked) return;
     final old = state.availability;
     if (old == null ||
         !old.agents.any(
@@ -106,6 +173,7 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
     String? message,
     bool reconciles = false,
   }) async {
+    _reconcilingSelection = reconciles;
     final wasUncertain = state.needsReconciliation;
     final previous = state.availability;
     emit(
@@ -132,7 +200,8 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
           AgentsViewState(
             availability: previous,
             message: error.message,
-            needsReconciliation: wasUncertain || error.outcomeUnknown,
+            needsReconciliation:
+                wasUncertain || error.outcomeUnknown || reconciles,
           ),
         );
       }
@@ -143,6 +212,7 @@ class AgentsViewModel extends ViewModel<AgentsViewState> {
   void dispose() {
     _disposed = true;
     _subscription.cancel();
+    _changes.cancel();
     _repo.dispose();
     super.dispose();
   }

@@ -1,6 +1,9 @@
-import type { AgentRequest, ClientMessage, ServerMessage } from "./types.js";
+import type { AgentRequest, LauncherRequest, ClientMessage, ServerMessage } from "./types.js";
 
 const SERVER_TYPES = new Set<ServerMessage["type"]>([
+  "project_list_result",
+  "launcher_status_result",
+  "launcher_shutdown_result",
   "agent_list_result",
   "agent_launch_result",
   "agent_stop_result",
@@ -86,4 +89,26 @@ export function decodeAgentRequest(value: unknown): AgentRequest {
     throw new DecodeError("invalid_message", "Unexpected agent request field");
   }
   return o as AgentRequest;
+}
+
+export const LAUNCHER_REQUEST_TYPES = new Set(["project_list", "launcher_status", "launcher_unlock", "launcher_lock", "launcher_shutdown", "project_launch", "launcher_agent_stop"]);
+/** Exact additive contract; no remote filesystem paths, environment, or flags. */
+export function decodeLauncherRequest(value: unknown): LauncherRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new DecodeError("invalid_message", "Expected launcher request");
+  const o = value as Record<string, unknown>;
+  const text = (v: unknown, max = 128): v is string => typeof v === "string" && v.length > 0 && v.length <= max && !/[\x00-\x1f\x7f-\x9f]/.test(v);
+  if (!text(o.id) || typeof o.type !== "string" || !LAUNCHER_REQUEST_TYPES.has(o.type)) throw new DecodeError("invalid_message", "Invalid launcher request");
+  let keys = ["type", "id"];
+  if (o.type !== "project_list" && o.type !== "launcher_status") {
+    keys.push("launcher_id", "epoch");
+    if (!text(o.launcher_id) || !text(o.epoch)) throw new DecodeError("invalid_message", "Refresh launcher security status");
+  }
+  if (o.type === "launcher_unlock") { keys.push("pin"); if (typeof o.pin !== "string" || !/^\d{6,12}$/.test(o.pin)) throw new DecodeError("invalid_message", "Invalid PIN format"); }
+  if (o.type === "project_launch") {
+    keys.push("project_id", "name");
+    if (!text(o.project_id) || o.name !== undefined && !text(o.name, 80)) throw new DecodeError("invalid_message", "Invalid project or agent name");
+  }
+  if (o.type === "launcher_agent_stop") { keys.push("agent_id"); if (!text(o.agent_id)) throw new DecodeError("invalid_message", "Invalid agent ID"); }
+  if (Object.keys(o).some(k => !keys.includes(k))) throw new DecodeError("invalid_message", "Unexpected launcher field");
+  return o as LauncherRequest;
 }

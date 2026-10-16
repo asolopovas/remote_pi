@@ -39,11 +39,24 @@ class AgentFailure implements Exception {
 abstract class AgentRepository extends Repository {
   Future<void> bind(String peer, String room);
   Stream<void> get invalidations;
+  Stream<void> get changes => const Stream.empty();
 
-  /// Settles any uncertain mutation using its original idempotency key before
-  /// returning a fresh list. An empty snapshot alone is not reconciliation.
+  /// Read-only reconciliation; security and launch requests are never replayed.
   Future<AgentAvailability> list();
-  Future<ManagedAgent> launch(String cwd, String? name);
+  LauncherStatus? get launcherStatus => null;
+  List<LauncherProject> get projects => const [];
+  Future<void> status() async =>
+      throw const AgentFailure('Update/setup the host launcher.');
+  Future<void> unlock(String pin) async =>
+      throw const AgentFailure('Update/setup the host launcher.');
+  Future<bool> lock({bool shutdown = false}) async =>
+      throw const AgentFailure('Update/setup the host launcher.');
+  bool get hasUnknownLaunch => false;
+  Future<ManagedAgent> launch(
+    String projectId,
+    String? name, {
+    bool acknowledgeUnknown = false,
+  });
   Future<ManagedAgent> stop(String agentId);
   void refreshDiscovery();
 }
@@ -58,4 +71,35 @@ String? validateAgentInput(String cwd, String? name) {
     return 'Name must be 1–80 characters, not blank, with no control characters.';
   }
   return null;
+}
+
+class LauncherStatus {
+  const LauncherStatus({
+    required this.launcherId,
+    required this.epoch,
+    required this.configured,
+    required this.unlocked,
+    required this.expiresAt,
+    required this.cooldownUntil,
+  });
+  final String launcherId, epoch;
+  final bool configured, unlocked;
+  final int? expiresAt;
+  final int cooldownUntil;
+  bool get permitsControl =>
+      configured &&
+      unlocked &&
+      expiresAt != null &&
+      expiresAt! > DateTime.now().millisecondsSinceEpoch;
+}
+
+class LauncherProject {
+  const LauncherProject(
+    this.projectId,
+    this.name,
+    this.cwd,
+    this.allowedFolders,
+  );
+  final String projectId, name, cwd;
+  final List<String> allowedFolders;
 }

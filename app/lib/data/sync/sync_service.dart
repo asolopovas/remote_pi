@@ -657,6 +657,8 @@ class SyncService extends Service {
       case PairError():
       case ActionOk():
       case ActionError():
+      case LauncherStatusResult():
+      case ProjectListResult():
       case AgentListResult():
       case AgentMutationResult():
       case ModelsList():

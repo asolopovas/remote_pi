@@ -1,0 +1,173 @@
+import { test, expect, vi, afterEach } from "vitest";
+import { EventEmitter } from "node:events";
+import type { ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { generateEd25519Keypair } from "../pairing/crypto.js";
+
+const sockets: MockWS[] = [];
+class MockWS extends EventEmitter {
+  static OPEN = 1;
+  readyState = 1;
+  bufferedAmount = 0;
+  maxBuffered = 0;
+  stall = false;
+  throwSend = false;
+  callbackError = false;
+  sent: string[] = [];
+  callbacks: (() => void)[] = [];
+  constructor(_url: string) { super(); sockets.push(this); queueMicrotask(() => this.emit("open")); }
+  send(line: string, callback?: (error?: Error) => void): void {
+    if (this.throwSend) throw new Error("write failed");
+    this.sent.push(line);
+    if (JSON.parse(line).type === "hello") queueMicrotask(() => this.emit("message", Buffer.from(JSON.stringify({ type: "challenge", nonce: Buffer.alloc(32).toString("base64") }))));
+    if (this.callbackError) { callback?.(new Error("completion failed")); return; }
+    if (this.stall) {
+      const bytes = Buffer.byteLength(line) + 14;
+      this.bufferedAmount += bytes;
+      this.maxBuffered = Math.max(this.maxBuffered, this.bufferedAmount);
+      this.callbacks.push(() => { this.bufferedAmount -= bytes; callback?.(); });
+    } else callback?.();
+  }
+  terminate(): void { this.readyState = 3; this.emit("close"); }
+  close(): void { this.terminate(); }
+}
+vi.mock("ws", () => ({ default: MockWS }));
+const { ManagedRoom } = await import("./managed_transport.js");
+const { MANAGED_SEND_LIMIT, RelayClient } = await import("../transport/relay_client.js");
+const rooms: InstanceType<typeof ManagedRoom>[] = [];
+afterEach(() => { for (const room of rooms) room.close(); rooms.length = 0; sockets.length = 0; });
+async function fixture() {
+  const child = Object.assign(new EventEmitter(), { connected: true, send: vi.fn(), kill: vi.fn(), exitCode: null, signalCode: null }) as unknown as ChildProcess;
+  let epoch = "e", unlocked = true, paired = true, current = true;
+  const authorized = vi.fn(async (e: string) => paired && current && unlocked && e === epoch);
+  const pairedCheck = vi.fn(async () => paired);
+  const room = new ManagedRoom({ agent: { agent_id: "a", name: "assigned", cwd: "/assigned", room_id: "assigned-room", state: "running" }, child, owner: "owner", url: "ws://fixture", keypair: generateEd25519Keypair(),
+    currentEpoch: () => epoch, authorized,
+    paired: pairedCheck, current: () => current, hasGrant: e => unlocked && e === epoch });
+  rooms.push(room); await room.connect(); const ws = sockets.at(-1)!;
+  const emit = (message: object) => child.emit("message", { type: "managed_event", epoch, message });
+  const meta = (value: object) => child.emit("message", { type: "managed_metadata", epoch, meta: value });
+  return { child, room, ws, emit, meta, authorized, pairedCheck, lock() { epoch = "locked"; unlocked = false; room.revoke(); }, unlock() { epoch = "unlocked"; unlocked = true; room.revoke(); }, unpair() { paired = false; }, replace() { current = false; } };
+}
+const settle = () => new Promise<void>(resolve => setImmediate(resolve));
+
+test("managed valid near-limit output on a non-reading WS is byte bounded and overflow terminates only its child", async () => {
+  const f = await fixture(); f.ws.stall = true;
+  const message: import("../protocol/types.js").ServerMessage = { type: "agent_chunk", in_reply_to: "accepted", delta: "x".repeat(5_900_000) };
+  for (let i = 0; i < 12; i++) { f.emit(message); await settle(); }
+  expect(f.ws.maxBuffered).toBeLessThanOrEqual(12_000_000);
+  expect(MANAGED_SEND_LIMIT).toBe(12_000_000);
+  expect(f.ws.readyState).toBe(3);
+  expect(f.child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+  const queued = f.ws.sent.length; f.emit(message); await settle(); expect(f.ws.sent).toHaveLength(queued);
+  for (const complete of f.ws.callbacks) complete();
+  expect(f.child.kill).toHaveBeenCalledTimes(1);
+});
+
+test.each(["callback", "throw", "close"])("managed %s send failures clean up room and child without retry", async failure => {
+  const f = await fixture();
+  if (failure === "callback") f.ws.callbackError = true;
+  if (failure === "throw") f.ws.throwSend = true;
+  if (failure === "close") f.ws.terminate();
+  f.emit({ type: "pong", in_reply_to: "p" }); await settle();
+  expect(f.child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL"); expect(f.ws.readyState).toBe(3);
+  f.room.close(); f.emit({ type: "pong", in_reply_to: "p2" }); await settle();
+  expect(f.child.kill).toHaveBeenCalledTimes(1);
+});
+
+test("all managed error/metadata frames share the byte cap; ordinary send semantics stay unchanged", async () => {
+  const f = await fixture(); f.ws.bufferedAmount = MANAGED_SEND_LIMIT - 10;
+  f.lock();
+  f.ws.emit("message", Buffer.from(JSON.stringify({ peer: "owner", ct: Buffer.from(JSON.stringify({ type: "ping", id: "locked" })).toString("base64") })));
+  await settle(); expect(f.child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+  const metadata = await fixture(); metadata.ws.bufferedAmount = MANAGED_SEND_LIMIT - 10;
+  metadata.meta({ working: true });
+  await expect.poll(() => vi.mocked(metadata.child.kill).mock.calls.length).toBe(1);
+  const relay = new RelayClient("ws://ordinary", generateEd25519Keypair()); await relay.connect();
+  const ordinary = sockets.at(-1)!; ordinary.bufferedAmount = MANAGED_SEND_LIMIT;
+  expect(() => relay.send('{"ordinary":true}')).not.toThrow(); relay.close();
+});
+
+test("completion accounting bounds even under-reported bufferedAmount and frees completed writes", async () => {
+  const relay = new RelayClient("ws://fixture", generateEd25519Keypair()); await relay.connect();
+  const ws = sockets.at(-1)!; ws.stall = true; const fail = vi.fn();
+  relay.sendManaged(JSON.stringify({ data: "x".repeat(6_000_000) }), fail);
+  ws.bufferedAmount = 0;
+  relay.sendManaged(JSON.stringify({ data: "x".repeat(6_000_000) }), fail);
+  expect(fail).toHaveBeenCalledTimes(1);
+  ws.callbacks[0]!(); ws.bufferedAmount = 0;
+  relay.sendManaged(JSON.stringify({ data: "x".repeat(6_000_000) }), fail);
+  expect(fail).toHaveBeenCalledTimes(1); relay.terminateManaged();
+});
+
+test("real parent proxy coalesces exact metadata, locked updates only working, unlock republishes latest snapshot", async () => {
+  const f = await fixture();
+  f.meta({ working: false, model: "initial", thinking: "low" });
+  const updates = () => f.ws.sent.map(line => JSON.parse(line)).filter(m => m.type === "room_meta_update");
+  await expect.poll(() => updates().length).toBe(1);
+  expect(updates()[0]).toEqual({ type: "room_meta_update", room_id: "assigned-room", meta: { working: false, model: "initial", thinking: "low" } });
+  for (let i = 0; i < 1000; i++) f.meta({ working: true, model: `model-${i}`, thinking: "high" });
+  await expect.poll(() => updates().length).toBe(2);
+  expect(updates()[1].meta).toEqual({ working: true, model: "model-999", thinking: "high" });
+  f.lock(); f.meta({ working: false, model: "locked-sensitive-label", thinking: "max" });
+  await expect.poll(() => updates().length).toBe(3);
+  expect(updates()[2].meta).toEqual({ working: false });
+  f.emit({ type: "agent_chunk", in_reply_to: "accepted", delta: "protected" }); await settle();
+  expect(f.ws.sent.some(line => JSON.parse(line).ct)).toBe(false);
+  f.unlock(); await expect.poll(() => updates().length).toBe(4);
+  expect(updates()[3].meta).toEqual({ working: false, model: "locked-sensitive-label", thinking: "max" });
+  f.unpair(); f.meta({ working: true }); await new Promise(r => setTimeout(r, 150)); expect(updates()).toHaveLength(4);
+});
+
+test.each(["room_id", "cwd", "owner", "display"])("private metadata rejects arbitrary %s and closes malicious child", async field => {
+  const f = await fixture(); f.meta({ working: true, [field]: "attacker" });
+  expect(f.child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+});
+
+test("metadata wire fixture matches real frozen Home working consumer (no active-chat dependency)", async () => {
+  const f = await fixture(); f.meta({ working: true });
+  await expect.poll(() => f.ws.sent.some(line => JSON.parse(line).type === "room_meta_update")).toBe(true);
+  const frame = f.ws.sent.map(line => JSON.parse(line)).find(m => m.type === "room_meta_update");
+  // Relay merges the patch into room_meta_updated; working remains a bool.
+  const push = { type: "room_meta_updated", peer: "owner", room_id: frame.room_id, meta: frame.meta };
+  expect(push.meta.working).toBe(true);
+  const home = readFileSync(new URL("../../../app/lib/ui/home/viewmodels/home_viewmodel.dart", import.meta.url), "utf8");
+  const connection = readFileSync(new URL("../../../app/lib/data/transport/connection_manager.dart", import.meta.url), "utf8");
+  expect(home).toContain("_conn.isRoomWorking(epk, roomId)");
+  expect(connection).toContain("final nextWorking = working ?? current.working;");
+  expect(connection).toContain("if (r.roomId == roomId) return r.working;");
+  const codec = readFileSync(new URL("../../../app/lib/protocol/protocol.dart", import.meta.url), "utf8");
+  expect(codec).toContain("'room_meta_updated' => () {");
+  expect(codec).toContain("working: meta?['working'] as bool?,");
+});
+
+test.each(["Lock", "replacement", "unpair", "child exit"])("metadata final pairing lookup cannot disclose labels after %s", async change => {
+  const f = await fixture();
+  let release!: (paired: boolean) => void, entered!: () => void;
+  const parked = new Promise<boolean>(r => { release = r; });
+  const waiting = new Promise<void>(r => { entered = r; });
+  f.authorized.mockImplementationOnce(async () => {
+    f.pairedCheck.mockImplementationOnce(() => { entered(); return parked; });
+    return true;
+  });
+  f.meta({ working: true, model: "pending-sensitive", thinking: "high" });
+  await waiting;
+  if (change === "Lock") f.lock();
+  if (change === "replacement") f.replace();
+  if (change === "unpair") f.unpair();
+  if (change === "child exit") Object.assign(f.child, { connected: false });
+  release(change !== "unpair");
+  await new Promise(r => setTimeout(r, 150));
+  const updates = f.ws.sent.map(line => JSON.parse(line)).filter(m => m.type === "room_meta_update");
+  expect(updates.every(m => Object.keys(m.meta).join() === "working")).toBe(true);
+  if (change !== "Lock") expect(updates).toHaveLength(0);
+});
+
+test("closing during pending managed completion neither retries nor kills an already disposed child", async () => {
+  const f = await fixture(); f.ws.stall = true;
+  f.emit({ type: "pong", in_reply_to: "pending" }); await settle();
+  expect(f.ws.callbacks).toHaveLength(1);
+  f.room.close(); f.ws.callbacks[0]!(); f.ws.callbacks[0]!();
+  expect(f.child.kill).not.toHaveBeenCalled();
+  expect(f.ws.readyState).toBe(3);
+});
