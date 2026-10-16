@@ -1132,6 +1132,9 @@ void _registerRoomsTests() {
 
         final snapshots = <Map<String, List<RoomInfo>>>[];
         final sub = cm.roomsStream.listen(snapshots.add);
+        final announced = cm.roomsStream.firstWhere(
+          (rooms) => rooms['epkA']?.any((r) => r.roomId == 'r1') == true,
+        ).timeout(const Duration(seconds: 2));
 
         ch.pushControl(const RoomAnnounced(
           peer: 'epkA',
@@ -1140,29 +1143,35 @@ void _registerRoomsTests() {
           cwd: '/Users/x',
           startedAt: 1000,
         ));
-        await Future<void>.delayed(const Duration(milliseconds: 5));
+        await announced;
 
         expect(cm.roomsFor('epkA'), hasLength(1));
         expect(cm.roomsFor('epkA').single.roomId, 'r1');
         expect(snapshots, isNotEmpty);
 
+        final ended = cm.roomsStream.firstWhere(
+          (_) => !cm.isRoomLive('epkA', 'r1'),
+        ).timeout(const Duration(seconds: 2));
         ch.pushControl(const RoomEnded(
           peer: 'epkA',
           roomId: 'r1',
           sinceTs: 2000,
         ));
-        await Future<void>.delayed(const Duration(milliseconds: 5));
+        await ended;
         // Plan-17 follow-up: RoomEnded keeps the room CACHED so the
         // tile stays in Home (marked offline) — only the live set
         // shrinks. isRoomLive now distinguishes the two.
         expect(cm.roomsFor('epkA'), hasLength(1));
         expect(cm.isRoomLive('epkA', 'r1'), isFalse);
 
+        final reconciled = cm.roomsStream.firstWhere(
+          (rooms) => rooms['epkA']?.length == 3,
+        ).timeout(const Duration(seconds: 2));
         ch.pushControl(const RoomsSnapshot(peer: 'epkA', rooms: [
           RoomInfo(roomId: 'rA', startedAt: 3000, cwd: '/a'),
           RoomInfo(roomId: 'rB', startedAt: 4000, cwd: '/b'),
         ]));
-        await Future<void>.delayed(const Duration(milliseconds: 5));
+        await reconciled;
         // Plan-17 follow-up: snapshots MERGE with cached rooms (so a
         // room going offline keeps its tile). r1 is still in cache
         // (offline), rA and rB are now live → total 3.
