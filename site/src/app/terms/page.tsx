@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { LegalShell, LegalSection } from "@/components/legal-shell";
 
 export const metadata: Metadata = {
-  title: "Terms of Service",
+  title: "Terms of Service — upstream reference",
   description:
     "Terms of Service for Remote Pi — provided by Flutterando Desenvolvimento de Programas de Computador LTDA.",
 };

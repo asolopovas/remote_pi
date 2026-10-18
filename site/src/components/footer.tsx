@@ -17,7 +17,7 @@ export function SiteFooter() {
           <Link href="/terms">Terms of Service</Link>
           <Link href="/privacy">Privacy Policy</Link>
           <a
-            href={`${GITHUB_URL}/blob/main/PROTOCOL.md`}
+            href="/remote-pi/docs#protocol"
             target="_blank"
             rel="noopener noreferrer"
           >

@@ -19,8 +19,14 @@ export function LegalShell({
         <div className="wrap">
           <div className="legal">
             <header className="page-head" style={{ maxWidth: "none" }}>
-              <span className="eyebrow">Legal</span>
+              <span className="eyebrow">Legal · Upstream reference</span>
               <h1>{title}</h1>
+              <p role="note">
+                Upstream reference only: the operator, contacts and policies below
+                describe the original Flutterando service, not this independent
+                repository or its deployment. Deployment-specific legal terms
+                and privacy disclosures must be supplied by its operator.
+              </p>
               <div className="meta-line">
                 <span>Last updated: {lastUpdated}</span>
               </div>

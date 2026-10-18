@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { LegalShell, LegalSection } from "@/components/legal-shell";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy",
+  title: "Privacy Policy — upstream reference",
   description:
     "Privacy Policy for Remote Pi — what little data we touch, why we touch it, and your LGPD rights.",
 };

@@ -19,7 +19,7 @@ import {
 import type { ReactNode } from "react";
 
 const GITHUB_URL = "https://github.com/jacobaraujo7/remote_pi";
-const PROTOCOL_URL = `${GITHUB_URL}/blob/main/PROTOCOL.md`;
+const PROTOCOL_URL = "/remote-pi/docs#protocol";
 
 /* ---------------- Pillars ---------------- */
 type Pillar = {

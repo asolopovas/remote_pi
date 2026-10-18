@@ -1,3 +1,4 @@
+import { RepositoryGuides } from "@/components/repository-guides";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import Link from "next/link";
@@ -25,13 +26,11 @@ import {
 export const metadata: Metadata = {
   title: "Download",
   description:
-    "Download Cockpit: signed builds for macOS, Windows and Linux, the Android client, and the one-line cockpit-server installer for a Linux host.",
+    "Download Cockpit: signed builds for macOS, Windows and Linux, the Android client, and source setup guides for a Linux host.",
 };
 
 const GITHUB_RELEASES =
   "https://github.com/jacobaraujo7/remote_pi/releases/tag/cockpit-v";
-const INSTALL_SCRIPT_RAW =
-  "https://raw.githubusercontent.com/jacobaraujo7/remote_pi/main/cockpit/install-server.sh";
 const SHA256SUMS_URL =
   "https://rp-s3.jacobmoura.work/downloads/cockpit/SHA256SUMS";
 
@@ -368,87 +367,13 @@ export default async function DownloadPage() {
               <span className="eyebrow">Linux host · cockpit-server</span>
               <h2>Put Cockpit on a machine with no desktop</h2>
               <p>
-                One command turns a VPS, a build server or a Raspberry Pi into a
+                A source-built server turns a VPS, a build server or a Raspberry Pi into a
                 host you can open as a remote workspace, and it is how the mobile
                 client reaches a machine that no desktop has prepared before.
               </p>
             </div>
-            <div className="dl-meta">
-              <span>Linux x86_64 and arm64</span>
-              <span>User space, no sudo</span>
-              <span>Idempotent, re-run to update</span>
-            </div>
-
-            <div className="dl-os" id="vps-install">
-              <div className="dl-os-head">
-                <span className="dl-os-icon">
-                  <IconLinux />
-                </span>
-                <div className="dl-os-titles">
-                  <h3>Install the server</h3>
-                  <p>Run this on the host, over SSH.</p>
-                </div>
-              </div>
-              <div className="dl-os-help">
-                <div className="dl-note">
-                  <CodeBlock
-                    label="on the host"
-                    code={`curl -fsSL https://remote-pi.jacobmoura.work/cockpit-server.sh | bash`}
-                  />
-                  <p>
-                    The script detects the architecture, downloads the matching
-                    <code>cockpit-server</code> zip from the GitHub release,
-                    verifies its SHA-256 and installs into{" "}
-                    <code>~/.cockpit/server</code>, linking the binary into{" "}
-                    <code>~/.local/bin</code>. Nothing is exposed on the network:
-                    the app talks to it through an SSH tunnel.
-                  </p>
-                  <CodeBlock
-                    label="variants"
-                    code={`# register a systemd --user unit so the server is up after a reboot
-curl -fsSL https://remote-pi.jacobmoura.work/cockpit-server.sh | bash -s -- --service
-
-# pin a version instead of taking the latest release
-COCKPIT_VERSION=${cockpit.manifest.version} curl -fsSL https://remote-pi.jacobmoura.work/cockpit-server.sh | bash`}
-                  />
-                  <p className="dl-note-foot">
-                    Piping a script into <code>bash</code> deserves a look first:
-                    read{" "}
-                    <a
-                      href={INSTALL_SCRIPT_RAW}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      the source of the installer
-                    </a>{" "}
-                    (the short URL redirects to it), or download it, read it, and
-                    run it as a file.
-                  </p>
-                </div>
-              </div>
-              <div className="dl-os-help">
-                <Callout variant="warning" title="Versions must match">
-                  <p>
-                    Client and server are released together, and the app refuses
-                    a host running a different version. Keep both on the same
-                    release, or pin the server with{" "}
-                    <code>COCKPIT_VERSION={cockpit.manifest.version}</code>. A desktop client
-                    fixes a mismatch by itself over SSH; from the mobile client,
-                    re-run the installer on the host.
-                  </p>
-                </Callout>
-              </div>
-            </div>
-
-            <div className="dl-foot">
-              <p>
-                Start at boot needs <em>linger</em> on most distributions; the{" "}
-                <code>--service</code> path tries to enable it and prints the one
-                <code>sudo</code> line to run when it cannot. The full story,
-                including how a desktop installs the server for you and what to
-                do when a connection fails, is in the{" "}
-                <Link href="/docs#remote">remote hosts reference</Link>.
-              </p>
+            <div id="vps-install">
+              <RepositoryGuides guides={["remote", "cockpit", "security"]} />
             </div>
           </section>
 

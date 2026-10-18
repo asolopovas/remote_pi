@@ -69,7 +69,7 @@ function StepCard({ s }: { s: Step }) {
       <h3>{s.title}</h3>
       <p>{s.desc}</p>
       <span className="sc-link">
-        Open tutorial <IconArrow />
+        Open guides <IconArrow />
       </span>
     </Link>
   );
@@ -84,7 +84,7 @@ export default function TutorialsIndexPage() {
             <span className="eyebrow">Tutorials</span>
             <h1>Learn Remote Pi by doing.</h1>
             <p className="lede">
-              Four hands-on guides, in order. Start with the app, then add
+              Canonical guide entry points. Start with the app, then add
               agents, cross-PC routing, and a 24/7 supervisor as you need them.
               For the <em>why</em> behind it,{" "}
               <Link href="/remote-pi/why">read Why Pi</Link>; for exact flags and

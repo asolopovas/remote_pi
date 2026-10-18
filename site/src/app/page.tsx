@@ -1,3 +1,4 @@
+import { RepositoryGuides } from "@/components/repository-guides";
 import type { Metadata } from "next";
 import Link from "next/link";
 import Image from "next/image";
@@ -168,24 +169,18 @@ export default function CockpitPage() {
           <section id="vps">
             <div className="section-head reveal" style={{ marginTop: 110 }}>
               <span className="eyebrow">New in 2.0 · Any Linux box</span>
-              <h2>One curl turns a VPS into a host.</h2>
+              <h2>Turn a Linux machine into a remote host.</h2>
               <p>
-                No desktop, no sudo, idempotent, on Linux x86_64 and arm64. The
-                flag <code>--service</code> registers a{" "}
-                <code>systemd --user</code> unit so the host is ready right
-                after a reboot; without it the client starts the server on
-                demand over SSH.
+                A headless Linux host runs the server without a desktop.
+                Connect through SSH and optionally configure a user service
+                to keep it available after a reboot.
               </p>
             </div>
             <div className="reveal" style={{ marginTop: 28, maxWidth: 760 }}>
-              <CodeBlock
-                label="on the host"
-                prompt
-                code={`curl -fsSL https://remote-pi.jacobmoura.work/cockpit-server.sh | bash`}
-              />
+              <RepositoryGuides guides={["remote", "security"]} />
               <p style={{ marginTop: 18, color: "var(--ink-soft)" }}>
-                The whole recipe, including pinning a version and keeping the
-                server in step with the app, is on the{" "}
+                Source setup and matching the server with the app are covered
+                by the guides linked from the{" "}
                 <Link href="/download#vps" className="text-accent underline">
                   download page
                 </Link>{" "}

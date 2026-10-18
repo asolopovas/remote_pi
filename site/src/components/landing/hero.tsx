@@ -268,7 +268,7 @@ export function Hero() {
               </a>
             </div>
             <div className="hero-meta">
-              <span>one command to install</span>
+              <span>build from source</span>
               <span>no accounts</span>
               <span>MIT licensed</span>
             </div>
