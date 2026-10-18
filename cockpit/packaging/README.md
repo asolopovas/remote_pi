@@ -1,8 +1,11 @@
 # Empacotamento & Release — Cockpit
 
-Runbook de build/empacotamento das 3 plataformas. Base pro job de CI
-(`.github/workflows/cockpit-release.yml`, plano 43 passo 3). Plano de
-referência: [`../../plan/43-cockpit-packaging.md`](../../plan/43-cockpit-packaging.md).
+Runbook de build/empacotamento das 3 plataformas para
+[release CI](../../.github/workflows/cockpit-release.yml).
+
+Os exemplos de identidade, assinatura e publicação abaixo descrevem a
+configuração upstream. Use sua própria conta, certificado, IDs e destinos
+antes de distribuir um build independente; não publique com identidade alheia.
 
 ## Identidade (passo 1 — feito)
 

@@ -38,7 +38,10 @@ export const metadata: Metadata = {
   },
   description: siteDescription,
   applicationName: "Remote Pi Cockpit",
-  authors: [{ name: "Flutterando", url: "https://flutterando.com.br" }],
+  authors: [
+    { name: "Andrius Solopovas", url: "https://github.com/asolopovas" },
+    { name: "Flutterando", url: "https://flutterando.com.br" },
+  ],
   keywords: [
     "Cockpit",
     "Remote Pi Cockpit",

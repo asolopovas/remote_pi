@@ -9,8 +9,8 @@ subprojeto.
 1. Leia este arquivo inteiro.
 2. Identifique o `<task-id>` no marker — use no nome do resultado e nas
    notificações.
-3. Se o prompt referenciar algo em `contracts/`, leia esse(s) arquivo(s) —
-   eles são fonte de verdade pra contratos cross-project.
+3. Leia `PROTOCOL.md` na raiz para contratos atuais; fixtures compartilhadas
+   ficam em `contracts/fixtures/`.
 
 ## Regras de execução
 
@@ -83,9 +83,9 @@ você terminou sem precisar de polling.
 
 ## Contratos cross-project
 
-Quando `.orchestration/contracts/` existir, carrega specs canônicas
-compartilhadas (ex: `protocol.md`, `fixtures/*.jsonl`). **Read-only** —
-leia, não edite. Mudanças vêm de task explícita do orquestrador.
+O contrato canônico está em `PROTOCOL.md` na raiz. As fixtures em
+`.orchestration/contracts/fixtures/` são compartilhadas e **read-only**
+sem task explícita; mantenha os codecs alinhados antes de alterá-las.
 
 ## Paralelismo
 

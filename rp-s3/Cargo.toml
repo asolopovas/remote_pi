@@ -1,4 +1,5 @@
 [package]
+authors = ["Jacob Moura", "Andrius Solopovas"]
 name = "rp-s3"
 version = "0.2.0"
 edition = "2021"

@@ -1,66 +1,24 @@
-# Remote Pi — Site
+# Website
 
-Landing page for [Remote Pi](https://github.com/jacobaraujo7/remote_pi) — the
-project that lets you control a Pi coding agent from your phone over an
-end-to-end encrypted channel.
+Next.js 16 / React 19 website with Tailwind 4. Maintainer and author of contributions: **Andrius Solopovas**.
 
-This package ships three static routes:
+Use Node 22 (as in the Dockerfile) and pnpm. Run from this directory:
 
-- `/` — landing (hero, features, quick start, GitHub CTA)
-- `/terms` — Terms of Service
-- `/privacy` — Privacy Policy (LGPD)
-
-Target domain: <https://remote-pi.jacobmoura.work>.
-
-## Stack
-
-- Next.js 16 (App Router) + React 19
-- TypeScript 5 (strict)
-- Tailwind 4 (via `@tailwindcss/postcss`)
-- ESLint 9
-- Package manager: **pnpm**
-
-Dark-only theme; visual identity lives in `../branding/`.
-
-## Commands
-
-```bash
-pnpm install   # install deps
-pnpm dev       # dev server at http://localhost:3000
-pnpm build     # production build (SSG)
-pnpm start     # serve the production build
-pnpm lint      # ESLint
+```sh
+pnpm install --frozen-lockfile
+pnpm dev                       # localhost:3000
+pnpm lint
+pnpm build
+pnpm start
 ```
 
-## Layout
+Routes under `src/app/` include the Cockpit landing/docs/download/tutorial pages, `/remote-pi` and its guides, and `/terms` and `/privacy`. This is a presentation site, not the agent or relay server. Transport security is described in [PROTOCOL.md](../PROTOCOL.md); do not claim systemwide E2E encryption.
 
-```
-src/
-├── app/
-│   ├── layout.tsx              # Root layout: header + main + footer, global metadata
-│   ├── page.tsx                # Landing
-│   ├── icon.svg                # Favicon (served as /icon.svg)
-│   ├── opengraph-image.tsx     # Generated OG image (next/og)
-│   ├── globals.css             # Tailwind + design tokens
-│   ├── terms/page.tsx
-│   └── privacy/page.tsx
-└── components/
-    ├── header.tsx              # Logo + nav
-    ├── footer.tsx              # Terms/Privacy/GitHub + copyright
-    ├── hero.tsx                # Landing hero
-    ├── feature-card.tsx        # Reusable card
-    ├── code-block.tsx          # Snippet block
-    └── legal-shell.tsx         # Shared shell for legal pages
+`pnpm build` first synchronizes `public/install.sh` from the extension installer, then builds Next.js. The Dockerfile packages standalone output and listens on port 3000:
+
+```sh
+docker build -t remote-pi-site .
+docker run --rm -p 127.0.0.1:3000:3000 remote-pi-site
 ```
 
-## Conventions
-
-- **Server components by default** — only opt into `"use client"` when state, events, or hooks are needed.
-- **No backend / API routes** in the MVP. The site is purely presentational.
-- **No analytics, no tracking cookies.** Aligned with the project's privacy posture.
-- **English only** in the MVP. PT-BR is a separate plan if demand appears.
-
-## Deploy
-
-Vercel is the expected target (zero-config for Next.js). Domain wiring is
-handled outside this repo.
+For an independent deployment, review upstream legal/operator text, links, update manifests, download hosts and `push-docker.sh` destinations first. Do not publish to upstream infrastructure. Put the site behind your own TLS proxy and configure credentials outside Git.

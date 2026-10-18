@@ -44,7 +44,7 @@ plugin (or a new method-channel surface), not an upgrade path here.
 
 | Platform | Min version | Sync surface | What you need on the device |
 |---|---|---|---|
-| iOS | **26.0** | iCloud Keychain (`kSecAttrSynchronizable=true`) | Signed into iCloud + iCloud Keychain enabled |
+| iOS | **18.0** | iCloud Keychain (`kSecAttrSynchronizable=true`) | Signed into iCloud + iCloud Keychain enabled |
 | Android | **API 34** (Android 14) | Block Store (`setShouldBackupToCloud(true)`) | Google account + Google Backup on + lock screen set |
 
 On iOS the plugin uses a generic-password Keychain item; on Android it
@@ -114,7 +114,7 @@ Errors come back as a sealed `IdentityStoreError`:
 
 - `SyncUnavailable(reason)` — iCloud Keychain / Google Backup is off.
   The recommended UX is to block first-run with a platform-specific
-  instruction (see plan/23 § "Comportamento sem sync disponível").
+  instruction.
 - `PlatformFailure(code, message)` — anything else from the native
   side. Treat as fatal.
 
@@ -122,15 +122,12 @@ Errors come back as a sealed `IdentityStoreError`:
 
 - **Android has no live sync.** Block Store only propagates on
   restore-to-new-device — it has no "value changed" callback. If you
-  need iPhone + iPad-style simultaneous live sync, use iOS for now;
-  Android live sync is tracked in `plan/26-android-live-sync.md`.
+  need simultaneous live sync, use iOS.
 - **No cross-ecosystem sync.** iOS devices sync among themselves;
   Android devices sync among themselves. There is no path between the
-  two. An export-to-mnemonic plan (`plan/24-key-recovery-export.md`)
-  may eventually bridge this.
+  two.
 - **No revoke per device.** Revoking the owner key wipes the local
-  synced surface for the human. Per-device granularity is tracked in
-  `plan/25-per-device-identity.md`.
+  synced surface for the human; it does not revoke individual devices.
 
 ## Layout
 
@@ -161,7 +158,4 @@ remote_pi_identity/
 The Dart side passes the serialized 64-byte blob as `Uint8List`; the
 native side stores/retrieves bytes without inspecting them.
 
-## See also
-
-- `plan/23-owner-key-sync.md` — full design rationale and roadmap.
-- `plan/00-decisions.md` — fixed monorepo-wide decisions.
+See the [mobile guide](../../README.md) for integration and build commands.

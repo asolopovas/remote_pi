@@ -11,7 +11,7 @@
 ## Planos e isolamento
 - Trabalho simples não precisa de plano. Se necessário, crie uma vez em `.pi/tmp/plans/<session-id>/<task>.md`, confirme que está gitignored e atualize o mesmo arquivo com escopo, passos e verificação.
 - Remova o plano após conclusão verificada ou cancelamento explícito; retenha estado inacabado apenas para retomada. Não crie planos permanentes em `plan/`, `plans/` ou arquivos de concluídos sem pedido explícito.
-- Não carregue planos históricos por padrão nem apague registros compartilhados indiscriminadamente. Consulte `plan/00-decisions.md` apenas se a tarefa exigir mudança de arquitetura, pareamento, escopo, UI ou segurança; não reabra decisões fechadas sem evidência forte e discussão explícita.
+- Não carregue planos históricos por padrão nem apague registros compartilhados indiscriminadamente. Use os READMEs e `PROTOCOL.md` como referências atuais; não reabra decisões fechadas sem evidência forte e discussão explícita.
 - Workers recebem cwd explícito, `context: "fresh"` e handoff mínimo. Não importe históricos, planos ou resultados de agentes independentes. Para scout/revisão, descubra os agentes realmente disponíveis; não assuma nomes ou ferramentas instalados.
 
 ## Transportes opcionais

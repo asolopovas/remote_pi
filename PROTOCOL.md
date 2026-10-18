@@ -1,7 +1,7 @@
 # Remote Pi — Protocol & Security
 
 Documentação canônica do protocolo Remote Pi e do modelo de proteção.
-Atualizada em 2026-07-18.
+Setup e operação: [README.md](README.md). Compatibilidade 0.6 abaixo é histórica e específica daquela janela de rollout.
 
 ---
 
@@ -213,8 +213,6 @@ LWW (last-write-wins) em conflito concorrente. Anti-rollback via version monotô
 
 Pi-extension faz polling periódico. Se sua Pi-pubkey saiu de `members`, faz self-revoke (sai do mesh) graciosamente.
 
-Detalhes em `plan/24-mesh-membership.md`.
-
 ---
 
 ## App actions
@@ -274,67 +272,17 @@ Os replies (`action_ok` / `models_list`) só confirmam dispatch. Efeitos visíve
 
 ### Por que ações tipadas em vez de picker genérico
 
-O SDK `@mariozechner/pi-coding-agent` não expõe API genérica de invocação dos slash commands builtin (`/compact`, `/model`, `/fork`, `/copy`, etc.) — apenas alguns têm equivalente em `ExtensionContextActions`. Tentar espelhar o picker do TUI exigiria mirror manual da lista builtin + matriz de invocabilidade + UX de chip canonizado, com vários comandos sendo só hint informativo. Vocabulário tipado é mais simples, mais honesto, e cobre 100% das ações que fazem sentido em mobile. Padrão validado pelo adapter `pi-telegram` (mesmo abordagem: vocabulário curado, sem picker genérico).
+O SDK `@earendil-works/pi-coding-agent` não expõe API genérica de invocação dos slash commands builtin (`/compact`, `/model`, `/fork`, `/copy`, etc.) — apenas alguns têm equivalente em `ExtensionContextActions`. Tentar espelhar o picker do TUI exigiria mirror manual da lista builtin + matriz de invocabilidade + UX de chip canonizado, com vários comandos sendo só hint informativo. Vocabulário tipado é mais simples, mais honesto, e cobre 100% das ações que fazem sentido em mobile. Padrão validado pelo adapter `pi-telegram` (mesmo abordagem: vocabulário curado, sem picker genérico).
 
-Detalhes em `plan/28-pi-commands.md`.
+### Phone-launched agents
 
-### Additional agents from the phone (plan/94)
+New starts require Launcher API3, a paired Owner, a current launcher/epoch PIN grant and an exact registered project ID. Legacy arbitrary-directory `agent_launch` and `agent_stop` mutations are rejected. Current requests include `project_launch` and capability-scoped control; `agent_launch_result` remains a reply name, not permission to use the old request.
 
-These requests use the **existing paired room channel**, not relay control frames
-or mesh `agent_send` envelopes. The selected online Pi is the launching host.
-They create additional fresh Pi processes; `session_new` still replaces the
-current conversation and is not a process-launch operation.
-
-| Request | Successful reply |
-|---|---|
-| `agent_list {id}` | `agent_list_result {in_reply_to, available, launcher_id?, reason?, cwd, max_agents, agents}` |
-| `agent_launch {id, launcher_id, cwd, name?}` | `agent_launch_result {in_reply_to, agent}` |
-| `agent_stop {id, agent_id}` | `agent_stop_result {in_reply_to, agent}` |
-
-A managed `agent` has `agent_id`, `name`, canonical `cwd`, `room_id`, `state`
-(`starting`, `running`, `stopped`, or `failed`), and optional `error`. Failures
-use the existing correlated `error {in_reply_to, code, message}` envelope.
-`agent_list` discovers support and supplies the launcher's default directory.
-Older extensions may ignore these messages: clients must time out rather than
-assume support. `available: false` includes an explanation.
-
-The launch form takes an existing directory and an optional display name—not a
-shell command, executable, environment, prompt, or arbitrary CLI flags. Starting
-explicitly authorizes loading trusted local project configuration/code, just as
-a local Pi launch does. The phone must explain this before submission.
-
-The launching Pi owns a bounded set of headless children. They survive phone
-network disconnects but are stopped when that Pi exits or its launching session
-is replaced/resumed/reloaded; this is not persistent daemon registration. Each starts a fresh conversation and unique
-identity, including in a directory already used by another agent. No existing
-session is resumed, replaced, or stopped. Managed children cannot recursively
-expose the launch facility. They appear through normal room discovery; process
-readiness does not imply that the phone has already discovered or connected to
-the new room.
-
-Ownership is derived from the authenticated paired channel, never a supplied
-owner field or human-readable peer alias. Listing/stopping is scoped to that
-owner, and stop accepts a managed agent ID, never an arbitrary PID. Launch IDs
-are idempotency keys within the launcher's bounded owner-scoped request history:
-replaying the same request must not create another child, and conflicting
-payloads with the same ID fail. Clients must retain the selected `(peer, room,
-channel)` across confirmation and dispatch, reject stale replies, and reconcile
-uncertain outcomes before starting another process. An empty list alone is not
-proof that a pending launch completed. Available launchers supply a fresh
-`launcher_id` for each host-session incarnation; every launch must echo it and
-the host rejects mismatches before spawning. The phone retains pending mutation
-IDs/payloads for its app-process lifetime, verifies the current incarnation, then
-replays the original request before refreshing the list. A changed incarnation
-never triggers automatic relaunch: it requires fresh Start confirmation.
-Read-only lists do not consume mutation-history capacity.
-
-This feature inherits the existing endpoint pairing and TLS trust boundary.
-It does **not** add E2E authentication against a malicious relay operator; see
-[Trust Model](#modelo-de-proteção-trust-model).
+The canonical request/reply fields, Owner/lifecycle authority, bounded histories, no-replay behavior, sandbox limits and prepared-runtime requirements are maintained in [the host contract](pi-extension/docs/secure-launcher.md). See [phone setup](SECURE-LAUNCH.md) and [session controls](pi-extension/docs/session-control.md). Do not infer that a timeout means no launch occurred or automatically repeat a mutation.
 
 ---
 
-## Imagens (plan/30)
+## Imagens
 
 `user_message` aceita um anexo de imagem inline (uma por mensagem hoje),
 opcional e retrocompatível — mensagem só-texto não muda no fio.
@@ -430,8 +378,6 @@ QR code mostra Pi-pubkey + room hint + token de uso único.
 
 Múltiplos Owners podem parear o mesmo PC (concomitância — `peers.json` aceita N entries).
 
-Detalhes em `plan/04-pairing.md`.
-
 ---
 
 ## Modelo de proteção (Trust Model)
@@ -452,7 +398,7 @@ Detalhes em `plan/04-pairing.md`.
 - **Não há E2E** entre app e pi-extension nem entre Pis cross-PC. **Não afirmamos E2E em copy nenhuma do produto**
 - **Headless Linux** (Docker, VPS sem D-Bus session): Pi-key cai pra arquivo `0600` em disco com warning loud. Atacante com acesso ao user pode ler. Recomenda-se GNOME Keyring / KWallet pra hardening real
 - **Backup encriptado completo** (Time Machine, iCloud Drive criptografado etc) pode carregar a Keychain. Atacante precisa do user passphrase do backup
-- **Clone detection ainda não implementado**: 2 PCs com mesma Pi-key (via cópia de arquivo headless ou comprometimento) podem coexistir no relay sem alerta. Em roadmap (plan/27 Wave E3)
+- **Clone detection ainda não implementado**: 2 PCs com mesma Pi-key (via cópia de arquivo headless ou comprometimento) podem coexistir no relay sem alerta.
 
 ### Threat model resumido
 
@@ -481,31 +427,14 @@ Detalhes em `plan/04-pairing.md`.
 
 ---
 
-## Roadmap arquitetural (público)
-
-Curto prazo:
-- Wave E2: `chmod 0o600` em `peers.json` + atomic write
-- Wave E3: detecção de clone server-side (alerta quando 2 WS mesma Pi-pubkey de IPs diferentes)
-
-Médio prazo:
-- **Wrappers de harness** (`remote-pi claude`, `remote-pi opencode`): outros agentes coding plugam no broker UDS local via wrapper, ganham mesh sem reimplementar protocolo
-- E2E cifragem do payload (Curve25519 + ChaCha20-Poly1305 entre App ↔ Pi; opcional cross-PC)
-
-Longo prazo:
-- PC-to-PC direto via WebRTC/QUIC (relay vira fallback)
-- HW-bound Pi-key opcional via Secure Enclave (Apple Silicon) / TPM (Linux/Windows)
-
----
-
 ## Implementações de referência
 
 - **Relay** (Rust, axum): [`relay/src/`](relay/src/)
 - **Pi-extension** (Node/TS): [`pi-extension/src/`](pi-extension/src/)
 - **App mobile** (Flutter): [`app/lib/`](app/lib/)
-- **Planos arquiteturais**: [`plan/`](plan/) (especialmente `plan/03-protocol.md`, `plan/23-owner-key-sync.md`, `plan/24-mesh-membership.md`, `plan/25-pc-mesh-bootstrap.md`)
 
 ---
 
 ## Reportar problemas de segurança
 
-[Definir canal] — por enquanto, abra issue marcando como `security` ou contate maintainers diretamente.
+Contate o maintainer em privado antes de divulgar uma vulnerabilidade. Não publique chaves, credenciais ou detalhes exploráveis em issues públicas.

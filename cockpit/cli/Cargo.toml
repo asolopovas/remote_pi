@@ -1,4 +1,5 @@
 [package]
+authors = ["Jacob Moura", "Andrius Solopovas"]
 name = "cockpit-cli"
 version = "0.7.0"
 edition = "2021"

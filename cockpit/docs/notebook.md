@@ -4,7 +4,7 @@ Uma pasta cujo nome termina em `.notebook` é um **caderno**: um `.md` por nota,
 cada um com um frontmatter YAML raso. O Cockpit mostra a pasta como **item
 único** na árvore (logo do Cockpit, sem expandir) e abre como uma tab de notas.
 Fora do app é uma pasta comum: git, Obsidian e o agente no terminal veem os
-`.md` direto. Plano de referência: `plan/62-cockpit-gallery.md`, passo 4.
+`.md` direto.
 
 ## Formato de uma nota
 

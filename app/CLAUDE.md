@@ -1,120 +1,26 @@
-# Remote Pi — App (Flutter)
+# Mobile development
 
-Cliente mobile (iOS + Android) do Remote Pi. Pareia via QR, lista sessões do Pi,
-chat com streaming, approval cards para tool calls.
+Run commands from `app/`; setup and platform requirements are in [README.md](README.md).
 
-## Stack
+## Boundaries
 
-- Flutter 3.41+ / Dart 3.11+
-- Plataformas: iOS, Android
-- State management: `ChangeNotifier` + `provider` (ViewModels reativos)
-- DI: `auto_injector` (registry em `lib/config/`)
-- Roteamento: `go_router`
-- Resultado tipado: `Result<T, E>` (sucesso/falha explícitos)
-- Crypto: bindings para libsodium (pacote a confirmar — ver `plan/00-decisions.md`)
-- WebSocket: `web_socket_channel` ou similar
+- `domain/`: Dart entities, invariants, typed failures and repository/service contracts; no UI or infrastructure imports.
+- `data/`: I/O adapters and implementations of domain contracts; no widgets or `BuildContext`. Preserve captured stack traces. Expected API errors use `AppException.create`; unexpected errors use `AppException.fatal`.
+- `ui/`: feature pages, immutable state and `ViewModel<T>`; consume domain contracts through injected ViewModels, not data implementations.
+- `config/dependencies.dart`: dependency composition through `CustomInjector`; use constructor tear-offs. Services/repositories are lazy singletons with disposal; use cases/ViewModels are factories.
+- `routing/router.dart`: compose route paths/guards and `ViewmodelProvider`; do not construct ViewModels inside pages.
 
-> Decisões ainda abertas (state mgmt definitivo, pacote libsodium) vivem em
-> `../plan/00-decisions.md`. A stack acima é a direção atual baseada na
-> arquitetura herdada; mudanças estruturais exigem plano novo.
+## Rules
 
-## Comandos
+- Snake-case files; typed async/results; relative imports within a feature and public package/barrel imports across boundaries.
+- Use `context.watch/read/select`. State equality must be correct because `emit` avoids equal-state notifications.
+- After async work, check `mounted`/`context.mounted` before using context. Replace chained async context callbacks with `await` plus a guard.
+- Colors/type come from `ui/core/themes` (`context.colors`, `context.typo`, `kMonoFamily`), not widget-local font/color constants. Camera scrims and destructive overlays are explicit exceptions.
+- Keep UI text minimal; retain accessible labels, actionable errors and risk/uncertainty confirmations.
+- Silence is not explicit dictation Stop; navigation/background and real failures must release the microphone.
+- Crypto uses the existing `cryptography` integration, not custom algorithms. Do not claim E2E confidentiality.
+- Preserve pairing, Owner/room authority, PIN lifecycle and no-replay checks; never relax them to make a test pass.
+- Add focused regressions; run `flutter analyze`, `flutter test --concurrency=1` and formatting on changed Dart files. Device/build acceptance must be reported separately.
+- Do not commit SDK paths, keys, `build/`, `.dart_tool/` or Pods. Keep third-party licenses with assets.
 
-- `flutter pub get` — instala deps
-- `flutter analyze` — lint estático (deve passar zero issues)
-- `flutter test` — testes
-- `flutter run` — abre em simulador/device conectado
-- `dart format .` — formata
-- `flutter build ios --no-codesign` / `flutter build apk --debug` — build verificável
-
-## Arquitetura por camadas
-
-O `lib/` é organizado em camadas com responsabilidades estritas. Cada pasta
-tem seu próprio `CLAUDE.md` descrevendo a persona daquela camada — **leia o
-CLAUDE.md da camada antes de editar qualquer arquivo dentro dela**.
-
-```
-lib/
-├── main.dart
-├── config/          # Bootstrap, DI, env, setup global  → config/CLAUDE.md
-│   └── utils/       # Helpers horizontais
-├── domain/          # Entidades, use cases, validators  → domain/CLAUDE.md
-├── data/            # Repositórios, adapters, APIs      → data/CLAUDE.md
-├── routing/         # GoRouter, paths, guards           → routing/CLAUDE.md
-└── ui/              # Páginas + ViewModels por feature  → ui/CLAUDE.md
-    └── <feature>/
-        ├── states/
-        ├── viewmodels/
-        ├── widgets/
-        └── <feature>_page.dart
-```
-
-Regra de ouro do fluxo de dependência:
-
-```
-ui ──► domain ◄── data
-        ▲
-        │
-     config (injeta tudo)
-     routing (compõe rotas + ViewModels)
-```
-
-- `domain/` **não** importa nada de `data/`, `ui/`, `routing/`, `config/`.
-- `data/` importa contratos de `domain/`, nunca de `ui/`.
-- `ui/` consome `domain/` (use cases) via ViewModels — nunca chama `data/` direto.
-- `config/` é o único lugar que conhece todas as camadas (para registrar bindings).
-
-## Convenções
-
-- **Naming**: arquivos `snake_case.dart`, classes `PascalCase`, widgets `PascalCase`
-- **Imports**: relativos dentro do mesmo feature; absolutos via `package:app/...`
-  quando cruzando features ou camadas
-- **Barrel files**: cada feature/módulo pode expor um `<nome>.dart` agregando
-  os símbolos públicos; consumidores externos importam só o barrel
-- **Async**: prefira `Future`/`Stream` tipados, evite `dynamic`
-- **Erros**: `Result<T, E>` ou exceptions tipadas; nunca `catch (e)` genérico em produção
-- **ViewModels**: registrados em `config/` e injetados em `routing/` via Provider;
-  páginas nunca instanciam ViewModel diretamente — sempre `context.watch/read/select`
-
-## Regra crítica: `BuildContext` em código assíncrono
-
-Acessar `context` após um `await` (ou dentro de `.then/.onSuccess/.flatMap/.whenComplete`)
-pode crashar com `Null check operator used on a null value` se o widget já tiver sido
-desmontado. O lint `use_build_context_synchronously` **não detecta** callbacks
-encadeados — a prevenção é manual.
-
-**Padrão obrigatório**:
-
-```dart
-// CORRETO — await + guard
-final result = await viewModel.doSomething();
-if (!mounted) return;          // em StatefulWidget
-// if (!context.mounted) return; // em StatelessWidget
-context.useContextSomehow();
-```
-
-```dart
-// ERRADO — context dentro de callback assíncrono
-await viewModel.doSomething().onSuccess((_) {
-  context.useContextSomehow(); // CRASH se desmontado
-});
-```
-
-> Nunca use `context` dentro de `.onSuccess()`, `.onFailure()`, `.flatMap()`,
-> `.then()` ou `.whenComplete()`. Sempre transforme para `await` + guard.
-
-## NÃO fazer
-
-- Editar arquivos fora de `app/`
-- Implementar crypto manual — usar bindings libsodium
-- Comitar `build/`, `.dart_tool/`, `ios/Pods/` (já no `.gitignore` raiz)
-- Adicionar dependência sem registrar no plano correspondente
-- Misturar responsabilidades entre camadas — quando bater dúvida, leia o
-  CLAUDE.md da camada alvo
-
-## Modo orquestrado
-
-Se receber um prompt começando com `[ORCH:<task-id>]`, leia
-`../.orchestration/INSTRUCTIONS.md` antes de qualquer outra ação. Esse marker
-indica que outro agente está coordenando o trabalho e tem regras específicas
-(onde escrever resultado, não comitar, etc).
+For a task explicitly marked `[ORCH:<id>]`, read `../.orchestration/INSTRUCTIONS.md`.

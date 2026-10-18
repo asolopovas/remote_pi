@@ -3,11 +3,13 @@
 .*
 # but DO track CI workflows (the `.*` rule above would otherwise ignore .github/)
 !.github/
+!.gitleaksignore
 
-# orchestration: results são efêmeros (logs de execução de cada task);
-# INSTRUCTIONS.md e contracts/ ficam versionados (contrato compartilhado).
-.orchestration/results/*
-!.orchestration/results/.gitkeep
+# Historical/local coordination records; protocol contracts remain tracked.
+/plan/
+/review/
+.orchestration/tasks/
+.orchestration/results/
 
 # Node
 node_modules/
@@ -64,7 +66,31 @@ android/.kotlin/
 # Env / secrets
 .env
 .env.local
-.env.*.local
+.env.*
+!.env.example
+!.env.sample
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.key
+*.pem
+
+# Build/download artifacts and caches (required source assets stay tracked)
+*.apk
+*.aab
+*.ipa
+*.dmg
+*.exe
+*.msi
+*.deb
+*.rpm
+*.zip
+*.tgz
+coverage/
+__pycache__/
+*.pyc
+rp-s3/data/
 
 # Logs
 *.log

@@ -25,4 +25,5 @@ O PTY (nativo, C/FFI) também é nosso: **`plugins/cockpit_pty/`** — absorvido
 2026-07-19 do fork `jacobaraujo7/kyroon_pty` v1.0.6 (upstream
 cesarmod2017/kyroon_pty, MIT preservado), renomeado `kyroon_pty`→`cockpit_pty`
 (package, podspecs, CMake, dylib) e usado via path dependency. Não publicado;
-manutenção é nossa. Zero `dependency_overrides` git restantes no pubspec.
+manutenção é nossa. Os overrides git atuais de Ghostty/flterm e media_kit
+estão fixados no pubspec; valide compatibilidade nativa antes de atualizá-los.

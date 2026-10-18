@@ -1,5 +1,6 @@
 name: cockpit_server
-description: O cockpit-server (plano 58) — binário Dart headless que serve o motor do Cockpit via protocolo JSONL sobre socket local.
+description: Headless Cockpit engine server using JSONL over a local socket.
+# Maintainer and author of contributions: Andrius Solopovas.
 version: 0.1.0
 publish_to: none
 

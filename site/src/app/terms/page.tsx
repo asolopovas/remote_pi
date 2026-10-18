@@ -75,7 +75,7 @@ export default function TermsPage() {
             multiple agents and the mobile peer exchange messages.
           </li>
           <li>
-            An optional public relay service that forwards encrypted messages
+            An optional public relay service that routes messages over TLS
             between paired devices when they are not on the same local network.
             You may instead self-host your own relay using the open-source
             relay code.

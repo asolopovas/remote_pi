@@ -1,21 +1,8 @@
 name: cockpit
-description: "A new Flutter project."
-# The following line prevents the package from being accidentally published to
-# pub.dev using `flutter pub publish`. This is preferred for private packages.
-publish_to: "none" # Remove this line if you wish to publish to pub.dev
+description: "Terminal workspace and SSH-connected remote client."
+# Maintainer and author of contributions: Andrius Solopovas.
+publish_to: "none"
 
-# The following defines the version and build number for your application.
-# A version number is three numbers separated by dots, like 1.2.43
-# followed by an optional build number separated by a +.
-# Both the version and the builder number may be overridden in flutter
-# build by specifying --build-name and --build-number, respectively.
-# In Android, build-name is used as versionName while build-number used as versionCode.
-# Read more about Android versioning at https://developer.android.com/studio/publish/versioning
-# In iOS, build-name is used as CFBundleShortVersionString while build-number is used as CFBundleVersion.
-# Read more about iOS versioning at
-# https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
-# In Windows, build-name is used as the major, minor, and patch parts
-# of the product and file versions while build-number is used as the build suffix.
 version: 2.1.14+112
 
 environment:
@@ -30,7 +17,8 @@ environment:
 #
 # `source: compile` casa a dylib com o `ghostty.version` dos bindings.
 # Exige **Zig 0.16.0** na máquina de build (o ghostty declara
-# minimum_zig_version 0.16.0; 0.15.x falha). Compile a frio ~30s, depois cacheado.
+# minimum_zig_version 0.16.0; 0.15.x falha). Compile a frio ~30s, depois
+# cacheado.
 hooks:
   user_defines:
     libghostty:
@@ -70,8 +58,10 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
 
-  # Migração de UI: design system shadcn (componentes, overlays, tema). Substitui
-  # o Material como camada de UI na raiz (`ShadcnApp.router`). Pin exato — pacote
+  # Migração de UI: design system shadcn (componentes, overlays, tema).
+  # Substitui
+  # o Material como camada de UI na raiz (`ShadcnApp.router`). Pin exato —
+  # pacote
   # pré-1.0 (API churna). Nota: o `ShadcnApp` já injeta
   # `DefaultMaterialLocalizations` (en-US) por padrão, então os widgets de
   # terceiros que embutem Material (xterm, media_kit_video, gpt_markdown)
@@ -125,7 +115,8 @@ dependencies:
   # pelo window_manager; explícito porque agora é usado direto.
   screen_retriever: ^0.2.0
 
-  # Wave 2 — aba de terminal: emulador (absorvido) + PTY nativo (plugin interno).
+  # Wave 2 — aba de terminal: emulador (absorvido) + PTY nativo (plugin
+  # interno).
   # xterm foi ABSORVIDO como módulo interno em lib/app/core/terminal/xterm/
   # (2026-07-19): o upstream (TerminalStudio/xterm.dart) está parado, o projeto
   # já mantinha fork git + view/render forkados no repo, e o app importava
@@ -255,8 +246,10 @@ dev_dependencies:
   # Usado só pelos testes vendorizados do emulador (core/terminal/xterm);
   # os .mocks.dart já vêm gerados — sem build_runner.
   mockito: ^5.4.0
-  # Relógio virtual para testes com Timer (ex.: poll periódico do GitController).
-  # Já vinha transitivo via flutter_test; declarado direto pra satisfazer o lint.
+  # Relógio virtual para testes com Timer (ex.: poll periódico do
+  # GitController).
+  # Já vinha transitivo via flutter_test; declarado direto pra satisfazer o
+  # lint.
   fake_async: ^1.3.1
   # Codegen do i18n: lê lib/i18n/*.i18n.json (config em slang.yaml) e gera
   # lib/i18n/strings.g.dart. Rodar via `dart run slang`.
@@ -272,7 +265,8 @@ dev_dependencies:
 flutter_launcher_icons:
   android: true
   ios: true
-  image_path: "macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_1024.png"
+  image_path: >-
+    macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_1024.png
   remove_alpha_ios: true
 
 # For information on the generic Dart part of this file, see the
@@ -327,10 +321,12 @@ flutter:
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
 # TEMPORÁRIO — fork jacobaraujo7/libghostty (tag flterm-cockpit-2). Baseado no
-# RELEASE v0.0.11 (nativo prebuilt de elias8, mesmo do pub) + 2 fixes: (1) scroll
+# RELEASE v0.0.11 (nativo prebuilt de elias8, mesmo do pub) + 2 fixes: (1)
+# scroll
 # interno de TUI no Ghostty (wheel->mouse no alt-buffer) e (2) text input do
 # Windows (#114). NÃO usa o dev-branch do fork (que tem compressão e exige um
-# nativo mais novo, quebrando com dlsym 'ghostty_terminal_compression_activity').
+# nativo mais novo, quebrando com dlsym
+# 'ghostty_terminal_compression_activity').
 # Público + HTTPS pra funcionar no macOS E no Windows. Voltar pro pub quando o
 # upstream publicar os fixes.
 dependency_overrides:
@@ -365,7 +361,8 @@ dependency_overrides:
   # Tag unificada (mesma ref para os dois pacotes) = upstream main @611cf21 +
   # 1 patch nosso. TODOS os nossos fixes antigos (scroll, IME, git-isolation,
   # CPU baseline) ja estao no upstream main: o scroll foi absorvido pelo
-  # refactor #143 (scroll_gesture_region), os outros 3 merjados (#120/#126/#132).
+  # refactor #143 (scroll_gesture_region), os outros 3 merjados
+  # (#120/#126/#132).
   # O main tras tambem o refactor de controller/view (#143/#144), suporte a
   # Flutter 3.47 (#142) e novas APIs (notifications, progress reports).
   #
@@ -393,7 +390,8 @@ dependency_overrides:
   #
   # ATENCAO CI: ao trocar esta ref muda o ghostty.version; o cache de native
   # asset (.dart_tool/hooks_runner, build/native_assets) precisa ser invalidado,
-  # senao a dylib velha crasha o processo (exit -10) ao carregar os bindings novos.
+  # senao a dylib velha crasha o processo (exit -10) ao carregar os bindings
+  # novos.
   #
   # Quando sair release do flterm com o refactor + nosso patch de iOS (ou o
   # patch for merjado upstream), trocar por versoes do pub.dev e remover os git.
