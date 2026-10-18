@@ -43,6 +43,23 @@ There are no GitHub workflows or automatic releases. Run all audits/tests locall
 
 Before using installers, updates or manual release procedures, configure an explicitly owned package/repository, HTTPS upload/feed destinations and matching signing keys. Never send publication credentials to an upstream default, accept an unrelated publisher's update authority, bypass certificate validation or disable signature/checksum verification. See [release packaging](cockpit/packaging/README.md), [website deployment](site/README.md), and [download-server operations](rp-s3/README.md#routes-and-operation).
 
+## Local publisher guards
+
+These scripts fail before activity unless an explicit destination is supplied. Syntax validation does not establish ownership; verify the publisher account and destination authorization yourself.
+
+| Entry point | Required destination |
+|---|---|
+| [Relay image](relay/push-docker.sh), [website image](site/push-docker.sh), [download-server image](rp-s3/push-docker.sh) | `DOCKER_IMAGE=owned-namespace/repository` or `registry[:port]/repository`, without tag/digest |
+| [Cockpit binary installer](cockpit/install-server.sh) | `COCKPIT_REPO=owner/repository` after owned compatible releases exist |
+| [Extension registry bootstrap](pi-extension/install.sh) | `REMOTE_PI_PACKAGE` explicitly selects a package; it is not the supported source-only installation of this checkout |
+
+Run local destination/disable-default regressions from the repository root:
+
+```sh
+python3 scripts/test-installers.py
+python3 scripts/test-docker-publishers.py
+```
+
 ## Runtime limits
 
 Read the [protocol trust model](PROTOCOL.md#modelo-de-proteção-trust-model), [launcher sandbox limits](pi-extension/docs/secure-launcher.md#sandbox-and-parentchild-transport-scope), and [Cockpit SSH protocol](cockpit/docs/remote-protocol.md) before exposing a service. Start only trusted projects, restrict network access, keep TLS termination current and protect backups. Never relax pairing, filesystem or credential checks to get a launch/build working.

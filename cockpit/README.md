@@ -67,3 +67,13 @@ cockpit-server service uninstall
 The [website](../site/README.md#integrations) presents Cockpit and its downloads; the [download server](../rp-s3/README.md#integrations) hosts release manifests. The [mobile Pi client](../app/README.md), [host extension](../pi-extension/README.md) and [relay](../relay/README.md) form the separate phone-control path. [Security/publication gates](../SECURITY.md) apply to all components.
 
 Local workspace/database/SSH configuration belongs outside Git. Keep terminal, PTY, icon and bundled JavaScript licenses with distributions; the JavaScript notice files are packaged beside the assets.
+
+Local security regressions (run from `cockpit/`):
+
+```sh
+python3 test/security/test_release_updater_configuration.py
+# Supply jsdom 29.1.1 through an isolated tooling prefix, not app dependencies:
+NODE_PATH=/absolute/tooling/node_modules node --test test/md_preview_security.cjs
+```
+
+The preview checks disable network/resource execution and exercise the unchanged browser APIs; they do not prove native WebView/CSP or installed-device behavior.

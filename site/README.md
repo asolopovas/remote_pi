@@ -32,4 +32,4 @@ docker build -t remote-pi-site .
 docker run --rm -p 127.0.0.1:3000:3000 remote-pi-site
 ```
 
-For an independent deployment, review upstream legal/operator text, links, update manifests, download hosts and `push-docker.sh` destinations first. Do not publish to upstream infrastructure. Put the site behind your own TLS proxy and configure credentials outside Git. Follow [site development rules](CLAUDE.md) and the shared [security/publication gates](../SECURITY.md).
+For an independent deployment, review upstream legal/operator text, links, update manifests, download hosts and `push-docker.sh` destinations first. Do not publish to upstream infrastructure. The [image publisher](push-docker.sh) requires an explicit destination under the [publisher guards](../SECURITY.md#local-publisher-guards). Put the site behind your own TLS proxy and configure credentials outside Git. Follow [site development rules](CLAUDE.md) and the shared [security/publication gates](../SECURITY.md).

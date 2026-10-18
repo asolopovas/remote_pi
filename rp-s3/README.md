@@ -34,4 +34,4 @@ cargo test
 
 Artifact extensions `.dmg`, `.exe`, `.deb`, `.rpm` and `.zip` use attachment/one-year immutable cache headers; other files use a five-minute cache. Successful download responses permit CORS reads from any origin. Serialize uploads to the same target: the temporary filename is shared, so concurrent writes are not coordinated. Publish immutable artifacts at versioned paths and back up the data volume.
 
-Terminate TLS at a reverse proxy; do not expose upload tokens over HTTP. Configure a private token through your deployment secret store. Review [Compose](docker-compose.yml) volume paths/image destinations and the [publisher script](push-docker.sh) before using them: their upstream defaults are not this repository's deployment.
+Terminate TLS at a reverse proxy; do not expose upload tokens over HTTP. Configure a private token through your deployment secret store. Review [Compose](docker-compose.yml) volume paths/image references before using it; they are not this repository's deployment. The [publisher script](push-docker.sh) has no default destination and follows the shared [publisher guards](../SECURITY.md#local-publisher-guards).

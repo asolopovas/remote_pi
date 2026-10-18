@@ -61,6 +61,6 @@ SQLite stores signed membership metadata, not message payloads, using rollback-j
 
 See [PROTOCOL.md](../PROTOCOL.md) for exact wire limits, errors and historical mixed-version compatibility. Upgrade clients and relay together during a maintenance window; do not infer current compatibility from old rollout plans.
 
-This relay serves the [mobile/host path](../README.md#how-the-projects-connect), not [Cockpit's SSH server](../cockpit/README.md#remote-host). The [website](../site/README.md) and [download server](../rp-s3/README.md) are independent distribution components. See [development rules](CLAUDE.md) and [security gates](../SECURITY.md).
+This relay serves the [mobile/host path](../README.md#how-the-projects-connect), not [Cockpit's SSH server](../cockpit/README.md#remote-host). The [website](../site/README.md) and [download server](../rp-s3/README.md) are independent distribution components. See [development rules](CLAUDE.md), [security gates](../SECURITY.md) and the required [image-publisher destination](../SECURITY.md#local-publisher-guards) before using [push-docker.sh](push-docker.sh).
 
 [MIT license](../LICENSE).
