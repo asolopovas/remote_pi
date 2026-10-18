@@ -83,6 +83,7 @@ class ClickMouseHandler implements TerminalMouseHandler {
       case MouseMode.upDownScrollMove:
         return null;
     }
+    return null;
   }
 }
 
@@ -110,5 +111,6 @@ class UpDownMouseHandler implements TerminalMouseHandler {
           event.state.mouseReportMode,
         );
     }
+    return null;
   }
 }
