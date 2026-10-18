@@ -43,21 +43,13 @@
 	<string>NSApplication</string>
 	<key>FLTEnableMergedPlatformUIThread</key>
 	<false/>
-	<!-- Plano 47 — self-update via Sparkle (pacote auto_updater). Chave pública
-	     EdDSA (a privada vive no iCloud + secret SPARKLE_PRIVATE_KEY). O feed
-	     (appcast-macos.xml) é setado em runtime via setFeedURL (delegate do
-	     plugin), então NÃO há SUFeedURL aqui — o Sparkle 2 lança exceção se
-	     houver delegate de feed E SUFeedURL juntos. Auto-check + auto-update
-	     silencioso (decisões B/C): baixa em background e instala no próximo
-	     quit; o nosso card reflete o estado. -->
-	<key>SUPublicEDKey</key>
-	<string>WoJTWryr48pWiAnDPqqt/Iu9f6gAsU7A1zBb5mBLruI=</string>
+	<!-- Self-update is unsupported until an owned feed and its matching native
+	     verification key are explicitly configured and validated together.
+	     Do not inherit upstream signing authority or enable automatic updates. -->
 	<key>SUEnableAutomaticChecks</key>
-	<true/>
+	<false/>
 	<key>SUAutomaticallyUpdate</key>
-	<true/>
-	<key>SUScheduledCheckInterval</key>
-	<integer>86400</integer>
+	<false/>
 	<!-- Tipos de documento (janela de documento, 2.0): os formatos PRÓPRIOS
 	     são "Owner" (duplo clique abre no Cockpit); markdown e .http ficam
 	     como "Alternate" (aparecem em "Abrir com", sem roubar o padrão de

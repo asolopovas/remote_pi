@@ -132,7 +132,7 @@ void main() {
     });
   });
 
-  group('NoopSelfUpdater (Linux)', () {
+  group('NoopSelfUpdater (unconfigured or unsupported builds)', () {
     test('não suportado e inerte', () async {
       const updater = NoopSelfUpdater();
       expect(updater.isSupported, isFalse);
@@ -140,7 +140,13 @@ void main() {
       // Métodos são no-op e não lançam.
       await updater.initialize();
       await updater.checkForUpdates();
+      await updater.checkForUpdates(inBackground: false);
       await updater.applyUpdate();
+      expect(await updater.changes.toList(), isEmpty);
+      updater.dispose();
+      updater.dispose();
+      expect(updater.isSupported, isFalse);
+      expect(updater.state.phase, SelfUpdatePhase.idle);
       expect(updater.state.isReadyToInstall, isFalse);
       expect(updater.state.isActionable, isFalse);
     });

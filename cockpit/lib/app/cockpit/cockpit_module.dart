@@ -50,7 +50,6 @@ import 'package:cockpit/app/cockpit/data/terminal/sidecar/sidecar_terminal_gatew
 import 'package:cockpit/app/cockpit/domain/contracts/http_request_runner.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/process_tree_provider.dart';
 import 'package:cockpit/app/cockpit/domain/services/terminal_harness_monitor.dart';
-import 'package:cockpit/app/cockpit/data/update/auto_updater_self_updater.dart';
 import 'package:cockpit/app/cockpit/data/update/noop_self_updater.dart';
 import 'package:cockpit/app/cockpit/data/update/update_checker_impl.dart';
 import 'package:cockpit/app/cockpit/data/update/url_opener_impl.dart';
@@ -104,7 +103,7 @@ import 'package:cockpit/app/core/data/repositories/json_settings_store.dart';
 import 'package:cockpit/app/core/data/setup/json_state_store.dart';
 import 'package:cockpit/app/core/data/setup/storage_location.dart';
 import 'package:cockpit/app/core/ui/window_activity_controller.dart';
-import 'package:flutter/foundation.dart' show debugPrint, kReleaseMode;
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
@@ -268,10 +267,10 @@ Future<Module> buildCockpitModule({
         ..addInstance<UpdateChecker>(const UpdateCheckerImpl())
         ..addInstance<UrlOpener>(const UrlOpenerImpl())
         ..addInstance<UpdateTarget>(_updateTarget(appVersion))
-        // Self-update nativo (plano 47): Sparkle/WinSparkle quando há appcast
-        // pra plataforma (macOS/Windows); Noop no Linux → o card cai no caminho
-        // de notify + download manual (UpdateChecker).
-        ..addInstance<SelfUpdater>(_buildSelfUpdater(_updateTarget(appVersion)))
+        // Fail closed on every platform, including release builds. An owned
+        // feed alone is not enough: native verification keys must also be
+        // configured and validated before self-update can be supported.
+        ..addInstance<SelfUpdater>(const NoopSelfUpdater())
         ..route(
           '/',
           // ViewModels page-scoped. O auto_injector resolve os parâmetros
@@ -317,13 +316,8 @@ Future<Module> buildCockpitModule({
   );
 }
 
-/// Base do rp-s3 onde moram `latest.json` (notify) e os appcasts (self-update).
-const String _kDownloadsBase =
-    'https://rp-s3.jacobmoura.work/downloads/cockpit';
-
-/// [UpdateTarget] da máquina atual: versão do app + plataforma/formato/arch do
-/// manifest + URL do appcast de self-update (macOS/Windows; `null` no Linux).
-/// macOS → dmg/universal; Windows → exe/x64; Linux → deb/(arm64|x64).
+/// Current platform's manual-update target. Native self-update is deliberately
+/// unconfigured: never inherit another distributor's feed or signing authority.
 UpdateTarget _updateTarget(String version) {
   if (Platform.isMacOS) {
     return UpdateTarget(
@@ -331,7 +325,6 @@ UpdateTarget _updateTarget(String version) {
       platform: 'macos',
       format: 'dmg',
       arch: 'universal',
-      selfUpdateFeedUrl: '$_kDownloadsBase/appcast-macos.xml',
     );
   }
   if (Platform.isWindows) {
@@ -340,7 +333,6 @@ UpdateTarget _updateTarget(String version) {
       platform: 'windows',
       format: 'exe',
       arch: 'x64',
-      selfUpdateFeedUrl: '$_kDownloadsBase/appcast-windows.xml',
     );
   }
   final arch = Platform.version.toLowerCase().contains('arm') ? 'arm64' : 'x64';
@@ -350,22 +342,4 @@ UpdateTarget _updateTarget(String version) {
     format: 'deb',
     arch: arch,
   );
-}
-
-/// Constrói o [SelfUpdater] da plataforma: [AutoUpdaterSelfUpdater] quando há
-/// appcast (macOS/Windows), [NoopSelfUpdater] no Linux (sem self-update nativo →
-/// o `UpdateViewModel` usa o caminho de notify + download manual).
-///
-/// `autoDownloads` distingue os dois motores: só o Sparkle (macOS) baixa o
-/// artefato em background por conta própria. O WinSparkle exige o clique do
-/// usuário pra baixar+instalar — ver doc do [AutoUpdaterSelfUpdater].
-SelfUpdater _buildSelfUpdater(UpdateTarget target) {
-  // Em debug/profile (flutter run) o Sparkle é veneno: o bundle id é o mesmo do
-  // app instalado, o check acha release novo e o Autoupdate MATA o processo pra
-  // instalar/relançar — o run morre com "Lost connection to device" sem erro.
-  // Self-update só faz sentido no build release distribuído.
-  if (!kReleaseMode) return const NoopSelfUpdater();
-  final feed = target.selfUpdateFeedUrl;
-  if (feed == null) return const NoopSelfUpdater();
-  return AutoUpdaterSelfUpdater(feedUrl: feed, autoDownloads: Platform.isMacOS);
 }
