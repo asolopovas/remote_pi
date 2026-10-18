@@ -264,6 +264,7 @@ Future<Module> buildCockpitModule({
         ..addInstance<LayoutLoader>(const CkpLayoutLoader())
         ..addInstance<AppLauncherGateway>(const AppLauncherImpl())
         ..addInstance<Notifier>(notifier)
+        // Manual checks are also disabled without an explicitly owned feed.
         ..addInstance<UpdateChecker>(const UpdateCheckerImpl())
         ..addInstance<UrlOpener>(const UrlOpenerImpl())
         ..addInstance<UpdateTarget>(_updateTarget(appVersion))
