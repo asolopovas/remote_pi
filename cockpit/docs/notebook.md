@@ -1,5 +1,7 @@
 # `*.notebook` — Cadernos de notas
 
+[Project index](../../README.md#project-map) · [Cockpit guide](../README.md)
+
 Uma pasta cujo nome termina em `.notebook` é um **caderno**: um `.md` por nota,
 cada um com um frontmatter YAML raso. O Cockpit mostra a pasta como **item
 único** na árvore (logo do Cockpit, sem expandir) e abre como uma tab de notas.
@@ -75,14 +77,7 @@ busca. No rodapé da nota, **Citada em** lista as notas que apontam pra ela
 
 ## CLI
 
-```sh
-cockpit note add <dir.notebook> --title <t> [--tag <a>]... [--body <texto> | --body -]
-cockpit note list <dir.notebook> [--json]
-```
-
-`add` cria a pasta se faltar, grava a nota e recarrega a tab aberta; imprime o
-caminho. `--body -` lê o corpo do stdin. O wire é `note-add` / `note-list`
-(ver `cockpit_cli_handler.dart`).
+A [referência da CLI](../cli/text/skill.md#notebooks-notebook) possui os verbos de criação/listagem e exemplos operacionais. Use-a para criar frontmatter e nomes de arquivo válidos em vez de duplicar essa receita aqui.
 
 ## Gallery
 

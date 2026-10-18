@@ -1,5 +1,7 @@
 # Terminal output flow control
 
+[Project index](../../README.md#project-map) · [Cockpit guide](../README.md)
+
 ## Failure mode
 
 Before this design, output pressure scaled with the number of terminals rather
@@ -60,19 +62,8 @@ model, controller, scrollback and enclosing widget state remain alive. Parsing
 continues under the global budget, while invisible grids cannot schedule layout
 or paint. Reopening a tab reconnects the view to the current model.
 
-Inactive agent transcripts and tab labels in hidden workspaces stop listening
-to their sessions. Agent token deltas still update the model, but visible
-sessions notify at most once per frame. Hidden sessions do not request frames.
-Assistant and thinking text use `StringBuffer` plus a cached snapshot, avoiding
-quadratic immutable string copies and repeated Markdown snapshots for long
-responses.
-
 ## Other sustained-output costs
 
-- Agent JSONL buffering appends chunk tails without repeatedly copying the
-  complete partial line.
-- Full RPC lines and LSP stderr lines are logged only in debug builds. Release
-  builds do not feed Flutter's throttled `debugPrint` queue per token or line.
 - Terminal and task scrollback persistence uses a quiet-period debouncer with
   at most one live timer per source, instead of canceling and allocating a timer
   for every output batch.
@@ -105,13 +96,10 @@ Windows x64.
 The scheduler tests cover aggregate budget enforcement, 32 simultaneously
 noisy sources, round-robin fairness, time-budget exhaustion, high/low-water
 backpressure, exact Unicode preservation, safe disposal and drain completion.
-Widget tests verify that hidden presentations detach listeners while their
-models continue to advance, and that inactive agent listeners do not rebuild.
-Additional tests cover agent append snapshots, JSONL chunk boundaries and the
-low-churn persistence debouncer.
+Widget tests cover hidden terminal presentation while models keep advancing; persistence tests cover the low-churn debouncer. These are terminal/task invariants, not guarantees about the removed native agent UI. Use the [synthetic terminal benchmark](../benchmark/README.md) and [Linux workload](linux-performance-profiling.md) for separate performance checks.
 
 The constants above are deliberately centralized in
-`lib/app/core/terminal/pty_output_scheduler.dart`. If profiling on a supported
+[pty_output_scheduler.dart](../lib/app/core/terminal/pty_output_scheduler.dart). If profiling on a supported
 target warrants tuning, change the aggregate time budget or slice size there;
 do not reintroduce per-terminal scheduling or acknowledge output before its
 synchronous consumer has completed.

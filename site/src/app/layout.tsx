@@ -31,7 +31,7 @@ const siteDescription =
   "Run Claude Code, Codex, Pi or anything else in real terminals, local or on any machine over SSH, with the viewer, diagnostics, git, worktrees and databases they need to work.";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://remote-pi.jacobmoura.work"),
+  metadataBase: URL.parse("https://remote-pi.jacobmoura.work"),
   title: {
     default: siteTagline,
     template: "%s · Cockpit",

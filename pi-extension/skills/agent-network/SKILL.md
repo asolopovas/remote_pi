@@ -5,6 +5,8 @@ description: Use when the remote-pi mesh tools (`list_peers`, `agent_send`, and 
 
 # Agent Network (remote-pi mesh)
 
+[Project index](../../../README.md#project-map) · [Host extension guide](../../README.md)
+
 You are connected to the **remote-pi agent mesh**. Other agents — other Claude
 sessions, Pi coding agents on this machine, and agents on the Owner's other PCs
 (reached through the relay) — can send you messages, and you can send messages

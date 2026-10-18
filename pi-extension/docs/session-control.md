@@ -1,5 +1,9 @@
 # Exact-session stop (inner opaque-envelope protocol)
 
+[Project index](../../README.md#project-map) · [Host extension guide](../README.md)
+
+Related contracts: [launcher authority](secure-launcher.md), [phone workflow](../../SECURE-LAUNCH.md), [mobile integration](../../app/README.md) and [transport trust model](../../PROTOCOL.md).
+
 Authenticated, currently paired Owners can query their assigned room:
 
 ```json
@@ -41,3 +45,38 @@ reliably stop an idle externally controlled RPC process. The isolated real-Pi
 smoke documents that SDK limitation with one synthetic subsequent `get_state`
 command; production does not send such a command or substitute a transport.
 Managed RPC children still use the parent's existing owned-process stop path.
+
+## Managed session access and launching host
+
+`session_control_status_result` may add these strict, optional fields (old hosts
+may omit both):
+
+```json
+{"access":{"state":"expired","expires_at":1770000000000},"launching_host":{"room_id":"actual-root-room","launcher_id":"actual-launcher-incarnation"}}
+```
+
+`access` describes only the authenticated assigned Owner's grant on this launcher,
+not machine-wide access. `unlocked` and `expired` carry the actual absolute grant
+expiry; `locked` and `unavailable` carry `null`. Expired means a retained real
+grant expired, never that a process is old. Lock/revoke clears grant evidence.
+A denied capability has no Stop token. The five-minute TTL, per-launcher grant
+isolation and 30-second, single-use Stop confirmation remain unchanged.
+
+The parent takes `launching_host` from its actually published current root room
+and launcher instance, not cwd, names, process IDs or room naming conventions.
+Only the assigned paired Owner receives it, after the final captured
+current/epoch/authority checks used for session controls. Locked room discovery
+still publishes only the permitted working metadata, not model/transcript data.
+
+The App uses this origin to open that exact launching host for explicit private
+operator unlock, then returns to the captured live paired child and queries new
+session controls. Parent unlock alone is not proof of child access. No old Stop
+confirmation or PIN is replayed, no Stop is automatic, and no PIN is persisted.
+Missing legacy origin requires explicit same-peer host selection; no aliases or
+paths are treated as provenance, and no settled launch result is reconstructed
+from the mutation-request journal. There is no added origin registry.
+
+Host updates do **not** activate safely by reloading a root with running managed
+children: root shutdown/reload tears them down. Leave existing user jobs alone.
+The App's explicit legacy selection works without host reload; optional host
+metadata becomes available on safely updated/new host sessions only.

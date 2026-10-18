@@ -1,5 +1,7 @@
 # App-local speech_to_text 7.4.0 (plan76)
 
+[Project index](../../../README.md#project-map) · [Mobile guide](../../README.md)
+
 Source: unmodified installed cache `/home/andrius/.pub-cache/hosted/pub.dev/speech_to_text-7.4.0`, copied offline on 2026-10-11. Upstream: https://github.com/csdcorp/speech_to_text, published package version **7.4.0**. Original hosted lock archive checksum: `75587f7400f485fdf166beacd471549d98fe5d58e634f708916bb65dec05d6a4`. No archive was fetched and no global cache source was edited.
 
 License: upstream BSD 3-Clause, copyright 2019 Corner Software Development Corp.; complete unchanged `LICENSE` retained for Flutter dependency license collection. `pubspec.yaml` retains the upstream version and dependencies. `UPSTREAM.sha256` records original copied bytes before patching. Production `lib/`, `android/`, `darwin/`, upstream README/changelog/license/config are retained; examples, scripts, upstream tests and the development-only `android/gradle/` sample (including its local.properties) are excluded.

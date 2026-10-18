@@ -1,5 +1,7 @@
 # Status de turno — hooks dos harnesses
 
+[Project index](../../README.md#project-map) · [Cockpit guide](../README.md)
+
 Como o Cockpit sabe que um agente numa aba está trabalhando, terminou o turno ou
 precisa de uma ação do usuário (spinner, badge, chime, notificação do SO).
 

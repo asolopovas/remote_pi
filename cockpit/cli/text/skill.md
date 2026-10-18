@@ -5,6 +5,8 @@ description: Drive Cockpit's multiplexed terminals from inside a tab. Use when y
 
 # cockpit — Cockpit's internal CLI
 
+[Project index](../../../README.md#project-map) · [Cockpit guide](../../README.md)
+
 You are running inside a **Cockpit** terminal (an IDE that multiplexes
 terminals). The `cockpit` command talks to the app and lets you **inject
 text/keys** into any tab and **list** tabs/workspaces. It only exists inside
@@ -280,34 +282,16 @@ Cockpit tabs (it is not on the global PATH).
 
 ## Layout files (`*.ckp`)
 
-A `.ckp` file is a versionable YAML describing terminals to open in a
-workspace — the Cockpit equivalent of a tmuxinator layout. One file = one
-layout; the layout takes the file's name.
+The [layout guide](../../docs/layout-ckp.md) owns the complete format and GUI behavior. For installed CLI use, the minimal shape is:
 
 ```yaml
-# dev.ckp — lives anywhere in the project (usually the root)
-autorun: worktree        # optional: auto-apply when a worktree of this
-                         # workspace is created (the only autorun trigger)
 panes:
-  - name: Frontend       # required, unique; becomes the tab's stable label
-    cwd: frontend        # relative to this file, forward slashes ONLY
-    command: claude      # optional; typed into the shell after it boots
   - name: Backend
     cwd: backend
-    split: right         # tab (default) | right (side by side) | down (stack)
     command: npm run dev
-    platforms: [macos, linux]   # optional; omit = all OSes
 ```
 
-Rules:
-- `cwd` must be **relative** with `/` separators — absolute paths and `\`
-  are rejected so the same committed file works on macOS, Linux and Windows.
-- `split` is relative to the **previous pane created in this run**; if that
-  one was skipped (merge), the next opens as a plain tab.
-- `platforms` accepts a string or list of `macos`/`windows`/`linux`.
-- In the app, right-click a `.ckp` file → **Open layout** does the same as
-  `cockpit orchestrate` (replace); the app asks for confirmation only when a
-  tab to be closed has a running process.
+Run `cockpit orchestrate dev.ckp` only after approving replacement of the current workspace's tabs; `--append` preserves existing tabs and skips names already present. Use portable relative cwd paths with forward slashes. The command options above remain the operational reference; do not infer that default replace is idempotent.
 
 ## Board files (`*.kanban`)
 
@@ -490,56 +474,18 @@ layout is genuinely custom; for a data dashboard the base CSS is enough.
 
 ## Notebooks (`*.notebook`)
 
-A folder whose name ends in `.notebook` is a **notebook**: one markdown file
-per note, each with a small YAML frontmatter. The app shows the folder as a
-single item in the file tree and opens it as a notes tab — notes grouped by
-tag on the left, the note on the right. Obsidian opens the same folder as-is.
-
-Write notes here while you work when the human should be able to read them
-later: findings, decisions, open questions, a summary of what you changed.
-Prefer **many short notes with tags** over one long file.
-
-```markdown
----
-title: Túnel SSH no host
-tags: [relay, agent]
-created: 2026-09-07T10:12
-updated: 2026-09-07T11:40
----
-
-Body in plain markdown.
-```
-
-The easy way is the verb — it writes the frontmatter for you, picks a unique
-file name (`2026-09-07-tunel-ssh-no-host.md`) and refreshes the open tab:
+The [notebook guide](../../docs/notebook.md) owns the on-disk format, links/images and editor behavior. Prefer short tagged findings/decisions that the human can read later. Create notes through the CLI rather than hand-generating frontmatter:
 
 ```sh
-cockpit note add notes.notebook --title "Túnel SSH no host" --tag relay \
-  --body "Porta 2222 fechada no firewall; abri via ufw."
-cockpit note add notes.notebook --title "Resumo da sessão" --body - <<'NOTE'
-- Corrigi o parser do .kanban
-- Falta: testes do watcher
+cockpit note add notes.notebook --title "Session summary" --tag review --body "Findings and remaining checks."
+cockpit note add notes.notebook --title "Longer note" --body - <<'NOTE'
+Reviewed changes.
+Remaining: device acceptance.
 NOTE
-cockpit note list notes.notebook          # title  [tags]  path
+cockpit note list notes.notebook
 ```
 
-Rules that matter:
-- `--tag` may repeat. The **`agent` tag is always added** by the verb — it is
-  how the human tells your notes from theirs. Keep it if you edit a note by
-  hand.
-- A note without frontmatter still works (title = file name, no tag), so
-  editing an existing `.md` with your normal file tools is fine. The tab
-  reloads by itself.
-- The **file name never changes** when the title changes; the title is
-  metadata. Don't rename files to "fix" titles.
-- Keep the frontmatter keys as they are (`title`, `tags`, `created`,
-  `updated`); the app rewrites only those lines and leaves the body untouched.
-- **Link notes with `[[Title]]`** (exact title, case-insensitive). The app
-  renders it as a clickable chip and lists backlinks on the target note. Use
-  it to connect a finding to the decision it led to, or a summary to the
-  notes it summarizes.
-- Images: put files under `_assets/` inside the notebook and reference them
-  as `![](_assets/name.png)` — the app draws them inline.
+`--tag` may repeat; the verb adds the `agent` tag. Keep existing metadata and filenames stable when updating a note. These commands remain usable with installed help; repository links are source-checkout references.
 
 ## Telemetry (the error store) — query it instead of reading terminals
 

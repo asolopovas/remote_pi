@@ -1,5 +1,7 @@
 # Relay development
 
+[Project index](../README.md#project-map) · [Relay guide](README.md)
+
 Work from `relay/`; build/run/configuration are in [README.md](README.md). Wire contracts and trust limits are in [PROTOCOL.md](../PROTOCOL.md).
 
 - Rust edition 2024, Tokio, axum WebSockets, serde and tracing. `tokio-tungstenite` is for tests.
@@ -10,4 +12,4 @@ Work from `relay/`; build/run/configuration are in [README.md](README.md). Wire 
 - Preserve bounded auth caches, rate limits, strict protocol validation and fail-closed errors.
 - Do not commit `target/` or runtime databases. Use the [deployment runbook](deploy/fn/README.md) for certificate/backup/upgrade operations; do not restart unrelated services.
 
-For a task explicitly marked `[ORCH:<id>]`, read `../.orchestration/INSTRUCTIONS.md`.
+For a task explicitly marked `[ORCH:<id>]`, read the [orchestration instructions](../.orchestration/INSTRUCTIONS.md).

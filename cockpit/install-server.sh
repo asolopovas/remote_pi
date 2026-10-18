@@ -29,7 +29,17 @@
 # Trust: plain readable script, no privileges. Read it before piping to bash.
 set -euo pipefail
 
-REPO="${COCKPIT_REPO:-jacobaraujo7/remote_pi}"
+# Explicitly select the independently operated GitHub repository. Never fall
+# back to the original publisher. Reject URLs, traversal and query injection.
+REPO="${COCKPIT_REPO:-}"
+if [[ ! "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]]; then
+  echo "error: set COCKPIT_REPO to an explicit GitHub owner/repository" >&2
+  exit 1
+fi
+if [ -n "${COCKPIT_VERSION:-}" ] && [[ ! "$COCKPIT_VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?(\+[A-Za-z0-9.-]+)?$ ]]; then
+  echo "error: invalid COCKPIT_VERSION" >&2
+  exit 1
+fi
 GH_API="https://api.github.com/repos/$REPO"
 GH_DL="https://github.com/$REPO/releases/download"
 INSTALL_ARGS=()
@@ -114,6 +124,8 @@ else
     | head -1 | sed 's/.*cockpit-server-v//; s/"//')"
   [ -n "$VERSION" ] || die "could not find a cockpit-server release on GitHub; set COCKPIT_VERSION=x.y.z"
 fi
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?(\+[A-Za-z0-9.-]+)?$ ]] \
+  || die "invalid release version"
 TAG="cockpit-server-v$VERSION"
 ZIP="cockpit-server-$VERSION-linux-$ARCH.zip"
 ok "cockpit-server $VERSION ($ARCH)"

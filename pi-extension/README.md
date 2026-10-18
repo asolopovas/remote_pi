@@ -1,10 +1,12 @@
 # Pi extension
 
+[Project index](../README.md#project-map)
+
 Host extension, local agent broker, relay client and optional daemon supervisor. Maintainer and author of contributions: **Andrius Solopovas**.
 
 ## Build and install this source
 
-Requirements: Node 20+, pnpm and the [Pi coding agent](https://github.com/earendil-works/pi).
+Requirements: Node **22.19+**, pnpm and the [Pi coding agent](https://github.com/earendil-works/pi).
 
 ```sh
 pnpm install --frozen-lockfile
@@ -14,7 +16,7 @@ pnpm build
 pi install .
 ```
 
-The public npm package `remote-pi` is a separate upstream distribution. Building this checkout does not publish it or install a service.
+This checkout is source-only; its package is marked private. The [workspace configuration](pnpm-workspace.yaml) supplies a scoped security override that npm consumers do not inherit. Do not use `npm install -g .`, pack/publish it to npm, or substitute the upstream `remote-pi` distribution. Building does not install a service.
 
 In an interactive Pi session:
 
@@ -23,7 +25,7 @@ In an interactive Pi session:
 /remote-pi pair
 ```
 
-The first command runs setup when necessary. Setup chooses an agent name and relay auto-start; agents share one machine-local broker session. Scan the pairing QR with your own client build. Pairing is per machine, not per working directory.
+The first command runs setup when necessary. Setup chooses an agent name and relay auto-start; agents share one machine-local broker session. Scan the pairing QR with your own [mobile client build](../app/README.md). Pairing is per machine, not per working directory.
 
 ## Relay and local configuration
 
@@ -42,7 +44,7 @@ Relay URL precedence:
 2. `relay` in `~/.pi/remote/config.json`.
 3. Built-in third-party relay, `https://relay-rp1.jacobmoura.work`.
 
-The mobile app has its own relay setting and must use the same endpoint. See the [relay guide](../relay/README.md) to self-host. TLS is **not E2E encryption**; trust the relay operator. See [PROTOCOL.md](../PROTOCOL.md) for authentication and routing limits.
+The [mobile app](../app/README.md#connect-and-use) has its own relay setting and must use the same endpoint. See the [relay guide](../relay/README.md) to self-host. TLS is **not E2E encryption**; trust the relay operator. See [PROTOCOL.md](../PROTOCOL.md) for authentication and routing limits.
 
 | Local path | Purpose |
 |---|---|
@@ -54,7 +56,7 @@ The mobile app has its own relay setting and must use the same endpoint. See the
 
 A valid `REMOTE_PI_DIRECT_CONFIG` replaces, rather than merges with, the directory config; invalid/empty overrides fall back to the file. Legacy `session_name` is discarded. Never commit runtime configuration or identities. System keyrings store the host secret where available; headless Linux without a usable keyring falls back to a private `identity.json` with a warning.
 
-Managed workers marked `PI_SUBAGENT_CHILD=1` still join the local mesh but do not inherit automatic mobile exposure. `/remote-pi relay start` remains an explicit opt-in.
+Workers with `PI_SUBAGENT_CHILD=1` or nonempty `DSA_EXEC` retain local mesh membership and name/cwd locks but do not automatically expose relay rooms. `DSA_CALL` alone is metadata, not worker authority. Explicit `/remote-pi relay start` remains an opt-in; intentionally phone-managed children follow their parent-owned room lifecycle.
 
 ## Interactive commands
 
@@ -80,25 +82,28 @@ Discover opaque addresses with `list_peers`; copy them verbatim into `agent_send
 
 Mobile actions include compaction, new session, model/thinking selection and image input where supported. Model/provider capabilities come from the loaded runtime, not a fabricated catalogue. Action failures are scoped to the requesting host/room; an uncertain mutation is not automatically repeated.
 
-Phone starts use registered `project_launch` with PIN authority and Launcher API3, not arbitrary-directory legacy `agent_launch`. Prepare the separate managed runtime before using launches:
+Phone starts use registered projects and PIN authority. Follow [phone setup](../SECURE-LAUNCH.md) and the [host runtime prerequisites/preparation](docs/secure-launcher.md#managed-runtime-packaging-api3), which are stricter than the baseline extension requirements. Wire details belong to the [host contract](docs/secure-launcher.md), [session stop controls](docs/session-control.md) and [room display contract](docs/room-display-endpoint.md).
+
+## Source CLI
+
+After the frozen pnpm install and build above, invoke the CLI directly so it retains this checkout's patched dependency graph:
 
 ```sh
-node scripts/prepare-managed-runtime.mjs
+node dist/index.js <subcommand>
 ```
 
-This copies an already-installed bundled Pi **1.3.0** and its required installed dependencies from the host into a private snapshot, offline. Put that compatible Pi CLI on PATH first; this command does not install missing dependencies. See [phone setup](../SECURE-LAUNCH.md), the [host contract](docs/secure-launcher.md), [session stop controls](docs/session-control.md) and [room display contract](docs/room-display-endpoint.md).
+References to `remote-pi <subcommand>` in the command tables and [daemon guide](docs/daemon.md) mean this source CLI invocation, not a globally reinstalled npm package. Use an absolute `dist/index.js` path when running from another directory.
 
 ## Optional daemon supervisor
 
-Daemons are distinct from PIN-protected phone-launched children. Install the built local package globally to expose its CLI, then opt into a user-level service:
+Daemons are distinct from PIN-protected phone-launched children. Opt into a user-level service only when intended:
 
 ```sh
-npm install -g .
-remote-pi install
-remote-pi create /absolute/project --name "Project agent"
-remote-pi daemons
-remote-pi daemon start
-remote-pi daemon status
+node dist/index.js install
+node dist/index.js create /absolute/project --name "Project agent"
+node dist/index.js daemons
+node dist/index.js daemon start
+node dist/index.js daemon status
 ```
 
 Configure/pair the project interactively first. Daemons inherit project tool permissions; running them grants real unattended tool access. Review credentials, permissions and scheduled prompt costs before enabling the service.
@@ -122,5 +127,12 @@ Cron requires a running supervisor; flags include `--tz`, `--wake`, `--no-skip-b
 - No peer reply: distinguish delivery ACK from a content reply; use `agent_send` with `re` rather than blocking `agent_request`.
 - Launcher setup/compatibility error: verify the separate managed runtime, project registration, PIN and sandbox prerequisites; do not weaken security or restart active sessions.
 - Upgrade/reload only at an idle-safe boundary. Never stop unrelated agents to make an update convenient.
+
+## Integrations and maintenance
+
+- [Mobile client](../app/README.md): pairing, chat and controls through the [relay](../relay/README.md); the [shared protocol](../PROTOCOL.md) owns wire/trust semantics.
+- [Cockpit](../cockpit/README.md): may run Pi in a terminal, but its own remote transport is SSH, not this relay.
+- [Website](../site/README.md#integrations): synchronizes the extension installer; [branding](../branding/README.md) supplies package artwork. [Download hosting](../rp-s3/README.md) is distribution infrastructure, not an agent transport.
+- [Development rules](CLAUDE.md), [daemon recovery](docs/daemon.md) and [security/publication gates](../SECURITY.md).
 
 [MIT license](LICENSE).

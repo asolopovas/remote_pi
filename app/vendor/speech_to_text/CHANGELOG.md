@@ -1,5 +1,7 @@
 # Changelog
 
+[Project index](../../../README.md#project-map) · [Mobile guide](../../README.md)
+
 ## 7.4.0-beta
 
 ### New

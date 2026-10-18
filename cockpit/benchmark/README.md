@@ -1,5 +1,9 @@
 # Synthetic terminal profile benchmark
 
+[Project index](../../README.md#project-map) · [Cockpit guide](../README.md)
+
+This guide owns the synthetic render workload. Use [Linux profiling](../docs/linux-performance-profiling.md) for real-application acceptance and [flow control](../docs/terminal-output-flow-control.md) for invariants; their results are not interchangeable.
+
 From `cockpit/`, run:
 
 ```powershell

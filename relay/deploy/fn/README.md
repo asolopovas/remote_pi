@@ -1,5 +1,7 @@
 # fn: trusted IP-only Remote Pi Relay
 
+[Project index](../../../README.md#project-map) · [Relay guide](../../README.md)
+
 Dedicated deployment: `/opt/remote-pi-relay` on SSH alias `fn`.
 Client endpoint: **`wss://173.208.50.216`**. Health: `https://173.208.50.216/health`.
 This deployment worker changed no client pairing, identity, or existing relay URL.

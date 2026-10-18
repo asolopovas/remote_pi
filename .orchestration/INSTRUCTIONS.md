@@ -1,5 +1,7 @@
 # Orchestration overlay
 
+[Project index](../README.md#project-map) · [Contributor instructions](../CLAUDE.md)
+
 Modo orquestrado dispara quando o prompt começa com `[ORCH:<task-id>]`. Em
 modo solo (sem marker), ignore este arquivo — responda como agente do seu
 subprojeto.

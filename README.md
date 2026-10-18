@@ -5,49 +5,55 @@ Control a local [Pi coding agent](https://github.com/earendil-works/pi) from a p
 Maintainer and author of contributions: **Andrius Solopovas**.
 Derived from [Remote Pi by Jacob Moura](https://github.com/jacobaraujo7/remote_pi).
 
-## Components
+## Project map
 
-| Directory | Purpose | Setup and maintenance |
+Each guide owns its project's prerequisites, build/run commands, configuration and maintenance. Run commands from the directory named in that guide.
+
+| Project | Location and guide | Responsibility |
 |---|---|---|
-| `pi-extension/` | Node/TypeScript host extension, broker and managed agents | [Extension guide](pi-extension/README.md) |
-| `relay/` | Rust WebSocket routing and signed mesh membership | [Relay guide](relay/README.md) |
-| `app/` | Flutter Android/iOS client | [Mobile guide](app/README.md) |
-| `cockpit/` | Flutter terminal workspace and SSH-connected server | [Cockpit guide](cockpit/README.md) |
-| `site/` | Next.js website and legal pages | [Site guide](site/README.md) |
-| `rp-s3/` | Rust download and release-manifest server | [Download server guide](rp-s3/README.md) |
+| Host extension | [pi-extension/](pi-extension/README.md) | Pi integration, local broker, relay client and managed agents |
+| Relay | [relay/](relay/README.md) | WebSocket routing, presence and signed membership storage |
+| Mobile client | [app/](app/README.md) | Android/iOS pairing, chat and remote controls |
+| Cockpit | [cockpit/](cockpit/README.md) | Terminal workspace, CLI and [shared packages/headless server](cockpit/README.md#package-map) |
+| Website | [site/](site/README.md) | Product pages, tutorials, download links and installer delivery |
+| Download server | [rp-s3/](rp-s3/README.md) | Release files and update-manifest hosting |
 
-Run each component's build and test commands from its own directory. The mobile client needs a host extension and relay; Cockpit remote workspaces instead use SSH and `cockpit-server`.
+## How the projects connect
 
-## Start from source
+- **Phone control:** the [mobile client](app/README.md#connect-and-use) and [host extension](pi-extension/README.md#build-and-install-this-source) connect through the same [relay](relay/README.md#self-host-with-docker). Start with those guides, then pair the client. Local-only agent messaging does not require the relay.
+- **Terminal workspaces:** [Cockpit](cockpit/README.md#remote-host) connects to its headless server over SSH. This is separate from the mobile/extension relay protocol; running Pi inside a Cockpit terminal is optional.
+- **Distribution:** [local release packaging](cockpit/packaging/README.md) and [mobile build instructions](app/README.md#build-and-run) produce artifacts. The [website](site/README.md#integrations) links to release downloads and [download-server manifests](rp-s3/README.md#integrations); neither service is required for a local source build.
+- **Shared presentation:** [branding/](branding/README.md) holds source artwork used by the clients, website and package metadata.
 
-Requirements: Pi, Node 20+ and pnpm for the extension; Flutter and the platform SDK for the mobile client. Rust components require Cargo; relay uses edition 2024.
+## Documentation ownership
 
-```sh
-cd pi-extension
-pnpm install --frozen-lockfile
-pnpm typecheck
-pnpm test
-pnpm build
-pi install .
-```
+Use these canonical references instead of copying their details into another project:
 
-In Pi, run `/remote-pi` to configure the directory, then `/remote-pi pair` to display a pairing QR code. Build/run the [mobile app](app/README.md) and scan it. Use the same relay URL on both sides. The npm package named `remote-pi` is not a release of this independent repository; use the local source above.
-
-For local-only agent messaging, disable relay auto-start in setup. Discover addresses with `list_peers`, copy them exactly, and send with `agent_send`. A delivery ACK is not a content reply; replies arrive later with `re`. `agent_request` is deprecated.
-
-## Configuration and security
-
-- Relay URL precedence: `REMOTE_PI_RELAY`, then `~/.pi/remote/config.json`, then the built-in third-party community relay. Configure an owned relay with `/remote-pi set-relay https://your-relay.example`.
-- The app has its own relay setting. HTTP(S) is the configuration form; WebSocket schemes are derived by the transport. Use HTTPS outside isolated development.
-- TLS protects transit, **not end-to-end confidentiality**. The relay operator remains trusted. Connection-key authentication does not prove pairing or ownership of every routed Pi.
-- See [PROTOCOL.md](PROTOCOL.md) for wire contracts and trust boundaries, and [SECURE-LAUNCH.md](SECURE-LAUNCH.md) for PIN-protected phone launches.
-- Existing installers, update URLs, site content and release workflows may still target upstream infrastructure. They are not deployments or releases maintained by this repository; review destinations, signing and secrets before enabling publication.
+| Topic | Reference |
+|---|---|
+| Mobile/extension/relay wire format, identity, pairing and trust model | [PROTOCOL.md](PROTOCOL.md) |
+| Phone project-launch workflow | [SECURE-LAUNCH.md](SECURE-LAUNCH.md) |
+| Host launch configuration, authority and sandbox contract | [Launcher contract](pi-extension/docs/secure-launcher.md) |
+| Exact-session stop and display metadata | [Session controls](pi-extension/docs/session-control.md), [room display](pi-extension/docs/room-display-endpoint.md) |
+| Agent messaging and asynchronous replies | [Agent-network skill](pi-extension/skills/agent-network/SKILL.md) |
+| Cockpit features, transports and native internals | [Cockpit reference index](cockpit/README.md#reference-and-maintenance) |
+| Secret handling, vulnerability reporting and publication gates | [SECURITY.md](SECURITY.md) |
+| Development scope and documentation rules | [Contributor instructions](CLAUDE.md) |
 
 ## Maintenance
 
-Use the checks in each component guide before committing. Keep credentials, signing keys, local `.pi/`, `.claude/` and `.cockpit/` state, logs and build outputs out of Git. Lockfiles and required generated source/resources remain versioned where builds depend on them. Release automation consumes [cockpit/CHANGELOG.md](cockpit/CHANGELOG.md).
+Build this checkout using the linked project guides; upstream npm packages, installers and existing update URLs are not releases of this independent repository. There are no GitHub workflows; testing, building and publishing are local/manual. Review publication destinations and signing before releasing; follow the [security gates](SECURITY.md#before-publication-or-deployment).
+
+Check documentation navigation after changes:
+
+```sh
+python3 scripts/check-docs.py
+python3 scripts/check-docs.py --self-test
+```
+
+Each guide must link back to its project or this index. Keep durable facts in one owning document; use relative Markdown links for cross-project discovery. Record manual releases in the [Cockpit changelog](cockpit/CHANGELOG.md).
 
 ## License
 
 [MIT](LICENSE). Package and third-party licenses remain in their respective directories.
-`rp-s3/Cargo.toml` also declares `LicenseRef-proprietary`; that existing license discrepancy is unresolved, not relicensed by this cleanup.
+The [download-server manifest](rp-s3/Cargo.toml) also declares `LicenseRef-proprietary`; that existing license discrepancy is unresolved, not relicensed by this cleanup.

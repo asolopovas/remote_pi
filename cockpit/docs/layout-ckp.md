@@ -1,5 +1,7 @@
 # `*.ckp` — Layouts de orquestração de panes
 
+[Project index](../../README.md#project-map) · [Cockpit guide](../README.md)
+
 Um arquivo `.ckp` é um YAML **versionável** que descreve os terminais a abrir
 num workspace do Cockpit — o equivalente a um layout de tmuxinator. Um arquivo
 = um layout; o nome do layout é o nome do arquivo (`dev.ckp` → layout "dev").
@@ -44,16 +46,16 @@ panes:
 
 | Campo       | Tipo               | Obrigatório | Default | Descrição |
 |-------------|--------------------|-------------|---------|-----------|
-| `name`      | string             | **sim**     | —       | Único (case-insensitive). Vira o rótulo manual da tab e é a chave do merge. |
+| `name`      | string             | **sim**     | —       | Único (case-insensitive). Vira o rótulo manual da tab e é a chave do merge em modo append. |
 | `cwd`       | string             | não         | `.`     | **Relativo à pasta do arquivo**, só `/`. Absolutos e `\` são rejeitados (portabilidade macOS/Linux/Windows). |
 | `split`     | string             | não         | `tab`   | Onde nasce, relativo ao **pane anterior criado**: `tab` (aba na mesma pane), `right`, `down`. |
 | `command`   | string             | não         | —       | Comando digitado no terminal (executado pelo shell da tab; resolve pelo PATH da máquina). |
 | `platforms` | string \| string[] | não         | todos   | `macos`/`windows`/`linux` — mesma semântica do `platforms` do tasks.json. |
 
-## Semântica de aplicação (merge idempotente)
+## Semântica de aplicação
 
-- Pane cujo `name` já existe como rótulo/título de tab no workspace é
-  **pulado** — aplicar o layout duas vezes é no-op. Nada é fechado nunca.
+- **Replace é o padrão** na CLI e na aplicação pela GUI: substitui o layout do workspace de destino e pode fechar abas/processos existentes. A GUI confirma o impacto; não aplique um layout sobre trabalho ativo sem autorização.
+- **Append** (`cockpit orchestrate --append dev.ckp`) preserva as abas existentes e faz merge. Nesse modo, um `name` já presente como rótulo/título é pulado; a idempotência vale para o merge, não para o replace padrão. Opções de comando pertencem à [referência da CLI](../cli/text/skill.md#layout-files-ckp).
 - O `split` ancora no pane **anterior criado nesta execução**; se o anterior
   foi pulado pelo merge, o próximo abre como aba normal (geometria perfeita
   só em workspace vazio — o caso do worktree/autorun).

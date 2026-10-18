@@ -1,12 +1,10 @@
-# Protocolo Cockpit Remote (v1, rascunho da Wave 0)
+# Protocolo Cockpit Remote v1
 
-Protocolo cliente ↔ `cockpit-server` do plano 58. Nesta wave cobre o
-**handshake** e o **domínio Terminais**; arquivos, git e databases entram nas
-waves seguintes com o mesmo envelope.
+[Project index](../../README.md#project-map) · [Cockpit guide](../README.md)
 
-As mensagens são classes Dart em `packages/cockpit_protocol` — a mesma classe
-serializa e desserializa nos dois lados do fio. Este documento descreve o
-formato no fio para debugging e para futuros clientes.
+Contrato JSONL entre o [cliente remoto](../packages/cockpit_remote/lib/cockpit_remote.dart) e o [servidor headless](../packages/cockpit_server/bin/cockpit_server.dart). É separado do [protocolo mobile/extension/relay](../../PROTOCOL.md) e do socket da [CLI interna](../cli/text/skill.md).
+
+As classes compartilhadas em [cockpit_protocol](../packages/cockpit_protocol/lib/cockpit_protocol.dart) são a referência completa de campos/versões. Este guia explica framing, handshake, terminais e autorização de segredos de banco; mensagens de arquivos/Git/processos já implementadas devem ser consultadas nessas classes e no [dispatcher](../packages/cockpit_server/lib/src/remote_server.dart), não tratadas como trabalho futuro.
 
 ## Transporte
 
@@ -177,10 +175,9 @@ não funcionava a partir de cliente remoto.
   idioma do cofre. Consequência aceita: a primeira conexão a um bastion novo
   falha uma vez, de propósito.
 
-## Aberto (para as próximas waves)
+## Manutenção e cobertura
 
-- Backpressure/coalescing de output no fio (integrar com o
-  `pty_output_scheduler` de `docs/terminal-output-flow-control.md`).
-- Resize com N clientes attached (política tmux a decidir).
-- Frame binário para `pty.output` se o benchmark apontar o base64.
-- Envelopes dos domínios Arquivos, Git e Databases.
+- [Setup SSH no Windows](windows-host-setup.md) possui as regras de transporte/rendezvous e diagnóstico; não copie procedimentos de setup neste contrato.
+- [Flow control](terminal-output-flow-control.md) possui os limites de consumo; o servidor também usa [PTY output coalescing](../packages/cockpit_server/lib/src/pty_output_coalescer.dart).
+- Mudanças de wire exigem alinhamento entre protocolo, proxies remotos e dispatcher. Os testes de [protocolo](../packages/cockpit_protocol/test/) e [servidor](../packages/cockpit_server/test/) são evidência local, não prova de implantação.
+- Transporte binário e uma política diferente de resize com múltiplos clientes não são garantias deste contrato.

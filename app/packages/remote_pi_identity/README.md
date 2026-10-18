@@ -1,8 +1,8 @@
 # remote_pi_identity
 
-Owner-key Ed25519 identity synced across devices of the same human via
-platform-native key sync — **iCloud Keychain** on iOS, **Block Store**
-on Android.
+[Project index](../../../README.md#project-map) · [Mobile guide](../../README.md)
+
+Owner-key Ed25519 persistence through **iCloud Keychain** synchronization on iOS and **Block Store** backup/restore on Android. These are different recovery guarantees, not universal live device sync.
 
 Internal plugin for the Remote Pi monorepo. Not published to pub.dev.
 
@@ -21,13 +21,11 @@ bytes.
 
 ### Out of scope
 
-The following responsibilities belong to higher layers (the app + the
-Pi extension + the relay), not to this plugin:
+The following responsibilities belong to the [mobile app](../../README.md), [host extension](../../../pi-extension/README.md) and [relay](../../../relay/README.md), under the [shared protocol](../../../PROTOCOL.md), not to this plugin:
 
 - **Paired-peer list.** Which Pis the human has paired with — including
   `remote_epk`, relay URL, room id, nickname — lives in the app's local
-  storage (and eventually in a separate synced surface if mesh state
-  ever needs to roam between devices).
+  storage; signed mesh recovery belongs to the app/protocol layers.
 - **Mesh versioning.** Whatever protocol decides "this device has a
   newer view of the peer list" is the mesh layer's problem, not this
   plugin's.

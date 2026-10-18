@@ -1,3 +1,7 @@
+# Changelog
+
+[Project index](../../../README.md#project-map) · [Cockpit guide](../../README.md)
+
 ## 1.0.7
 
 * **Fix UI freeze on Windows when writing to a stalled terminal** — `pty_write`

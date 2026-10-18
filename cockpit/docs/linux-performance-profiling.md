@@ -1,5 +1,9 @@
 # Linux performance profiling
 
+[Project index](../../README.md#project-map) · [Cockpit guide](../README.md)
+
+For a synthetic rendering-only workload, use the [terminal benchmark](../benchmark/README.md); [telemetry architecture](telemetry.md) owns metric storage/CLI details.
+
 Cockpit's performance telemetry is disabled by default and records only fixed
 metric names and numeric values. Enable it for a profile or release run:
 

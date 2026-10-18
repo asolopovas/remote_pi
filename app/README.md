@@ -1,10 +1,12 @@
 # Mobile client
 
+[Project index](../README.md#project-map)
+
 Flutter client for Android and iOS. Maintainer and author of contributions: **Andrius Solopovas**.
 
 ## Build and run
 
-Use Flutter with Dart compatible with `pubspec.yaml` (`^3.11.5`); release CI currently pins Flutter 3.44.4. Install the Android SDK/JDK 17 for Android, or Xcode/CocoaPods on macOS for iOS.
+Use Flutter 3.44.4 with Dart compatible with [pubspec.yaml](pubspec.yaml) (`^3.11.5`). All validation/builds are local. Install the Android SDK/JDK 17 for Android, or Xcode/CocoaPods on macOS for iOS.
 
 ```sh
 flutter pub get
@@ -16,15 +18,15 @@ flutter build apk --release --target-platform android-arm64
 flutter build ios --no-codesign
 ```
 
-Android requires API 34+; iOS deployment files and the identity plugin target iOS 18+. Identity backup needs iCloud Keychain on iOS, or Google Play Services, Google Backup and a screen lock on Android. Android Block Store restores identity to a new device; it does not provide live cross-device sync.
+Android requires API 34+; iOS targets 18+. Account, backup and screen-lock prerequisites are owned by the [identity plugin's platform requirements](packages/remote_pi_identity/README.md#platform-requirements).
 
 The Android application ID is `io.github.asolopovas.remotepi.readable`, with label **Remote Pi Readable**, so it installs separately from the upstream application. The namespace remains unchanged for native compatibility. Supply release signing through ignored `android/key.properties`; without it, Gradle uses the local debug key even for release-mode builds. Preserve the signing key privately for compatible updates. No APK or signing key is included here.
 
 ## Connect and use
 
 1. Build/install this client.
-2. In a desktop Pi session using this checkout's extension, run `/remote-pi` and `/remote-pi pair`.
-3. Scan the QR code. Set the app and extension to the same HTTP(S) relay URL.
+2. Follow the [host extension setup](../pi-extension/README.md#build-and-install-this-source) and display its pairing QR.
+3. Scan the QR code. Use the same HTTP(S) endpoint as the host; see [relay setup](../relay/README.md#self-host-with-docker).
 
 Pair this copy independently; existing installations and their data are not migrated. TLS is not E2E encryption. See the [protocol](../PROTOCOL.md) and [secure launcher guide](../SECURE-LAUNCH.md).
 
@@ -32,6 +34,12 @@ The readable client bundles Fira Mono Nerd Font, supports collapsible/wrapped to
 
 ## Maintain
 
-`lib/` separates `domain`, `data`, `ui`, `config` and `routing`; dependencies flow through domain contracts. See the consolidated [development instructions](CLAUDE.md) before editing. Identity storage is documented in [packages/remote_pi_identity](packages/remote_pi_identity/README.md); speech changes are recorded in [vendor/speech_to_text/PATCHES.md](vendor/speech_to_text/PATCHES.md).
+See the [development instructions](CLAUDE.md) for layer boundaries and dependency composition. Local packages and regression references:
+
+- [Owner identity storage](packages/remote_pi_identity/README.md), used by the [shared pairing/membership protocol](../PROTOCOL.md).
+- [Vendored speech API](vendor/speech_to_text/README.md) and [local on-device patch contract](vendor/speech_to_text/PATCHES.md).
+- Cross-project [session controls](../pi-extension/docs/session-control.md) and [display snapshots](../pi-extension/docs/room-display-endpoint.md); coordinate both endpoints when changing these.
+- [Inert renderer fixtures](test/ui/chat/fixtures/75/README.md); these are presentation data, not executable commands.
+- [Website and download links](../site/README.md#integrations) and [release manifest hosting](../rp-s3/README.md#integrations). [Cockpit](../cockpit/README.md) is a separate client/SSH architecture, not this app's backend.
 
 Licenses: [MIT](../LICENSE), Fira Mono [OFL](assets/fonts/fira_mono/LICENSE), and [vendored speech plugin](vendor/speech_to_text/LICENSE). The `highlight` dependency is MIT © 2019 Rongjian Zhang; Flutter collects dependency licenses. Keep required assets and native resources, but never commit `build/`, SDK paths, credentials or signing material.

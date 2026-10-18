@@ -1,5 +1,7 @@
 # Inert codemode readability fixtures
 
+[Project index](../../../../../../README.md#project-map) · [Mobile guide](../../../../../README.md)
+
 These are recovered presentation inputs, NOT runnable examples. Never execute the commands or edits in `75-reported-codemode.js` or `75-reported-tool.json`.
 
 - `75-reported-tool.json`: exact recovered tool envelope; arguments.code is already protocol-decoded JavaScript (4627 UTF-16 units, 7 real newlines, 59 literal slash-n sequences).

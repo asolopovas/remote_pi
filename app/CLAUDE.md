@@ -1,5 +1,7 @@
 # Mobile development
 
+[Project index](../README.md#project-map) · [Mobile guide](README.md)
+
 Run commands from `app/`; setup and platform requirements are in [README.md](README.md).
 
 ## Boundaries
@@ -23,4 +25,4 @@ Run commands from `app/`; setup and platform requirements are in [README.md](REA
 - Add focused regressions; run `flutter analyze`, `flutter test --concurrency=1` and formatting on changed Dart files. Device/build acceptance must be reported separately.
 - Do not commit SDK paths, keys, `build/`, `.dart_tool/` or Pods. Keep third-party licenses with assets.
 
-For a task explicitly marked `[ORCH:<id>]`, read `../.orchestration/INSTRUCTIONS.md`.
+For a task explicitly marked `[ORCH:<id>]`, read the [orchestration instructions](../.orchestration/INSTRUCTIONS.md).

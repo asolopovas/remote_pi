@@ -1,5 +1,7 @@
 # Host Windows — preparar a máquina
 
+[Project index](../../README.md#project-map) · [Cockpit guide](../README.md)
+
 Como deixar uma máquina Windows pronta para ser **host** do Cockpit (plano 61).
 Do outro lado, o cliente pode ser macOS, Linux, Windows ou iPad.
 

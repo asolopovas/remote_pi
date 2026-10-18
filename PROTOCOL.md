@@ -1,5 +1,7 @@
 # Remote Pi — Protocol & Security
 
+[Project index](README.md#project-map)
+
 Documentação canônica do protocolo Remote Pi e do modelo de proteção.
 Setup e operação: [README.md](README.md). Compatibilidade 0.6 abaixo é histórica e específica daquela janela de rollout.
 
@@ -8,9 +10,9 @@ Setup e operação: [README.md](README.md). Compatibilidade 0.6 abaixo é histó
 ## Visão de 30 segundos
 
 - **Mesh de agentes coding** rodando em múltiplos PCs do mesmo usuário
-- **Cada PC** roda o `pi-extension` (Node.js daemon) com **uma Pi-key** Ed25519 no Keychain do sistema (macOS/Linux/Windows)
+- **Cada PC** roda o `pi-extension` (Node.js daemon) com **uma Pi-key** Ed25519 no keyring do sistema quando disponível, ou no fallback privado documentado
 - **Celular** é o **autenticador inicial** (estilo WhatsApp Web QR) — depois do pareamento, PCs operam autonomamente entre si
-- **Owner-key** Ed25519 vive no Keychain do celular (iOS Keychain / Android Block Store), sincroniza entre devices do mesmo Apple ID / Google Account
+- **Owner-key** Ed25519 usa sincronização iCloud no iOS ou backup/restauração Block Store no Android; as [garantias por plataforma](app/packages/remote_pi_identity/README.md#platform-requirements) não são equivalentes
 - **Relay** WebSocket roteia e armazena/verifica `mesh_versions` assinadas pelo Owner; autoriza co-membership direta
 - **Cross-PC routing** por Pi-key canônica no Relay; a Extension `0.6` mantém por uma release o prefixo wire legado para interoperar com Extensions antigas, sem substituir aliases receiver-local públicos
 
@@ -20,13 +22,13 @@ Setup e operação: [README.md](README.md). Compatibilidade 0.6 abaixo é histó
 
 | Chave | Algoritmo | Onde mora | Quem cria | Quem usa |
 |---|---|---|---|---|
-| **Owner-key** | Ed25519 | iOS Keychain (sync iCloud) / Android Block Store (sync Google) | App mobile no 1º boot | Assina `mesh_versions`, prova autoridade pra parear/revogar PCs |
+| **Owner-key** | Ed25519 | iOS Keychain (sync iCloud) / Android Block Store (backup/restore Google) | App mobile no 1º boot | Assina `mesh_versions`, prova autoridade pra parear/revogar PCs |
 | **Pi-key** | Ed25519 | `@napi-rs/keyring` no PC (Keychain macOS / libsecret Linux / Credential Manager Windows). Fallback `~/.pi/remote/identity.json` (`0600`) com warning em sistemas headless | pi-extension no 1º boot | Autentica a conexão WS no relay e fornece a identidade técnica canônica usada no `from_pc` autenticado e no roteamento por `to_pc`; não assina envelopes cross-PC individuais |
 | **App-key** | Ed25519 efêmera | RAM do app mobile | App por sessão de pareamento | Establishment de canal autenticado durante pair |
 
 **Identidade técnica** de cada Pi/PC é a chave pública Ed25519 bruta de 32 bytes. Nas fronteiras do protocolo, Pi-key e Owner-key usam Base64 RFC 4648 padrão **com padding** como representação canônica; entradas URL-safe ou sem padding podem ser aceitas apenas para normalização. Nicknames e aliases locais efetivos nunca substituem essa identidade técnica.
 
-**Constraint fixada**: "1 Pi-key por PC; troca de hardware = re-pareamento". Não há migração de Pi-key entre máquinas. Owner-key compensa (Owner sincroniza cross-device via Keychain do sistema).
+**Constraint fixada**: "1 Pi-key por PC; troca de hardware = re-pareamento". Não há migração de Pi-key entre máquinas. A persistência/recuperação da Owner-key segue o [contrato da identidade mobile](app/packages/remote_pi_identity/README.md), sem sync Android ao vivo nem sync entre ecossistemas.
 
 ---
 
@@ -390,7 +392,7 @@ Múltiplos Owners podem parear o mesmo PC (concomitância — `peers.json` aceit
 - **Anti-spoof entre Pis**: broker aceita somente `from_pc` canônico autenticado que exista entre irmãos diretos e renderiza seu alias local
 - **Anti-rollback de membership em processo**: versão monotônica + assinatura rejeita regressão durante a vida da instância. O floor da Extension reinicia com o processo; `issued_at` é informativo e memberships não expiram. Persistência anti-rollback entre reinícios não é implementada
 - **Pi-secret protegida**: Keychain do sistema (macOS Keychain / libsecret Linux desktop / Credential Manager Windows). Atacante precisa contexto do user logado E unlock do Keychain
-- **Owner-secret protegida**: iOS Keychain / Android Block Store, sincroniza via iCloud/Google account; recuperável trocando de device
+- **Owner-secret protegida**: iCloud Keychain ou Android Block Store conforme as [restrições de backup/sync da identidade](app/packages/remote_pi_identity/README.md#known-limitations); não há garantia universal de recuperação
 
 ### O que NÃO está protegido (declarado honestamente)
 
@@ -432,9 +434,11 @@ Múltiplos Owners podem parear o mesmo PC (concomitância — `peers.json` aceit
 - **Relay** (Rust, axum): [`relay/src/`](relay/src/)
 - **Pi-extension** (Node/TS): [`pi-extension/src/`](pi-extension/src/)
 - **App mobile** (Flutter): [`app/lib/`](app/lib/)
+- **Display metadata**: [endpoint contract](pi-extension/docs/room-display-endpoint.md)
+- **Cockpit** usa um [protocolo SSH separado](cockpit/docs/remote-protocol.md), não estes envelopes
 
 ---
 
 ## Reportar problemas de segurança
 
-Contate o maintainer em privado antes de divulgar uma vulnerabilidade. Não publique chaves, credenciais ou detalhes exploráveis em issues públicas.
+Siga o canal e as regras em [SECURITY.md](SECURITY.md#report-a-vulnerability).

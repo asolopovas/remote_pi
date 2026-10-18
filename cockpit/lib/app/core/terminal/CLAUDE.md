@@ -1,5 +1,7 @@
 # `core/terminal/` — módulo de terminal (emulador + render)
 
+[Project index](../../../../../README.md#project-map) · [Cockpit guide](../../../../README.md)
+
 Tudo de terminal num lugar só:
 
 - **`terminal_controller.dart`** — contrato comum e adapters dos dois motores.
@@ -21,7 +23,7 @@ Tudo de terminal num lugar só:
 Testes do emulador: `test/core/terminal/xterm/` (suíte do upstream adaptada;
 2 casos de `getText()` com wrap já falhavam no fork e estão `skip: true`).
 
-O PTY (nativo, C/FFI) também é nosso: **`plugins/cockpit_pty/`** — absorvido
+O PTY (nativo, C/FFI) também é nosso: **[PTY plugin guide](../../../../plugins/cockpit_pty/README.md)** — absorvido
 2026-07-19 do fork `jacobaraujo7/kyroon_pty` v1.0.6 (upstream
 cesarmod2017/kyroon_pty, MIT preservado), renomeado `kyroon_pty`→`cockpit_pty`
 (package, podspecs, CMake, dylib) e usado via path dependency. Não publicado;

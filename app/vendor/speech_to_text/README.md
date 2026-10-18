@@ -1,6 +1,10 @@
 # speech_to_text
 
+[Project index](../../../README.md#project-map) · [Mobile guide](../../README.md)
+
 [![pub package](https://img.shields.io/badge/pub-v7.3.0-blue)](https://pub.dartlang.org/packages/speech_to_text) [![build status](https://github.com/csdcorp/speech_to_text/workflows/Test/badge.svg)](https://github.com/csdcorp/speech_to_text/actions?query=workflow%3ATest)
+
+This is the retained upstream API guide. The app's current Android behavior and restrictions are owned by [PATCHES.md](PATCHES.md); consult it before applying upstream examples. [Upstream release history](CHANGELOG.md) is separate from those local patches.
 
 A library that exposes device specific speech recognition capability.
 

@@ -1,6 +1,8 @@
 # cockpit_pty
 
-Internal native PTY plugin, consumed through a path dependency by Cockpit. Based on `kyroon_pty` 1.0.6; see [LICENSE](LICENSE). This renamed package is not published to pub.dev.
+[Project index](../../../README.md#project-map) · [Cockpit guide](../../README.md)
+
+Internal native PTY plugin, consumed through a path dependency by Cockpit. Based on `kyroon_pty` 1.0.6; see [LICENSE](LICENSE) and the [upstream change history](CHANGELOG.md). This renamed package is not published to pub.dev.
 
 ## API
 

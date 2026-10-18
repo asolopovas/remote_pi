@@ -1,4 +1,8 @@
-# Room display snapshots over a legacy Relay (plan 81)
+# Room display snapshots over a legacy Relay
+
+[Project index](../../README.md#project-map) · [Host extension guide](../README.md)
+
+Integration owners: [mobile ingress](../../app/README.md), [host extension](../README.md) and [relay protocol](../../PROTOCOL.md). This contract owns display metadata only, not [session controls](session-control.md).
 
 Display-only endpoint metadata, additive to the compatible Relay `room_meta` /
 `room_meta_update` path. The existing Relay forwards `ct` opaquely; no invented
@@ -89,7 +93,7 @@ the auto-listener reserves them before its active-owner/reconnect skip.
 
 ## Fixtures / focused proof
 
-[`../test/fixtures/81-room-display-endpoint.json`](../test/fixtures/81-room-display-endpoint.json)
+[Wire fixture](../test/fixtures/81-room-display-endpoint.json)
 contains readable inner bodies and exact delivered Base64 wire envelopes. The
 three responses are **alternative outcomes** for one nonce, not repeated replies.
 Keys and UUIDs are synthetic constants, not real device identities.

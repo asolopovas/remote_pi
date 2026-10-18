@@ -1,5 +1,7 @@
 # `.cockpit/tasks.json` — Task Run
 
+[Project index](../../README.md#project-map) · [Cockpit guide](../README.md)
+
 ## Docker Compose e Podman Compose
 
 Ao abrir um YAML local que contenha um mapa `services`, use **Gerar tasks do

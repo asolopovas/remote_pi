@@ -1,5 +1,7 @@
 # Windows PTY write-freeze harness
 
+[Project index](../../../../../README.md#project-map) · [Cockpit guide](../../../../README.md)
+
 Standalone C program used to **reproduce and validate** the Windows-only UI
 freeze (plan 58). It is **not** part of `flutter test`.
 

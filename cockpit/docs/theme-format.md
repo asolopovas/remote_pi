@@ -1,5 +1,7 @@
 # Formato de tema do Cockpit (`cockpit-theme-1`)
 
+[Project index](../../README.md#project-map) · [Cockpit guide](../README.md)
+
 Um tema é **um arquivo JSON**. Ele pinta as três camadas de uma vez: a UI do
 app, o realce de código do viewer e a paleta do terminal.
 
@@ -114,8 +116,7 @@ Ao contrário do `tasks.json` (que mora no repo e pode usar caminho relativo), u
 tema vive numa pasta de dados qualquer e é copiado entre máquinas — por isso a
 URL absoluta.
 
-O app **ignora** `$schema` ao ler o tema; o campo só serve ao editor. O CI trava
-o desencontro: `test/ui/theme_codec_test.dart` compara os tokens do schema com
+O app **ignora** `$schema` ao ler o tema; o campo só serve ao editor. Rode localmente o [teste do codec](../test/ui/theme_codec_test.dart), que compara os tokens do schema com
 os que o codec serializa, o `enum` de `extends` com os built-in registrados, e
 valida o `theme.example.json` deste diretório.
 

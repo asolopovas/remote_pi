@@ -1,5 +1,7 @@
 # Relay
 
+[Project index](../README.md#project-map)
+
 Rust/axum WebSocket routing, presence and Owner-signed mesh membership storage. Maintainer and author of contributions: **Andrius Solopovas**.
 
 ## Build and run
@@ -45,7 +47,7 @@ relay.example.com {
 }
 ```
 
-Configure **both clients** using `https://relay.example.com`, not `wss://`; the transport derives the WebSocket URL. In Pi, run `/remote-pi set-relay https://relay.example.com`, inspect `/remote-pi config`, then reconnect at an idle-safe boundary. A VPN can additionally restrict reachability.
+Configure the [host extension](../pi-extension/README.md#relay-and-local-configuration) and [mobile client](../app/README.md#connect-and-use) with the same `https://relay.example.com` endpoint, not `wss://`; their transports derive the WebSocket URL. A VPN can additionally restrict reachability.
 
 The built-in third-party community relay is `https://relay-rp1.jacobmoura.work`; it is not operated by this repository. For the existing IP-only deployment's certificate renewal, checks, backups and rollback, see [deploy/fn/README.md](deploy/fn/README.md). Its dated deployment evidence is not a claim of current live verification.
 
@@ -53,10 +55,12 @@ The built-in third-party community relay is `https://relay-rp1.jacobmoura.work`;
 
 TLS protects transit, not E2E confidentiality. The relay operator controls the TLS endpoint, executable and storage. Ed25519 challenge-response proves possession of the connection key; endpoint pairing remains a separate responsibility.
 
-The shipped relay does not decode outer App↔Pi `ct` bodies, log/persist message payloads, or store them in SQLite. Pi→Pi envelopes are parsed transiently for routing. A signed Owner blob permits a route when it directly lists both Pi keys; this does not prove that the Owner paired with or controls either Pi. Membership is not transitive between overlapping blobs.
+The [protocol trust model](../PROTOCOL.md#modelo-de-proteção-trust-model) owns the exact routing/ownership guarantees, revocation cache behavior and content visibility. Do not infer stronger ownership from a valid connection key or membership signature.
 
-SQLite stores only signed membership authorization metadata, using rollback-journal mode. POST versions must increase; bodies are capped at 500 KB. Positive authorization cache entries may delay revocation up to 60 seconds; negative sender misses last one second. Back up SQLite with an online backup or quiesced service, not an uncoordinated live file copy.
+SQLite stores signed membership metadata, not message payloads, using rollback-journal mode. Back it up with an online backup or quiesced service, not an uncoordinated live file copy.
 
 See [PROTOCOL.md](../PROTOCOL.md) for exact wire limits, errors and historical mixed-version compatibility. Upgrade clients and relay together during a maintenance window; do not infer current compatibility from old rollout plans.
+
+This relay serves the [mobile/host path](../README.md#how-the-projects-connect), not [Cockpit's SSH server](../cockpit/README.md#remote-host). The [website](../site/README.md) and [download server](../rp-s3/README.md) are independent distribution components. See [development rules](CLAUDE.md) and [security gates](../SECURITY.md).
 
 [MIT license](../LICENSE).

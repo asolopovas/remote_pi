@@ -1,5 +1,9 @@
 # PIN-protected project launcher (machine/App contract)
 
+[Project index](../../README.md#project-map) · [Host extension guide](../README.md)
+
+User workflow: [phone launcher](../../SECURE-LAUNCH.md). Endpoint integration: [mobile client](../../app/README.md), [extension setup](../README.md) and [session stop/access controls](session-control.md). The shared [protocol](../../PROTOCOL.md) owns transport and identity semantics.
+
 This surface controls only this host session's newly launched agents. It does not take over existing Pi sessions, change Relay membership, stop unrelated agents, or shut down the operating system. Linux with working `/bin/bwrap` is required; there is no unrestricted fallback.
 
 ## Initial PIN from phone / local operator setup
@@ -23,12 +27,12 @@ Register exact absolute canonical directories, not glob patterns or a home/syste
 
 Before launch, writable roots are descriptor-pinned and scanned without following symlinks, with a shared 100,000-entry / 5-second / 128-level budget. Hardlinked regular files, nested mounts/filesystems, sockets/FIFOs/devices, inaccessible or oversized trees fail closed. An existing pnpm/hardlinked dependency tree can consequently be unavailable: prepare a private normal-file working copy or smaller project **locally**, then register it; the launcher never deletes, dereferences, changes caches, or silently excludes user files. Launch errors report the preflight category, not file contents. Local `project-list` reports only registered metadata; launch performs the full preflight.
 
-A usable **stored** Pi model credential in `PI_CODING_AGENT_DIR/auth.json` (default `~/.pi/agent/auth.json`) must exist and be private 0600. Use local Pi `/login` if needed; no credentials are invented. Only the configured global `defaultProvider` credential is copied, or the lexicographically first stored provider if no default is configured. Only validated `defaultProvider`/`defaultModel` settings accompany it. The fixed host `settings.json` may be a dotfiles symlink: resolve it locally, then open the canonical final path with `O_NOFOLLOW` and validate the descriptor (regular file, current user, at most 128 KiB, not world-writable). Normal 0664 public settings remain supported without chmod or mutation; reads remain bounded even if a file grows. The canonical settings file and agent directory cannot be included in writable project roots. No remote-supplied settings path is accepted. `auth.json` remains nonsymlink/private; settings compatibility never relaxes credential checks. Literal API keys and OAuth records are supported; host credential commands, environment-only/ambient credentials, arbitrary `models.json`, skills/packages/custom providers and project extensions/settings are not inherited. OAuth refreshes affect only the private child copy. Model selection on the child can select models whose copied provider credential is usable.
+A usable **stored** Pi model credential in `PI_CODING_AGENT_DIR/auth.json` (default `~/.pi/agent/auth.json`) must exist and be private 0600. Use local Pi `/login` if needed; no credentials are invented. Both global `defaultProvider` and `defaultModel` must be configured; only that provider's credential is copied. Missing/partial defaults fail before a child is admitted. Only validated `defaultProvider`/`defaultModel` settings accompany it. The fixed host `settings.json` may be a dotfiles symlink: resolve it locally, then open the canonical final path with `O_NOFOLLOW` and validate the descriptor (regular file, current user, at most 128 KiB, not world-writable). Normal 0664 public settings remain supported without chmod or mutation; reads remain bounded even if a file grows. The canonical settings file and agent directory cannot be included in writable project roots. No remote-supplied settings path is accepted. `auth.json` remains nonsymlink/private; settings compatibility never relaxes credential checks. Literal API keys and OAuth records are supported; host credential commands, environment-only/ambient credentials, arbitrary `models.json`, skills/packages/custom providers and project extensions/settings are not inherited. OAuth refreshes affect only the private child copy. Model selection on the child can select models whose copied provider credential is usable.
 
 For a **future new host process**, not a reload of existing agents, use the operator's explicit trusted endpoint. Example from the intended host working directory, with built extension and an already installed compatible Pi:
 
 ```sh
-REMOTE_PI_RELAY=https://173.208.50.216 \
+REMOTE_PI_RELAY=https://your-relay.example \
 REMOTE_PI_DIRECT_CONFIG='{"agent_name":"phone-launch-host","auto_start_relay":true}' \
 pi -e /absolute/path/to/pi-extension/dist/index.js
 ```
@@ -118,101 +122,15 @@ The private `managed_metadata` frame carries only an epoch and an exact snapshot
 
 These are private host changes only: Relay uses its existing `room_meta_update` → `room_meta_updated` contract and frozen App Home consumes `meta.working` through ConnectionManager, independently of the active chat. No App wire types change.
 
-## Validation provenance / limitations
-
-Tests use cached Pi SDK/runtime 0.79.10 (not the unrelated global Pi 1.2.0), TypeScript 6, Vitest 4.1.9 and bubblewrap 0.9.0. Current global Pi docs were read for spawn/extension/RPC/credential behavior; CLI options were cross-checked against the actual cached runtime (its `--no-extensions` also excludes MCP; newer `--no-mcp` is unsupported). No package fetching/installation, live Relay contacts, OS keyring writes, real model turns/provider inference requests, global config changes or live-agent reload occurred. Final tests use synthetic provider keys; an early filesystem-only probe copied the existing credential file read-only into its private namespace before fixture isolation was added, without logging values or making a provider request. Real namespace write denial, real cached Pi startup/credential model listing, parent challenge-signature verification and direct child room Lock/shutdown/Owner tests pass against a loopback test Relay. No production App-to-owned-Relay end-to-end run or manual PIN TTY session has been claimed.
-
-Full-suite legacy session-replacement/reconnect failures reproduce using `ac106709` index+tests in this isolated checkout with the same cached dependencies; focused secure-launch and routing tests are separate passing evidence. See the task acceptance report for exact commands/counts and commit.
-
-### Setup uncertainty and transport limits
+## Setup uncertainty and transport limits
 
 Never journal, log, put in chat/history, auto-replay or retain PIN-bearing frames. After a lost setup response/reconnect, clear inputs and request fresh status; do not replay the mutation or assume success/unlock. Once publication is submitted under current authority, later revocation cannot roll back the durable write (nor frames already admitted). A filesystem/fsync failure may leave a configured verifier despite an error; status reconciliation, not retry, resolves uncertainty. There is no remote reset/recovery. The existing authenticated TLS Relay transport is **not end-to-end encrypted**: the Relay operator remains in the trust boundary. Request IDs are not secrets; use unique IDs.
 
-### Automatic worker presence
-
-Ordinary `PI_SUBAGENT_CHILD=1` and Durable workers with nonempty `DSA_EXEC` retain local mesh and cwd/name locks but do not automatically open Relay rooms. `DSA_CALL` alone is metadata, not child authority. Explicit `/remote-pi relay start` remains available. Intentional phone-managed children retain their parent-mediated room lifecycle. This is authoritative worker-role suppression, not cwd/name deduplication; genuine same-cwd roots remain distinct. Reload/teardown uses the existing lifecycle cleanup and cannot publish an outgoing worker continuation.
-
-### Plan100 isolated host regression evidence
-
-The synthetic symlinked 0664 settings regression first failed through full
-SecureLauncher/ManagedAgents startup with the original generic PATH/build error
-(`/tmp/plan100-host-red.log`). This reproduces the verified settings ELOOP cause;
-unsafe synthetic credential fixtures are negative tests, **not** a diagnosis of
-operator credential permissions.
-
-The regression now freezes a copied built `dist`/package layout with a symlink to
-already cached dependencies, starts the actual cached Pi under real bubblewrap,
-verifies parent Ed25519 challenge signatures on a loopback Relay, waits for actual
-running state and assigned-room metadata, exercises gated ping/model/history,
-then explicitly stops the exact returned agent. It uses synthetic credentials and
-symlinked public settings, checks settings mode remains 0664, never submits an
-unlocked provider prompt, and never connects to production. The Relay fixture
-verifies auth signatures and routes assigned-room frames; it is not a production
-Relay or a phone end-to-end acceptance claim.
-
-Validation runs set temporary HOME/USERPROFILE/REMOTE_PI_HOME/PI_CODING_AGENT_DIR
-before module imports, unset PI_SUBAGENT_CHILD/DSA_EXEC/DSA_CALL, and invoke cached
-pnpm and Node via absolute paths under `pi-durable-subagents hold machine --`.
-No dependency download, actual settings/auth/PIN access, live deployment/reload,
-ADB operation or checkout cleanup is part of this host task.
-
-Final host validation: `pnpm typecheck` and `pnpm build` pass; the 13-suite
-focused Vitest run passes **120 tests** (`/tmp/plan100-host-green.log`). Suites:
-`launch_initialize`, `launch_initialize_publication`, `launch_model_files`,
-`launch_sandbox`, `launch_preflight`, `launch_security`, `launch_store`,
-`managed_agents`, `secure_launcher.integration`, `managed_pipe`,
-`managed_transport`, `session_control`, and `protocol/launcher_contract`.
-The separate `/tmp/plan100-installed-launch-proof.mjs` reproduces failure using
-HEAD's original sandbox helper in a copied installed layout, and current-source
-green records `running; challenge signatures=1; stopped; settings mode=664`
-(`/tmp/plan100-installed-{red,green}.log`). Its red run uses the new truthful
-fallback; the earlier regression log records the original PATH/build message.
-LSP probing reported no errors (six files confirmed clean, four inconclusive);
-compiler typecheck is the definitive full-project type check. Full legacy suite,
-phone delivery and live-host acceptance are not claimed.
-
-### Managed session access and launching host (plan 101)
-
-`session_control_status_result` may add these strict, optional fields (old hosts
-may omit both):
-
-```json
-{"access":{"state":"expired","expires_at":1770000000000},"launching_host":{"room_id":"actual-root-room","launcher_id":"actual-launcher-incarnation"}}
-```
-
-`access` describes only the authenticated assigned Owner's grant on this launcher,
-not machine-wide access. `unlocked` and `expired` carry the actual absolute grant
-expiry; `locked` and `unavailable` carry `null`. Expired means a retained real
-grant expired, never that a process is old. Lock/revoke clears grant evidence.
-A denied capability has no Stop token. The five-minute TTL, per-launcher grant
-isolation and 30-second, single-use Stop confirmation remain unchanged.
-
-The parent takes `launching_host` from its actually published current root room
-and launcher instance, not cwd, names, process IDs or room naming conventions.
-Only the assigned paired Owner receives it, after the final captured
-current/epoch/authority checks used for session controls. Locked room discovery
-still publishes only the permitted working metadata, not model/transcript data.
-
-The App uses this origin to open that exact launching host for explicit private
-operator unlock, then returns to the captured live paired child and queries new
-session controls. Parent unlock alone is not proof of child access. No old Stop
-confirmation or PIN is replayed, no Stop is automatic, and no PIN is persisted.
-Missing legacy origin requires explicit same-peer host selection; no aliases or
-paths are treated as provenance, and no settled launch result is reconstructed
-from the mutation-request journal. There is no added origin registry.
-
-Host updates do **not** activate safely by reloading a root with running managed
-children: root shutdown/reload tears them down. Leave existing user jobs alone.
-The App's explicit legacy selection works without host reload; optional host
-metadata becomes available on safely updated/new host sessions only.
-
+Session-origin metadata and recovery are specified once in [managed session access](session-control.md#managed-session-access-and-launching-host).
 
 ## Managed runtime packaging (API3)
 
-The SDK dependency of this extension remains 0.79.10. **It is not the secure
-child runtime.** That catalog lacks `openai-codex/gpt-6.1-sol` and its settings-only
-resolver silently falls back to GPT5.5. Copying Sol metadata to that old adapter
-would not implement Sol semantics.
+The [extension SDK dependency](../package.json) is **not** the secure child runtime. The child requires a separately installed bundled Pi 1.3.0 and host Node **22.19+**; older SDK catalogues/adapters cannot substitute for that runtime. Built-in model defaults must be validated before publication.
 
 On the host, prepare once (offline, under the machine lease for builds/tests):
 

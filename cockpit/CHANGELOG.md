@@ -1,27 +1,16 @@
 # Changelog — Remote Pi Cockpit
 
+[Project index](../README.md#project-map) · [Cockpit guide](README.md)
+
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/).
 As versões seguem o `version:` do `pubspec.yaml` (SSOT). O campo `notes` do
 `latest.json` (VPS) deriva deste arquivo.
 
 <!--
-  ATENÇÃO: a PRIMEIRA seção `## ` deste arquivo é o texto que o usuário vê no
-  diálogo de update (Sparkle/WinSparkle) e na página de download. Regras:
-
-  - **Seções novas em INGLÊS** (a partir da 1.20.0). É texto user-facing, então
-    vale a mesma regra da UI do app. As seções antigas ficam em português —
-    são o que já foi publicado, não reescreva.
-
-  - A seção da versão que está saindo fica no TOPO. O job `meta` do
-    .github/workflows/cockpit-release.yml **falha a release** se a versão do
-    primeiro `## ` não bater com a tag — foi assim que 1.16/1.17/1.18 saíram
-    repetindo a nota da 1.15.4.
-  - Nada de `## [Unreleased]` na frente: o guard reprova.
-  - Markdown normal (parágrafo, `### Fixed`, lista, `**negrito**`, `código`) —
-    o CI converte pra HTML (cockpit/packaging/release_notes_html.py) antes de
-    pôr no appcast, então quebra de linha e formatação aparecem certinho.
-  - O `notes` do latest.json (página de download) ainda usa só as 20 primeiras
-    linhas não-vazias — o começo da seção deve fazer sentido sozinho.
+  New entries are in English and belong at the top, matching pubspec.yaml.
+  Preserve historical entries: references to former CI/update behavior describe
+  those releases, not current automation. Local packaging/publication procedures
+  are maintained in packaging/README.md; this repository has no workflows.
 -->
 
 ## [2.1.14] - 2026-10-10

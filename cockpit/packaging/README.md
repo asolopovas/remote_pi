@@ -1,280 +1,87 @@
-# Empacotamento & Release — Cockpit
+# Local Cockpit packaging and release
 
-Runbook de build/empacotamento das 3 plataformas para
-[release CI](../../.github/workflows/cockpit-release.yml).
+[Project index](../../README.md#project-map) · [Cockpit guide](../README.md)
 
-Os exemplos de identidade, assinatura e publicação abaixo descrevem a
-configuração upstream. Use sua própria conta, certificado, IDs e destinos
-antes de distribuir um build independente; não publique com identidade alheia.
+All builds, checks and publication are manual/local. There are no GitHub workflows. This guide owns packaging/signing; use the [development guide](../README.md#develop) for the toolchain and the [security gates](../../SECURITY.md#before-publication-or-deployment) before publishing anything.
 
-## Identidade (passo 1 — feito)
+## Identity and version
 
-| Item | Valor |
-|---|---|
-| App ID (macOS bundle id / Linux app id) | `work.jacobmoura.cockpit` |
-| Nome de exibição | **Remote Pi Cockpit** |
-| Binário | `cockpit` (Linux/Windows) / `Cockpit` (macOS) — **não** renomeado |
-| Team ID (Apple) | `U843T2P7A2` |
-| Versão (SSOT) | `version:` do `pubspec.yaml` (`x.y.z+n`) |
+- Version/build number: [pubspec.yaml](../pubspec.yaml); record the matching release in [CHANGELOG.md](../CHANGELOG.md).
+- Platform identifiers/resources: [macOS configuration](../macos/Runner/Configs/AppInfo.xcconfig), [Windows resources](../windows/runner/Runner.rc), [Linux configuration](../linux/CMakeLists.txt).
+- Existing application IDs and publisher fields are upstream-compatible values, not permission to sign or publish as that operator. Choose independent publisher IDs, signing credentials and download destinations before distributing a new product identity.
+- Keep signing material in a private keychain/secret manager with an out-of-band backup. Never commit P12/P8 files, keystores, passwords or private update keys.
 
-- macOS: `PRODUCT_BUNDLE_IDENTIFIER` em `macos/Runner/Configs/AppInfo.xcconfig`;
-  `CFBundleDisplayName` em `Info.plist`; **Hardened Runtime** ligado no Release
-  (`ENABLE_HARDENED_RUNTIME = YES`, exigência da notarização) com
-  `Release.entitlements` (sandbox off — compatível com Developer ID).
-- Windows: `CompanyName`/`ProductName`/`LegalCopyright` em
-  `windows/runner/Runner.rc`; versão vem dos defines `FLUTTER_VERSION_*`
-  (injetados em build; o `#else "1.0.0"` é só fallback).
-- Linux: `.desktop` + ícones hicolor + `work.jacobmoura.cockpit.metainfo.xml`
-  (AppStream), instalados via `linux/CMakeLists.txt`.
+Run packaging commands from `cockpit/`. Install [Fastforge](https://pub.dev/packages/fastforge) locally if needed:
 
-## Ferramenta
-
-[Fastforge](https://pub.dev/packages/fastforge) (sucessor do `flutter_distributor`,
-descontinuado):
-
-```bash
+```sh
 dart pub global activate fastforge
 ```
 
-Config: `distribute_options.yaml` (raiz do cockpit) + um `make_config.yaml` por
-formato. **Atenção à convenção de path do Fastforge**: os configs ficam em
-`<plataforma>/packaging/<formato>/make_config.yaml` (hardcoded no loader), **não**
-em `packaging/<plataforma>/...` como o diagrama do plano sugeria:
+The [distribution options](../distribute_options.yaml) and platform-specific configurations own package settings, not a second list in this guide.
 
-```
-macos/packaging/dmg/make_config.yaml
-windows/packaging/exe/make_config.yaml
-linux/packaging/deb/make_config.yaml
-linux/packaging/rpm/make_config.yaml
-```
+## macOS
 
-## macOS — build + sign + DMG + notarize + staple (ponta a ponta)
+Requires macOS, Xcode/CocoaPods and your own Developer ID plus App Store Connect notarization credentials. Follow the configured entitlements and native helper build scripts; do not bypass Gatekeeper or library validation to make a release start.
 
-Validado localmente em 2026-06-12 (DMG aceito pelo Gatekeeper). Pré-requisitos:
-identidade **"Developer ID Application: Jacob Moura (U843T2P7A2)"** no Keychain,
-a API key do App Store Connect, Zig 0.16.0 e o target Rust usado pela CLI do
-servidor Linux remoto (`rustup target add aarch64-unknown-linux-gnu`).
-
-```bash
-cd cockpit
-
-# 1. Build universal (x86_64 + arm64 — default do Flutter macOS release).
+```sh
 flutter build macos --release
-APP="build/macos/Build/Products/Release/Cockpit.app"
-
-# 2. Assina o .app com Developer ID + Hardened Runtime + entitlements de Release.
-codesign --force --deep --options runtime --timestamp \
-  --entitlements macos/Runner/Release.entitlements \
-  --sign "Developer ID Application: Jacob Moura (U843T2P7A2)" "$APP"
-codesign --verify --deep --strict --verbose=2 "$APP"   # checagem
-
-# 3. Monta o DMG (hdiutil — sem dependências; o maker do Fastforge usa `appdmg`
-#    via npm, alternativa pra CI). Layout: app + atalho /Applications.
-mkdir -p dist
-STAGE=$(mktemp -d); cp -R "$APP" "$STAGE/"; ln -s /Applications "$STAGE/Applications"
-DMG="dist/RemotePiCockpit-1.0.0-macos-universal.dmg"
-hdiutil create -volname "Remote Pi Cockpit" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
-rm -rf "$STAGE"
-
-# 4. Assina o DMG.
-codesign --force --timestamp \
-  --sign "Developer ID Application: Jacob Moura (U843T2P7A2)" "$DMG"
-
-# 5. Notariza (App Store Connect API key) e aguarda.
-xcrun notarytool submit "$DMG" \
-  --key "/Users/jacob/Library/Mobile Documents/com~apple~CloudDocs/Flutterando/RemotePi/CockpitApp/AuthKey_3Y2J8MA3M4.p8" \
-  --key-id 3Y2J8MA3M4 \
-  --issuer a76c76e6-a413-449e-926c-f2c30d5645c4 \
-  --wait
-
-# 6. Grampeia o ticket e valida.
-xcrun stapler staple "$DMG"
-spctl -a -t open --context context:primary-signature -vv "$DMG"   # → "accepted / Notarized Developer ID"
+fastforge package --platform macos --targets dmg
 ```
 
-> **CI**: os 5 secrets Apple já estão no repo (`MACOS_CERT_P12`,
-> `MACOS_CERT_PASSWORD`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, `APPLE_API_KEY`).
-> No runner, importar o `.p12` num keychain temporário e escrever a `.p8` num
-> arquivo antes de rodar os passos acima.
+Before distribution, sign the app and nested helpers/frameworks with your Developer ID and hardened runtime, create/sign the DMG, submit it using `xcrun notarytool submit --wait` with privately stored credentials, and staple the accepted ticket. Verify both the app and final artifact:
 
-## Windows — Inno Setup (`.exe`)
+```sh
+codesign --verify --deep --strict --verbose=2 build/macos/Build/Products/Release/Cockpit.app
+spctl --assess --type execute --verbose=2 build/macos/Build/Products/Release/Cockpit.app
+# Run on the final DMG after notarization; substitute its actual path:
+xcrun stapler validate /absolute/path/to/Cockpit.dmg
+spctl --assess --type open --context context:primary-signature --verbose=2 /absolute/path/to/Cockpit.dmg
+```
 
-**Não buildável no Mac.** Job `windows` do CI (`windows-latest`):
+A successful local build is not notarization or acceptance on another Mac. Keep signing/notarization receipts privately; never claim them from a previous publisher's release.
 
-```bash
+## Windows
+
+Build on Windows with the Flutter desktop toolchain and Inno Setup. The [EXE configuration](../windows/packaging/exe/make_config.yaml) owns installer options.
+
+```sh
 flutter build windows --release
-fastforge package --platform windows --targets exe   # usa windows/packaging/exe/make_config.yaml
+fastforge package --platform windows --targets exe
 ```
 
-Sem assinatura nesta fase (aviso do SmartScreen documentado no site). Artefato:
-`RemotePiCockpit-Setup-<v>-windows-x64.exe`.
+Verify an owned Authenticode signature and test install/launch/uninstall on Windows before public distribution. An unsigned local build is not a signed production release; do not bypass SmartScreen/signature checks as a release procedure.
 
-## Linux — `.deb` + `.rpm` (x86_64 e arm64)
+## Linux
 
-**Não buildável no Mac.** Jobs `linux-x64` (`ubuntu-24.04`) e `linux-arm64`
-(`ubuntu-24.04-arm`) do CI:
+Build natively for each supported x86_64/arm64 target. Beyond Flutter's desktop prerequisites, Debian/Ubuntu build dependencies include `libsecret-1-dev`, `libasound2-dev`, `libmpv-dev`, `libjsoncpp-dev` and `rpm` for RPM packaging. Install these through the machine's normal package-management policy.
 
-```bash
-sudo apt-get install -y rpm   # rpmbuild, pra gerar .rpm em runner Ubuntu
+```sh
 flutter build linux --release
 fastforge package --platform linux --targets deb
 fastforge package --platform linux --targets rpm
 ```
 
-### Buildando numa máquina Linux de verdade (não o runner)
+Runtime dependencies are maintained in the [DEB](../linux/packaging/deb/make_config.yaml) and [RPM](../linux/packaging/rpm/make_config.yaml) configurations. Inspect the final native-library closure with `ldd` on trusted locally built artifacts and test clean installation on each target distribution.
 
-O runner do GitHub já traz os `-dev` que os plugins nativos exigem no CMake; uma
-estação limpa não. Sem eles o `flutter build linux` morre no **configure**, uma
-dependência por vez:
+After an aborted configure, inspect `build/linux/<arch>/release/CMakeCache.txt`: a stale `/usr/local` install prefix can cause a permission error. Remove only that owned generated cache/CMakeFiles directory after confirming no build is using it; do not rerun the build as root.
 
-```bash
-sudo apt-get install -y libsecret-1-dev libasound2-dev libmpv-dev libjsoncpp-dev
-```
+For hybrid-GPU diagnosis, use [Linux profiling](../docs/linux-performance-profiling.md); do not change the machine-wide graphics environment to package Cockpit.
 
-| pacote | quem exige |
-|---|---|
-| `libsecret-1-dev` | `flutter_secure_storage_linux` |
-| `libasound2-dev` (ALSA) | `volume_controller` |
-| `libmpv-dev` | `media_kit_video` |
-| `libjsoncpp-dev` | bundle Flutter Linux |
+## Headless server bundle
 
-São deps de **build**, não de runtime — as de runtime estão no
-`linux/packaging/deb/make_config.yaml`. Para conferir a lista depois de mexer em
-plugins: `grep -rh "pkg_check_modules\|find_package" linux/flutter/ephemeral/.plugin_symlinks/*/linux/CMakeLists.txt`.
+The server version must match the client. Follow the [remote-host build/install instructions](../README.md#remote-host), which own the source build command and service lifecycle. The [bundle builder](../tool/build-server-zip.sh) creates a native Linux ZIP containing `bin/`, `lib/`, `VERSION`, an installation script and a SHA-256 `bundle.manifest`.
 
-**Armadilha do CMake:** um configure que aborta deixa `CMAKE_INSTALL_PREFIX` em
-`/usr/local` no `CMakeCache.txt`, e o `linux/CMakeLists.txt` só o aponta pro
-bundle quando o prefixo ainda está no default inicial. A partir daí todo build
-falha em `file INSTALL cannot copy ... to /usr/local/cockpit: Permission
-denied`, mesmo com as libs já instaladas. Conserto:
+Build each architecture locally. Check the manifest, `--version`, smoke startup and SSH connectivity before shipping. The [download installer](../install-server.sh) requires an explicit `COCKPIT_REPO`; it never chooses the upstream publisher implicitly.
 
-```bash
-rm -f build/linux/x64/release/CMakeCache.txt
-rm -rf build/linux/x64/release/CMakeFiles
-```
+## Independent updates and publication
 
-O `fastforge` (`dart pub global activate fastforge`) sai em
-`dist/<versão>/cockpit-<versão>-linux.deb`; instalar com `sudo dpkg -i`, **com o
-app fechado** — senão os binários trocam embaixo do processo vivo.
+Native automatic updating is disabled. No default feed/key is accepted; enabling a paired owned feed and verification key requires a separately validated client implementation. Producing a signed appcast does not enable that updater. Manual update notifications are a separate path whose destinations also need review.
 
-Deps de runtime declaradas nos `make_config.yaml` (GTK3 + libs base). **Pendência
-de CI** (passo 3): rodar `ldd` no bundle gerado pra confirmar/expandir as deps, e
-validar instalação em containers `ubuntu:24.04` (deb) e `fedora:40` (rpm) — não
-foi possível neste Mac (sem build Linux; Docker presente mas parado).
+For a manual release:
 
-## cockpit-server avulso — zip para VPS (Linux x86_64 e arm64)
+1. Run local project tests/builds and platform-specific packaging/signature checks; keep the version, changelog, server bundle and checksums consistent.
+2. Publish binary assets only to the explicitly selected independent repository after reviewing their contents and required notices. Git tags do not run builds or uploads.
+3. If using [manifest hosting](../../rp-s3/README.md#routes-and-operation), upload signed appcasts before `latest.json`. Use an owned HTTPS destination, keep Bearer credentials out of arguments/logs, reject cross-origin redirects and require successful status responses. No upload occurs automatically.
+4. Verify the [website consumer](../../site/README.md#integrations), download URLs and actual target-platform install behavior. An uploaded file is not installed-device acceptance.
 
-Release **separada** do app: tag `cockpit-server-v<versão>` dispara
-`.github/workflows/cockpit-server-release.yml` (dois jobs Linux nativos, sem
-Flutter). A versão da tag **deve** bater com o `version:` do pubspec: cliente
-e servidor andam juntos, o mobile recusa versão diferente. Crie as duas tags
-(`cockpit-v…` e `cockpit-server-v…`) no mesmo commit.
-
-Artefatos: `cockpit-server-<versão>-linux-{x86_64,arm64}.zip` + `SHA256SUMS`.
-Layout (ver `tool/build-server-zip.sh`):
-
-```
-cockpit-server/
-├── bin/{cockpit-server,cockpit}
-├── lib/{libcockpit_pty.so,libanaki_*.so}
-├── bundle.manifest   # sha256sum -c, mesmo formato que o cliente grava por SSH
-├── VERSION           # linha 1 versão, linha 2 arch
-└── install.sh        # packages/cockpit_server/install.sh
-```
-
-Instalação no host: `curl -fsSL https://remote-pi.jacobmoura.work/cockpit-server.sh | bash`
-(script em `cockpit/install-server.sh`, só resolve versão e arch, baixa, confere o hash e
-chama o `install.sh` do zip). `--service` registra a unit `systemd --user`
-via `cockpit-server service install|uninstall|status`. Documentação: seção
-"Remote hosts & VPS" em `site/src/app/cockpit/docs/page.tsx`.
-
-Observação: o bundle do zip e o embarcado no app são compilados em runners
-diferentes, então os bytes podem divergir e o desktop pode reinstalar por cima
-na primeira conexão (digest do manifesto diferente). É inofensivo; se virar
-incômodo, o job do app passa a consumir o zip.
-
-## Self-update (plano 47 — Sparkle/WinSparkle)
-
-macOS e Windows se auto-atualizam via o pacote `auto_updater` (Sparkle/WinSparkle);
-Linux segue no notify+download manual. O app lê um **appcast** (a URL é cravada
-em runtime via `setFeedURL`) e baixa o artefato de update assinado **EdDSA**.
-
-### Artefatos de update (≠ instalador de primeira vez)
-
-| Plataforma | Primeira instalação | Update (appcast) |
-|---|---|---|
-| macOS | `.dmg` notarizado | **`Cockpit-<v>-macos.zip`** = `ditto` do `.app` notarizado+**stapled** |
-| Windows | `.exe` Inno | o **mesmo `.exe`** rodado silencioso (`sparkle:installerArguments`) |
-| Linux | `.deb`/`.rpm` | — |
-
-### Chave EdDSA (uma só pros dois)
-
-Sparkle e WinSparkle usam **ed25519**, que é determinístico — a mesma chave serve
-aos dois (verificado: `sign_update` do Sparkle e PyNaCl geram assinatura idêntica).
-Por isso há **um par** de chaves, não dois.
-
-- **Pública** (commitada): `WoJTWryr48pWiAnDPqqt/Iu9f6gAsU7A1zBb5mBLruI=`
-  - macOS: `SUPublicEDKey` em `macos/Runner/Info.plist`.
-  - Windows: recurso `EdDSAPub EDDSA {...}` em `windows/runner/Runner.rc`.
-- **Privada** (NUNCA commitar): backup em
-  `…/CloudDocs/Flutterando/RemotePi/CockpitApp/sparkle_ed25519_private_key.txt`
-  (iCloud, junto dos certs Apple) **e** no secret do GitHub `SPARKLE_PRIVATE_KEY`.
-  Gerada via Sparkle na conta de keychain `remote-pi-cockpit`.
-
-Regenerar / rotacionar (⚠️ trocar a chave **trava a base instalada**: os apps
-antigos só confiam na pública embutida neles — só faça se a privada vazar, e
-saiba que os usuários atuais terão que reinstalar manualmente):
-
-```bash
-cd cockpit
-# (re)gera; imprime a SUPublicEDKey; privada vai pro Keychain (conta dedicada)
-./macos/Pods/Sparkle/bin/generate_keys --account remote-pi-cockpit
-# exporta a privada pro iCloud (pede "Allow" no Keychain)
-./macos/Pods/Sparkle/bin/generate_keys --account remote-pi-cockpit -x \
-  "/Users/jacob/Library/Mobile Documents/com~apple~CloudDocs/Flutterando/RemotePi/CockpitApp/sparkle_ed25519_private_key.txt"
-# atualizar: SUPublicEDKey (Info.plist), EdDSAPub (Runner.rc) e o secret SPARKLE_PRIVATE_KEY
-```
-
-### Assinatura + appcasts (no CI, job `publish`)
-
-Tudo num lugar só, em ubuntu, com **uma** chave e **sem** ferramenta nativa: o
-job assina `Cockpit-<v>-macos.zip` e o `.exe` com PyNaCl (a `SPARKLE_PRIVATE_KEY`)
-e gera `appcast-macos.xml` + `appcast-windows.xml`. macOS usa
-`sparkle:version` = **build number** (`+n`); Windows usa a versão marketing.
-
-### Publicação (gate manual)
-
-Junto do `latest.json`, suba `appcast-macos.xml` e `appcast-windows.xml` pro rp-s3
-(`/Users/flutterando/cockpit/data/`). Até subir, ninguém se auto-atualiza. As feed
-URLs são `https://rp-s3.jacobmoura.work/downloads/cockpit/appcast-{macos,windows}.xml`.
-
-### Pendências (não testáveis neste Mac)
-
-- Adicionar o secret `SPARKLE_PRIVATE_KEY` no repo (conteúdo do arquivo do iCloud).
-- Validar no **Windows real**: recurso `EdDSAPub`, install silencioso sem UAC,
-  relaunch (Restart Manager) sem duplo-launch.
-- Validar o **codesign do Sparkle** na notarização (framework + Autoupdate +
-  Updater.app + XPCServices — confirmados presentes no bundle; `--deep` deve cobrir).
-- E2E real: subir um appcast apontando pra v(N+1) e ver um cockpit v(N) se atualizar.
-
-## Próximos passos (plano 43)
-
-- Passo 3: `.github/workflows/cockpit-release.yml` (trigger `cockpit-v*`). **Feito**
-  (+ self-update do plano 47: `.app.zip` + appcasts assinados).
-- Passo 4: layout/`latest.json` na VPS.
-- Passo 5: página de downloads no `site/`.
-- Passo 6: runbook de release (bump `version:` → tag → CI → smoke test).
-# Linux: política de GPU híbrida
-
-O bootstrap nativo do Cockpit seleciona a GPU integrada e XWayland por padrão e
-remove, somente do processo do Cockpit, variáveis NVIDIA herdadas da sessão
-gráfica. Isso evita que o EGL da NVIDIA entre no processo em sessões Wayland
-híbridas. Um `GDK_BACKEND` definido explicitamente continua sendo respeitado.
-Para comparar ou forçar a GPU dedicada, inicie com
-`COCKPIT_USE_NVIDIA=1 cockpit`. O startup log registra `gpu_policy`,
-`GDK_BACKEND` e `XDG_SESSION_TYPE` sem registrar comandos ou conteýo do usuário.
-
-Matriz de diagnóstico Linux: Intel/XWayland é o caminho seguro de produção;
-compare NVIDIA/Wayland com `COCKPIT_USE_NVIDIA=1 GDK_BACKEND=wayland cockpit` e
-Intel/Wayland com `GDK_BACKEND=wayland cockpit`. Rollback é remover a chamada
-`configure_linux_gpu_environment()`; nenhuma configuração global é alterada.
+Keep the [PTY](../plugins/cockpit_pty/LICENSE), [terminal](../lib/app/core/terminal/xterm/LICENSE), [icon](../assets/file_icons/LICENSE) and bundled JavaScript notices in distributions. Review root [licensing](../../README.md#license) before distributing the download-server component.

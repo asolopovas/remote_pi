@@ -30,7 +30,14 @@ set -euo pipefail
 MIN_NODE="20.6.0"               # Pi requires Node >= 20.6.0
 NODE_LTS="22"                   # what we install via nvm when Node is missing
 PI_PKG="@earendil-works/pi-coding-agent"
-PLUGIN_SPEC="npm:remote-pi"
+# No registry fallback in an independent distribution. Set the npm package
+# name you have reviewed (for example, @your-org/remote-pi), without a URL.
+PLUGIN_PACKAGE="${REMOTE_PI_PACKAGE:-}"
+if [[ ! "$PLUGIN_PACKAGE" =~ ^(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$ ]]; then
+  echo "error: set REMOTE_PI_PACKAGE to an explicit npm package name; see README for source installation" >&2
+  exit 1
+fi
+PLUGIN_SPEC="npm:$PLUGIN_PACKAGE"
 PLUGIN_NAME="remote-pi"
 USER_PREFIX="$HOME/.local"      # user-space npm global prefix (sudo-free)
 LOCAL_BIN="$USER_PREFIX/bin"
@@ -277,9 +284,9 @@ ensure_pi() {
 # We check both, current-behavior first, and use whichever exists. Sets the
 # global PLUGIN_DIST. Returns 1 if neither is found.
 plugin_dist_candidates() {
-  printf '%s\n' "$HOME/.pi/agent/npm/node_modules/remote-pi/dist/index.js"
+  printf '%s\n' "$HOME/.pi/agent/npm/node_modules/$PLUGIN_PACKAGE/dist/index.js"
   local root; root="$(npm_global_root)"
-  [ -n "$root" ] && printf '%s\n' "$root/remote-pi/dist/index.js"
+  [ -n "$root" ] && printf '%s\n' "$root/$PLUGIN_PACKAGE/dist/index.js"
 }
 
 resolve_plugin_dist() {
@@ -308,12 +315,12 @@ ensure_plugin() {
   if ! resolve_plugin_dist; then
     die "plugin install ran but remote-pi/dist/index.js was not found.
     Looked in:
-      $HOME/.pi/agent/npm/node_modules/remote-pi/dist/index.js
-      $(npm_global_root)/remote-pi/dist/index.js
+      $HOME/.pi/agent/npm/node_modules/$PLUGIN_PACKAGE/dist/index.js
+      $(npm_global_root)/$PLUGIN_PACKAGE/dist/index.js
     Check the 'pi install $PLUGIN_SPEC' output above."
   fi
   local pkg_json; pkg_json="$(dirname "$(dirname "$PLUGIN_DIST")")/package.json"
-  local v; v="$(node -p "require('$pkg_json').version" 2>/dev/null || true)"
+  local v; v="$(node -e 'console.log(require(process.argv[1]).version)' "$pkg_json" 2>/dev/null || true)"
   ok "installed remote-pi plugin${v:+ v$v} → $PLUGIN_DIST"
   record "Plugin:     remote-pi${v:+ v$v}"
 }

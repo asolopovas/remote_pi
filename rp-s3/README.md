@@ -1,6 +1,12 @@
 # Download server
 
+[Project index](../README.md#project-map)
+
 Small Rust/axum HTTP server for release artifacts and manifests. Maintainer and author of contributions: **Andrius Solopovas**. Its existing `LicenseRef-proprietary` metadata is unchanged.
+
+## Integrations
+
+Local/manual [release procedures](../cockpit/packaging/README.md#independent-updates-and-publication) publish binary assets to GitHub Releases and upload manifests to this service; [Cockpit packaging](../cockpit/packaging/README.md) owns the release sequence and signing rules. The [website manifest reader](../site/src/lib/cockpit-release.ts) and [Cockpit updater](../cockpit/README.md#reference-and-maintenance) consume those manifests. The [mobile client](../app/README.md) has a separate release/update path. This is not the [agent relay](../relay/README.md) or [host extension](../pi-extension/README.md).
 
 ## Run
 
@@ -28,4 +34,4 @@ cargo test
 
 Artifact extensions `.dmg`, `.exe`, `.deb`, `.rpm` and `.zip` use attachment/one-year immutable cache headers; other files use a five-minute cache. Successful download responses permit CORS reads from any origin. Serialize uploads to the same target: the temporary filename is shared, so concurrent writes are not coordinated. Publish immutable artifacts at versioned paths and back up the data volume.
 
-Terminate TLS at a reverse proxy; do not expose upload tokens over HTTP. Configure a private token through your deployment secret store. Review `docker-compose.yml` volume paths and image destinations and `push-docker.sh` before using them: their upstream defaults are not this repository's deployment.
+Terminate TLS at a reverse proxy; do not expose upload tokens over HTTP. Configure a private token through your deployment secret store. Review [Compose](docker-compose.yml) volume paths/image destinations and the [publisher script](push-docker.sh) before using them: their upstream defaults are not this repository's deployment.

@@ -1,4 +1,6 @@
-# Telemetry (plano 66): arquitetura interna
+# Telemetry: arquitetura interna
+
+[Project index](../../README.md#project-map) · [Cockpit guide](../README.md)
 
 Base local, por workspace, do que os processos do workspace imprimem. O humano
 vê casos agrupados na aba Telemetry (painel direito) e abre cada um numa aba do
@@ -88,7 +90,7 @@ A sessão guarda `fingerprint → última vez visto`; um erro com o mesmo
 fingerprint dentro de 1,5 s conta uma vez (o `Flutter.Error` do VM Service é o
 mesmo bloco que sai no console).
 
-## Erros do próprio app (plano 68)
+## Erros do próprio app
 
 O Cockpit é também uma fonte: um run por boot (`source: app`, nome
 "Cockpit"), num store fixo (`__cockpit__`, fora dos workspaces). O
@@ -138,23 +140,9 @@ própria máquina.
 campo. Baseline oficial: medido no `.dmg` instalado (nunca em `debug`, o JIT
 distorce), registrado no plano 68.
 
-## Push turn-aware (REMOVIDO em 2026-09-27)
-
-O push da linha "telemetry: N new cases" no terminal do agente ao fim do
-turno foi removido: o agente consulta a base quando quer.
-
-
-`TelemetryIngest.notices` emite os fingerprints de erro de cada lote gravado.
-O `CockpitViewModel` filtra os novos/regressões, enfileira por pane (wrapper:
-o pane do run; task: os terminais do workspace com agente) e entrega UMA linha
-quando o agente não está `working` (status hooks), com throttle de 30 s por
-pane. Setting `telemetryPush` (General → "Notify agents about new errors").
-
 ## CLI
 
-Ver `cli/text/telemetry_help.txt` e a seção Telemetry de `cli/text/skill.md`.
-Saída JSON de uma linha, ids estáveis (`e_` caso, `ev_` evento, `r_` run),
-teto de 16 KiB com `truncated` + `hint`.
+Verbos, filtros e exemplos operacionais são mantidos na [referência da CLI](../cli/text/skill.md#telemetry-the-error-store--query-it-instead-of-reading-terminals). Este guia possui a arquitetura de captura/armazenamento, não uma segunda cópia das opções de comando.
 
 ## O que ainda não existe
 

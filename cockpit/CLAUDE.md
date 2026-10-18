@@ -1,5 +1,7 @@
 # Cockpit development
 
+[Project index](../README.md#project-map) · [Cockpit guide](README.md)
+
 Work from `cockpit/`; requirements and commands are in [README.md](README.md).
 
 ## Architecture
@@ -27,4 +29,4 @@ Work from `cockpit/`; requirements and commands are in [README.md](README.md).
 
 Run `flutter analyze`, `flutter test` and format changed Dart files. Native build/package checks are separate; use [packaging/README.md](packaging/README.md). Do not claim platform/device acceptance from unit tests. Do not commit build output, Pods, runtime/SSH/database configuration or credentials.
 
-For a task explicitly marked `[ORCH:<id>]`, read `../.orchestration/INSTRUCTIONS.md`.
+For a task explicitly marked `[ORCH:<id>]`, read the [orchestration instructions](../.orchestration/INSTRUCTIONS.md).
