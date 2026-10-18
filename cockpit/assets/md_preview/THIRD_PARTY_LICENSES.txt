@@ -2,8 +2,8 @@ Third-party licenses for the adjacent bundled JavaScript assets.
 Distribute this file alongside those assets. Existing bundle notices also apply.
 
 ========================================================================
-markdown-it 14.3.0
-Source: https://raw.githubusercontent.com/markdown-it/markdown-it/14.3.0/LICENSE
+markdown-it 14.3.3
+Source: https://raw.githubusercontent.com/markdown-it/markdown-it/14.3.3/LICENSE
 ========================================================================
 
 Copyright (c) 2014 Vitaly Puzrin, Alex Kocharin.
@@ -30,8 +30,8 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 
 ========================================================================
-DOMPurify 3.4.13 (Apache-2.0 alternative)
-Source: https://raw.githubusercontent.com/cure53/DOMPurify/3.4.13/LICENSE
+DOMPurify 3.4.17 (Apache-2.0 alternative)
+Source: https://raw.githubusercontent.com/cure53/DOMPurify/3.4.17/LICENSE
 ========================================================================
 
 Apache License
