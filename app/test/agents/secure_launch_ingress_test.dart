@@ -1,3 +1,4 @@
+import 'package:app/data/preferences/preferences.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -36,8 +37,10 @@ class LauncherHarness {
   late StreamSubscription<Map<String, dynamic>> subscription;
   final journal = AgentMutationJournal();
   String epoch = 'epoch-1';
+  int api = 3;
   List<String> folders = ['/project'];
   bool delayStatus = false, delayAgents = false;
+  bool configured = true, unlocked = true, setupGrant = false;
   Map<String, dynamic>? waitingStatus, waitingAgents;
   final requests = <Map<String, dynamic>>[];
 
@@ -51,6 +54,7 @@ class LauncherHarness {
       connection,
       SocketStorage(),
       journal,
+      Preferences(),
       timeout: const Duration(seconds: 2),
       mutationTimeout: const Duration(milliseconds: 20),
     );
@@ -67,6 +71,15 @@ class LauncherHarness {
           } else {
             status(request);
           }
+        case 'launcher_pin_initialize':
+          configured = true;
+          unlocked = setupGrant;
+          epoch = 'setup-epoch';
+          status(request);
+        case 'launcher_unlock':
+          unlocked = true;
+          epoch = 'unlock-epoch';
+          status(request);
         case 'project_list':
           send({
             'type': 'project_list_result',
@@ -104,10 +117,14 @@ class LauncherHarness {
     'in_reply_to': request['id'],
     'status': {
       'launcher_id': 'launcher-1',
+      'launcher_api': api,
       'epoch': epoch,
-      'configured': true,
-      'unlocked': true,
-      'expires_at': DateTime.now().millisecondsSinceEpoch + 600000,
+      'configured': configured,
+      'pin_setup': configured ? 'configured' : 'available',
+      'unlocked': unlocked,
+      'expires_at': unlocked
+          ? DateTime.now().millisecondsSinceEpoch + 600000
+          : null,
       'cooldown_until': 0,
     },
   });
@@ -138,6 +155,87 @@ class LauncherHarness {
 }
 
 void main() {
+  test('real socket setup grant loads projects without a second PIN', () async {
+    final h = LauncherHarness()
+      ..api = 2
+      ..configured = false
+      ..unlocked = false
+      ..setupGrant = true;
+    await h.open();
+    final vm = AgentsViewModel(h.repo);
+    try {
+      await vm.initialize(paired.remoteEpk, 'launcher');
+      await vm.initializePin('123456');
+      expect(vm.unlocked, true);
+      expect(vm.security?.launcherApi, 2);
+      expect(vm.projects.single.projectId, 'project');
+      expect(vm.state.availability?.available, true);
+      expect(
+        h.requests.where((r) => r['type'] == 'launcher_pin_initialize'),
+        hasLength(1),
+      );
+      expect(h.requests.where((r) => r['type'] == 'launcher_unlock'), isEmpty);
+    } finally {
+      await h.close();
+      vm.dispose();
+    }
+  });
+  test(
+    'real socket setup sends one PIN only, stays locked and requires explicit unlock before project list',
+    () async {
+      final h = LauncherHarness()
+        ..configured = false
+        ..unlocked = false;
+      await h.open();
+      try {
+        await h.repo.bind(paired.remoteEpk, 'launcher');
+        await h.repo.status();
+        expect(h.repo.launcherStatus?.pinSetup, PinSetup.available);
+        await h.repo.initializePin('123456');
+        final setup = h.requests.singleWhere(
+          (r) => r['type'] == 'launcher_pin_initialize',
+        );
+        expect(setup, {
+          'type': 'launcher_pin_initialize',
+          'id': setup['id'],
+          'launcher_id': 'launcher-1',
+          'epoch': 'epoch-1',
+          'pin': '123456',
+        });
+        expect(h.repo.launcherStatus?.epoch, 'setup-epoch');
+        expect(h.repo.launcherStatus?.permitsControl, false);
+        expect(h.repo.hasUnknownLaunch, false);
+        expect(h.repo.projects, isEmpty);
+        await expectLater(
+          h.repo.initializePin('123456'),
+          throwsA(isA<AgentFailure>()),
+        );
+        await expectLater(h.repo.list(), throwsA(isA<AgentFailure>()));
+        expect(
+          h.requests.where(
+            (r) =>
+                r['type'] == 'launcher_unlock' || r['type'] == 'project_list',
+          ),
+          isEmpty,
+        );
+        await h.repo.unlock('123456');
+        await h.repo.list();
+        expect(h.repo.projects.single.projectId, 'project');
+        expect(h.repo.launcherStatus?.permitsControl, true);
+        expect(
+          h.requests.where((r) => r['type'] == 'launcher_pin_initialize'),
+          hasLength(1),
+        );
+        expect(
+          h.requests.where((r) => r['type'] == 'launcher_unlock'),
+          hasLength(1),
+        );
+      } finally {
+        await h.close();
+      }
+    },
+  );
+
   testWidgets(
     'delayed socket refresh restores only reconciled unchanged project definition',
     (tester) async {

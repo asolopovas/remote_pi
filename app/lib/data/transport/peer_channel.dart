@@ -1,3 +1,4 @@
+import 'package:app/domain/contracts/agent_repository.dart';
 // PlainPeerChannel — protocol message channel without E2E cipher.
 //
 // Wraps a connected PeerTransport. After pairing, use this to exchange
@@ -24,14 +25,44 @@ class PeerChannelError implements Exception {
   String toString() => 'PeerChannelError: $message';
 }
 
-class PlainPeerChannel implements IChannel, IControlLink {
+class PlainPeerChannel
+    implements
+        IChannel,
+        IControlLink,
+        IRoomLauncherProbe,
+        IScopedActionChannel {
   final PeerTransport _transport;
 
   final _controller = StreamController<ServerMessage>.broadcast();
+  final _actions = StreamController<ScopedActionReply>.broadcast();
+  @override
+  Stream<ScopedActionReply> get actionReplies {
+    // Start the same receive loop even without a chat consumer.
+    serverMessages;
+    return _actions.stream;
+  }
+
   bool _started = false;
   bool _closed = false;
 
   PlainPeerChannel({required PeerTransport transport}) : _transport = transport;
+
+  @override
+  Future<({String peer, String room, LauncherStatus status})?> probeLauncher(
+    String room,
+  ) async {
+    final t = _transport;
+    if (_closed || t is! IRoomLauncherProbe) return null;
+    return (t as IRoomLauncherProbe).probeLauncher(room);
+  }
+
+  @override
+  void cancelLauncherProbes() {
+    final t = _transport;
+    if (t is IRoomLauncherProbe) {
+      (t as IRoomLauncherProbe).cancelLauncherProbes();
+    }
+  }
 
   // ---- IControlLink — forwards to the underlying transport when it
   //      supports raw control frames (production: WsTransport). For
@@ -84,6 +115,7 @@ class PlainPeerChannel implements IChannel, IControlLink {
     if (_closed) return;
     _closed = true;
     await _transport.close();
+    if (!_actions.isClosed) unawaited(_actions.close());
     if (!_controller.isClosed) await _controller.close();
   }
 
@@ -100,6 +132,7 @@ class PlainPeerChannel implements IChannel, IControlLink {
         }
       }
     } catch (_) {
+      if (!_actions.isClosed) unawaited(_actions.close());
       if (!_controller.isClosed) await _controller.close();
     }
   }
@@ -108,8 +141,22 @@ class PlainPeerChannel implements IChannel, IControlLink {
     try {
       var msg = decodeServer(utf8.decode(bytes));
       if (msg is ErrorMessage) {
-        if (msg.inReplyTo?.startsWith(sessionControlRequestPrefix) == true) {
+        if (msg.inReplyTo?.startsWith(actionRequestPrefix) == true) {
+          msg = ScopedActionError(
+            msg,
+            peer: scope?.peer ?? '',
+            room: scope?.room,
+          );
+        } else if (msg.inReplyTo?.startsWith(sessionControlRequestPrefix) ==
+            true) {
           msg = SessionControlError(
+            msg,
+            peer: scope?.peer ?? '',
+            room: scope?.room,
+          );
+        } else if (msg.inReplyTo?.startsWith(launcherSetupRequestPrefix) ==
+            true) {
+          msg = LauncherSetupError(
             msg,
             peer: scope?.peer ?? '',
             room: scope?.room,
@@ -117,6 +164,9 @@ class PlainPeerChannel implements IChannel, IControlLink {
         } else if (scope != null) {
           msg = ScopedPeerError(msg, peer: scope.peer, room: scope.room);
         }
+      }
+      if (scope != null && !_actions.isClosed) {
+        _actions.add((message: msg, peer: scope.peer, room: scope.room));
       }
       if (!_controller.isClosed) _controller.add(msg);
     } on UnsupportedTypeException {

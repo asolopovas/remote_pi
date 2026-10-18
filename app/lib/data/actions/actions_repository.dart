@@ -28,6 +28,7 @@
 import 'dart:async';
 
 import 'package:app/data/transport/channel.dart';
+import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/domain/contracts/repository.dart';
 import 'package:app/protocol/protocol.dart';
@@ -50,11 +51,14 @@ class ActiveRoomMeta {
   /// active (offline, between switches, etc.). Helps a consumer ignore
   /// transient empty snapshots vs. honest "we're not paired" state.
   final String? peerEpk;
+
   /// Pi-side room id this snapshot describes — defaults to `'main'`.
   final String roomId;
+
   /// Display model name from `meta.model` (e.g. "Claude Opus 4.7").
   /// `null` until the Pi publishes it (or while disconnected).
   final String? model;
+
   /// Current thinking level from `meta.thinking`. Forward-compat — the
   /// relay does not yet flatten this field, so until the relay update
   /// ships this is always `null` in production. Kept on the API
@@ -110,17 +114,60 @@ abstract class IActionsRepository extends Repository {
   Stream<ActiveRoomMeta> get activeRoomMetaStream;
 }
 
-class ActionsRepository extends Repository implements IActionsRepository {
+/// Captures a one-way UI lease. A closed lease can never adopt a new session.
+abstract class IActionScopeSource {
+  bool Function() captureActionScope();
+}
+
+class ActionsRepository extends Repository
+    implements IActionsRepository, IActionScopeSource {
   final ConnectionManager _conn;
   final Duration _timeout;
 
   StreamSubscription<ConnectionStatus>? _statusSub;
-  StreamSubscription<ServerMessage>? _msgSub;
+  StreamSubscription<Object?>? _msgSub;
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
   IChannel? _channel;
+  int _channelGeneration = 0;
 
   final Map<String, _Pending> _pending = {};
   final Map<String, ModelsCatalogue> _modelsCache = {};
+  final Map<String, int> _catalogueGeneration = {};
+  final Map<String, bool Function()> _cacheScopes = {};
+  void _invalidate(String key) {
+    _modelsCache.remove(key);
+    _cacheScopes.remove(key);
+    _catalogueGeneration[key] = (_catalogueGeneration[key] ?? 0) + 1;
+  }
+
+  @override
+  bool Function() captureActionScope() {
+    final ch = _conn.channel;
+    final key = _sessionKey();
+    final epoch = _conn.roomSelectionEpoch;
+    final generation = _channelGeneration;
+    final epk = _conn.activePeer?.remoteEpk;
+    final room = _conn.activeRoomId;
+    final info = epk == null
+        ? null
+        : _conn.roomsFor(epk).where((r) => r.roomId == room).firstOrNull;
+    final roomGuard = epk == null
+        ? () => false
+        : _conn.roomActionGuard(epk, room, info?.startedAt);
+    var invalid = false;
+    return () {
+      invalid =
+          invalid ||
+          ch == null ||
+          generation != _channelGeneration ||
+          !identical(ch, _conn.channel) ||
+          !identical(ch, _channel) ||
+          key != _sessionKey() ||
+          epoch != _conn.roomSelectionEpoch ||
+          !roomGuard();
+      return !invalid;
+    };
+  }
 
   /// Plan/28 Wave D — last model name we observed via `roomsStream`
   /// per session key. Lets us detect "the model changed externally"
@@ -149,52 +196,135 @@ class ActionsRepository extends Repository implements IActionsRepository {
   // ---------------------------------------------------------------------------
 
   void _onStatus(ConnectionStatus s) {
+    final next = s is StatusOnline ? s.channel : null;
+    if (!identical(next, _channel)) {
+      _channelGeneration++;
+      _failAllPending(next == null ? 'disconnected' : 'session changed');
+      _modelsCache.clear();
+      _cacheScopes.clear();
+    }
     _msgSub?.cancel();
     _msgSub = null;
-    if (s is StatusOnline) {
-      _channel = s.channel;
-      _msgSub = s.channel.serverMessages.listen(
-        _onMessage,
-        onError: (Object _, StackTrace _) {},
-      );
-    } else {
-      _channel = null;
-      _failAllPending('disconnected');
+    _channel = next;
+    if (next != null) {
+      void ended() {
+        if (!identical(next, _channel)) return;
+        _channelGeneration++;
+        _failAllPending('disconnected');
+        _channel = null;
+        _modelsCache.clear();
+        _cacheScopes.clear();
+      }
+
+      if (next is IScopedActionChannel) {
+        _msgSub = (next as IScopedActionChannel).actionReplies.listen(
+          (reply) {
+            if (!identical(next, _channel)) return;
+            _onMessage(
+              reply.message,
+              peer: reply.peer,
+              room: reply.room,
+              scoped: true,
+            );
+          },
+          onError: (Object _, StackTrace _) => ended(),
+          onDone: ended,
+        );
+      } else {
+        _msgSub = next.serverMessages.listen(
+          (msg) {
+            if (identical(next, _channel)) _onMessage(msg);
+          },
+          onError: (Object _, StackTrace _) => ended(),
+          onDone: ended,
+        );
+      }
     }
     _refreshActiveRoomMeta();
   }
 
   void _onRooms(Map<String, List<RoomInfo>> _) {
+    for (final id in _pending.keys.toList()) {
+      final p = _pending[id]!;
+      if (!p.current()) {
+        _settle(
+          id,
+          error: ActionFailure(
+            p.kind == 'model_set'
+                ? 'Session changed. Model change outcome unknown. Reload models.'
+                : 'session changed',
+          ),
+        );
+      }
+    }
     _refreshActiveRoomMeta();
   }
 
-  void _onMessage(ServerMessage msg) {
+  void _settle(String id, {Object? value, ActionFailure? error}) {
+    final p = _pending.remove(id);
+    if (p == null) return;
+    p.timeout.cancel();
+    if (error != null) {
+      p.completer.completeError(error);
+    } else {
+      p.completer.complete(value);
+    }
+  }
+
+  void _onMessage(
+    ServerMessage msg, {
+    String? peer,
+    String? room,
+    bool scoped = false,
+  }) {
+    final id = switch (msg) {
+      ActionOk(:final inReplyTo) => inReplyTo,
+      ActionError(:final inReplyTo) => inReplyTo,
+      ModelsList(:final inReplyTo) => inReplyTo,
+      ErrorMessage(:final inReplyTo) => inReplyTo,
+      _ => null,
+    };
+    final p = _pending[id];
+    if (p == null) return;
+    if (!p.current()) {
+      _settle(
+        id!,
+        error: ActionFailure(
+          p.kind == 'model_set'
+              ? 'Session changed. Model change outcome unknown. Reload models.'
+              : 'session changed',
+        ),
+      );
+      return;
+    }
+    if (scoped &&
+        (peer == null ||
+            p.peer == null ||
+            toStandardB64(peer) != toStandardB64(p.peer!) ||
+            room != p.room)) {
+      return;
+    }
     switch (msg) {
-      case ActionOk(:final inReplyTo):
-        final p = _pending.remove(inReplyTo);
-        if (p == null) return;
-        p.timeout.cancel();
-        if (!p.completer.isCompleted) p.completer.complete(null);
-      case ActionError(:final inReplyTo, :final error):
-        final p = _pending.remove(inReplyTo);
-        if (p == null) return;
-        p.timeout.cancel();
-        if (!p.completer.isCompleted) {
-          p.completer.completeError(
-            ActionFailure(error.isEmpty ? 'action failed' : error),
-          );
-        }
-      case ModelsList(:final inReplyTo, :final models, :final current):
-        final p = _pending.remove(inReplyTo);
-        if (p == null) return;
-        p.timeout.cancel();
-        if (!p.completer.isCompleted) {
-          p.completer.complete(
-            ModelsCatalogue(models: models, current: current),
-          );
-        }
+      case ActionOk(:final rawAction):
+        if (rawAction != p.kind || p.kind == 'list_models') return;
+        _settle(id!);
+      case ActionError(:final rawAction, :final error):
+        if (rawAction != p.kind) return;
+        _settle(
+          id!,
+          error: ActionFailure(error.isEmpty ? 'action failed' : error),
+        );
+      case ErrorMessage(:final message):
+        // Generic errors require authenticated outer scope, never just a UUID.
+        if (!scoped) return;
+        _settle(id!, error: ActionFailure(message));
+      case ModelsList(:final models, :final current):
+        if (p.kind != 'list_models') return;
+        _settle(
+          id!,
+          value: ModelsCatalogue(models: models, current: current),
+        );
       default:
-        // All other ServerMessages are owned by SessionRepository.
         break;
     }
   }
@@ -206,7 +336,13 @@ class ActionsRepository extends Repository implements IActionsRepository {
     for (final p in snapshot) {
       p.timeout.cancel();
       if (!p.completer.isCompleted) {
-        p.completer.completeError(ActionFailure(reason));
+        p.completer.completeError(
+          ActionFailure(
+            p.kind == 'model_set'
+                ? '$reason. Model change outcome unknown. Reload models.'
+                : reason,
+          ),
+        );
       }
     }
   }
@@ -245,7 +381,7 @@ class ActionsRepository extends Repository implements IActionsRepository {
     final previousModel = _lastKnownModelName[key];
     final hadPreviousKnowledge = _lastKnownModelName.containsKey(key);
     if (hadPreviousKnowledge && previousModel != next.model) {
-      _modelsCache.remove(key);
+      _invalidate(key);
     }
     _lastKnownModelName[key] = next.model;
 
@@ -279,12 +415,14 @@ class ActionsRepository extends Repository implements IActionsRepository {
 
   @override
   Future<void> setModel(String provider, String modelId) async {
+    final key = _sessionKey();
+    _invalidate(key);
     await _dispatch<void>(
       (id) => ModelSet(id: id, provider: provider, modelId: modelId),
     );
     // Invalidate the cached catalogue so the next picker open reflects
     // the new `current` highlight.
-    _modelsCache.remove(_sessionKey());
+    _invalidate(key);
   }
 
   @override
@@ -297,42 +435,71 @@ class ActionsRepository extends Repository implements IActionsRepository {
     final key = _sessionKey();
     if (!forceRefresh) {
       final cached = _modelsCache[key];
-      if (cached != null) return cached;
+      if (cached != null && (_cacheScopes[key]?.call() ?? false)) return cached;
+      _modelsCache.remove(key);
     }
-    final result =
-        await _dispatch<ModelsCatalogue>((id) => ListModels(id: id));
-    // Re-evaluate the session key — the user may have switched rooms
-    // mid-flight. We only cache against the key the *response* belongs
-    // to, which is the live one when it resolves.
-    _modelsCache[_sessionKey()] = result;
+    final current = captureActionScope();
+    final generation = (_catalogueGeneration[key] ?? 0) + 1;
+    _catalogueGeneration[key] = generation;
+    final result = await _dispatch<ModelsCatalogue>((id) => ListModels(id: id));
+    if (!current() || generation != _catalogueGeneration[key]) {
+      throw const ActionFailure('Models changed. Reload models.');
+    }
+    _modelsCache[key] = result;
+    _cacheScopes[key] = current;
     return result;
   }
 
   Future<T> _dispatch<T>(ClientMessage Function(String id) builder) async {
     final ch = _channel;
-    if (ch == null) {
+    if (ch == null || !identical(ch, _conn.channel)) {
       throw const ActionFailure('offline');
     }
-    final id = 'act_${uuid7()}';
+    final current = captureActionScope();
+    if (!current()) {
+      throw const ActionFailure('Session changed. Reopen model picker.');
+    }
+    final id = '$actionRequestPrefix${uuid7()}';
+    final message = builder(id);
+    final kind = message.toJson()['type'] as String;
     final completer = Completer<dynamic>();
     final timer = Timer(_timeout, () {
-      final p = _pending.remove(id);
-      if (p == null) return;
-      if (!p.completer.isCompleted) {
-        p.completer.completeError(const ActionFailure('timeout'));
-      }
+      _settle(
+        id,
+        error: ActionFailure(
+          kind == 'model_set'
+              ? 'Model change outcome unknown. Reload models before choosing again.'
+              : 'timeout',
+        ),
+      );
     });
-    _pending[id] = _Pending(completer: completer, timeout: timer);
-
-    try {
-      await ch.send(builder(id));
-    } catch (e) {
-      timer.cancel();
-      _pending.remove(id);
-      throw ActionFailure(e.toString());
-    }
-    final value = await completer.future;
-    return value as T;
+    _pending[id] = _Pending(
+      completer: completer,
+      timeout: timer,
+      current: current,
+      kind: kind,
+      peer: _conn.activePeer?.remoteEpk,
+      room: _conn.activeRoomId,
+    );
+    // Attach the reply waiter BEFORE send. The end-to-end deadline must not
+    // wait for send; Future.sync observes synchronous and late async failures.
+    final result = completer.future.then((value) => value as T);
+    unawaited(
+      Future<void>.sync(() => ch.send(message)).then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stack) {
+          _settle(
+            id,
+            error: ActionFailure(
+              kind == 'model_set'
+                  ? 'Model change outcome unknown. Reload models before choosing again.'
+                  : 'Send failed: $error',
+            ),
+          );
+        },
+      ),
+    );
+    return result;
   }
 
   String _sessionKey() {
@@ -348,6 +515,7 @@ class ActionsRepository extends Repository implements IActionsRepository {
     _roomsSub?.cancel();
     _failAllPending('disposed');
     _modelsCache.clear();
+    _cacheScopes.clear();
     _lastKnownModelName.clear();
     _activeRoomMetaController.close();
     super.dispose();
@@ -357,5 +525,16 @@ class ActionsRepository extends Repository implements IActionsRepository {
 class _Pending {
   final Completer<dynamic> completer;
   final Timer timeout;
-  _Pending({required this.completer, required this.timeout});
+  final bool Function() current;
+  final String kind;
+  final String? peer;
+  final String room;
+  _Pending({
+    required this.completer,
+    required this.timeout,
+    required this.current,
+    required this.kind,
+    required this.peer,
+    required this.room,
+  });
 }

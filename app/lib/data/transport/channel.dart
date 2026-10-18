@@ -1,3 +1,4 @@
+import 'package:app/domain/contracts/agent_repository.dart';
 import 'dart:typed_data';
 
 import 'package:app/protocol/protocol.dart';
@@ -27,6 +28,11 @@ abstract class IScopedPeerTransport {
 
 /// Local ingress evidence for management error settlement; not a wire field.
 const sessionControlRequestPrefix = 'session-control:';
+const launcherSetupRequestPrefix = 'launcher-setup:';
+
+class LauncherSetupError extends ScopedPeerError {
+  LauncherSetupError(super.error, {required super.peer, required super.room});
+}
 
 /// Local-only classification: control errors must never become chat history.
 class SessionControlError extends ScopedPeerError {
@@ -42,4 +48,32 @@ class ScopedPeerError extends ErrorMessage {
       );
   final String peer;
   final String? room;
+}
+
+/// Optional read-only request path. Results retain authenticated outer scope;
+/// implementations must consume replies/errors without publishing chat events.
+abstract class IRoomLauncherProbe {
+  Future<({String peer, String room, LauncherStatus status})?> probeLauncher(
+    String room,
+  );
+  void cancelLauncherProbes();
+}
+
+const launcherProbeRequestPrefix = 'launcher-probe:';
+
+/// Authenticated action ingress, kept separate from decoded wire fields.
+typedef ScopedActionReply = ({
+  ServerMessage message,
+  String peer,
+  String? room,
+});
+
+abstract class IScopedActionChannel {
+  Stream<ScopedActionReply> get actionReplies;
+}
+
+const actionRequestPrefix = 'act_';
+
+class ScopedActionError extends ScopedPeerError {
+  ScopedActionError(super.error, {required super.peer, required super.room});
 }

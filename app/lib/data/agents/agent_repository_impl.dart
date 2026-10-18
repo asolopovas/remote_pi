@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'package:flutter/services.dart';
+import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/epk_encoding.dart';
@@ -38,13 +40,15 @@ class AgentRepositoryImpl extends AgentRepository {
   AgentRepositoryImpl(
     this._conn,
     this._storage,
-    this._journal, {
+    this._journal,
+    this._preferences, {
     this.timeout = const Duration(seconds: 20),
     this.mutationTimeout = const Duration(seconds: 35),
   });
   final ConnectionManager _conn;
   final PairingStorage _storage;
   final AgentMutationJournal _journal;
+  final Preferences _preferences;
   final Duration timeout;
 
   /// Host readiness (20s) plus failed-child cleanup (up to 6s), with margin.
@@ -76,6 +80,10 @@ class AgentRepositoryImpl extends AgentRepository {
   }
 
   void _accept(LauncherStatus value) {
+    if (_disposed || !_valid) {
+      _revoke();
+      throw const AgentFailure('Host changed. Reopen the launcher.');
+    }
     final changed =
         _security?.launcherId != value.launcherId ||
         _security?.epoch != value.epoch;
@@ -105,6 +113,50 @@ class AgentRepositoryImpl extends AgentRepository {
       (id) => LauncherRequest('launcher_status', id),
     );
     _accept((result as LauncherStatusResult).status);
+  }
+
+  @override
+  Future<void> initializePin(String pin) async {
+    final security = _security;
+    if (security == null ||
+        security.configured ||
+        security.pinSetup != PinSetup.available) {
+      throw const AgentFailure(
+        'Initial PIN setup is not available. Refresh status.',
+      );
+    }
+    if (!RegExp(r'^\d{6,12}$').hasMatch(pin)) {
+      throw const AgentFailure('PIN must be 6–12 digits.');
+    }
+    if (security.cooldownUntil > DateTime.now().millisecondsSinceEpoch) {
+      throw const AgentFailure(
+        'PIN cooldown active. Wait before trying again.',
+      );
+    }
+    _revoke();
+    final pending = _request(
+      'launcher_status_result',
+      (id) => LauncherRequest(
+        'launcher_pin_initialize',
+        id,
+        status: security,
+        pin: pin,
+      ),
+      idPrefix: launcherSetupRequestPrefix,
+    );
+    pin = '';
+    final reply = (await pending as LauncherStatusResult).status;
+    if (reply.launcherId != security.launcherId ||
+        reply.epoch.isEmpty ||
+        !reply.configured) {
+      throw const AgentFailure(
+        'PIN setup result could not be verified. Check status.',
+        outcomeUnknown: true,
+      );
+    }
+    // _request accepts only the current lease's correlated result. A legacy
+    // host may return locked; never synthesize/replay an unlock in that case.
+    _accept(reply);
   }
 
   @override
@@ -158,6 +210,8 @@ class AgentRepositoryImpl extends AgentRepository {
         launcherId: reply.status.launcherId,
         epoch: reply.status.epoch,
         configured: reply.status.configured,
+        pinSetup: reply.status.pinSetup,
+        launcherApi: reply.status.launcherApi,
         unlocked: false,
         expiresAt: null,
         cooldownUntil: reply.status.cooldownUntil,
@@ -172,7 +226,15 @@ class AgentRepositoryImpl extends AgentRepository {
     }
   }
 
-  int? _roomEpoch;
+  int? _roomEpoch, _roomStartedAt;
+  bool Function()? _bindingCurrent;
+  bool _sameRoomIncarnation(String peer, String room, int? startedAt) =>
+      _conn
+          .roomsFor(peer)
+          .where((r) => r.roomId == room)
+          .firstOrNull
+          ?.startedAt ==
+      startedAt;
   bool _disposed = false;
   IChannel? _channel;
   StreamSubscription<ServerMessage>? _messages;
@@ -185,36 +247,86 @@ class AgentRepositoryImpl extends AgentRepository {
   final _pending =
       <
         String,
-        ({Completer<ServerMessage> completer, Timer timer, String type})
+        ({
+          Completer<ServerMessage> completer,
+          Timer timer,
+          String type,
+          bool securityMutation,
+        })
       >{};
   @override
   Stream<void> get invalidations => _invalidations.stream;
   bool get _valid =>
+      !_disposed &&
+      (_bindingCurrent?.call() ?? true) &&
       _channel != null &&
       identical(_conn.channel, _channel) &&
       _conn.activePeer?.remoteEpk == _peer &&
       _conn.activeRoomId == _room &&
       _conn.roomSelectionEpoch == _roomEpoch &&
-      _conn.isRoomLive(_peer!, _room!);
+      _conn.isRoomLive(_peer!, _room!) &&
+      _sameRoomIncarnation(_peer!, _room!, _roomStartedAt);
 
   @override
-  Future<void> bind(String peer, String room) async {
+  Future<void> bind(
+    String peer,
+    String room, {
+    bool Function()? isCurrent,
+  }) async {
+    final channel = _conn.channel;
+    final epoch = _conn.roomSelectionEpoch;
+    final selectedPeer = _conn.activePeer?.remoteEpk;
+    final selectedRoom = _conn.activeRoomId;
+    final startedAt = _conn
+        .roomsFor(peer)
+        .where((r) => r.roomId == room)
+        .firstOrNull
+        ?.startedAt;
+    bool current() =>
+        !_disposed &&
+        (isCurrent?.call() ?? true) &&
+        identical(channel, _conn.channel) &&
+        epoch == _conn.roomSelectionEpoch &&
+        selectedPeer == _conn.activePeer?.remoteEpk &&
+        selectedRoom == _conn.activeRoomId &&
+        _sameRoomIncarnation(peer, room, startedAt);
+    void check() {
+      if (!current()) {
+        _invalidate();
+        throw const AgentFailure('Host changed. Reopen the launcher.');
+      }
+    }
+
+    check();
     final peers = await _storage.listPeers();
-    if (_disposed) throw const AgentFailure('Agent page closed.');
+    check(); // Never navigate using an intent parked across changed selection.
     final matches = peers.where((p) => p.remoteEpk == peer);
     if (matches.isEmpty || !_conn.isRoomLive(peer, room)) {
       throw const AgentFailure('Selected paired session is offline.');
     }
-    await _conn.switchTo(matches.first.copyWith(roomId: room));
-    if (_disposed) throw const AgentFailure('Agent page closed.');
-    if (_conn.activePeer?.remoteEpk != peer ||
-        _conn.status is! StatusOnline ||
-        !_conn.isRoomLive(peer, room)) {
-      throw const AgentFailure(
-        'Host changed or disconnected. Return home and select it again.',
-      );
+    if (isCurrent != null) {
+      // selectParent already selected the exact target. Recovery may not create
+      // a new navigation intent (and thereby renew an invalidated lease).
+      if (selectedPeer != peer ||
+          selectedRoom != room ||
+          _conn.status is! StatusOnline) {
+        _invalidate();
+        throw const AgentFailure('Host changed. Reopen the launcher.');
+      }
+    } else {
+      await _conn.switchTo(matches.first.copyWith(roomId: room));
+      if (selectedPeer == peer) check();
+      if (_disposed ||
+          _conn.activePeer?.remoteEpk != peer ||
+          _conn.status is! StatusOnline ||
+          !_sameRoomIncarnation(peer, room, startedAt) ||
+          !_conn.isRoomLive(peer, room)) {
+        throw const AgentFailure('Host changed. Reopen the launcher.');
+      }
+      _conn.switchRoom(room); // Explicit ordinary navigation remains supported.
     }
-    _conn.switchRoom(room);
+    _bindingCurrent = isCurrent;
+    _roomStartedAt = startedAt;
     _peer = peer;
     _room = room;
     _roomEpoch = _conn.roomSelectionEpoch;
@@ -240,7 +352,9 @@ class AgentRepositoryImpl extends AgentRepository {
         AgentFailure(
           'Host disconnected or session changed. Return home and select it again.',
           outcomeUnknown:
-              p.type == 'agent_launch_result' || p.type == 'agent_stop_result',
+              p.type == 'agent_launch_result' ||
+              p.type == 'agent_stop_result' ||
+              p.securityMutation,
         ),
       );
     }
@@ -306,8 +420,9 @@ class AgentRepositoryImpl extends AgentRepository {
 
   Future<ServerMessage> _request(
     String type,
-    ClientMessage Function(String) create,
-  ) {
+    ClientMessage Function(String) create, {
+    String idPrefix = '',
+  }) {
     if (!_valid) {
       _invalidate();
       throw const AgentFailure(
@@ -315,7 +430,7 @@ class AgentRepositoryImpl extends AgentRepository {
       );
     }
     final key = (_peer!, _room!);
-    final id = uuid7();
+    final id = '$idPrefix${uuid7()}';
     final mutation =
         type == 'agent_launch_result' || type == 'agent_stop_result';
     if (mutation && _incarnation == null) {
@@ -340,6 +455,7 @@ class AgentRepositoryImpl extends AgentRepository {
         request is LauncherRequest &&
         const [
           'launcher_unlock',
+          'launcher_pin_initialize',
           'launcher_lock',
           'launcher_shutdown',
         ].contains(request.type);
@@ -368,7 +484,12 @@ class AgentRepositoryImpl extends AgentRepository {
         ),
       );
     });
-    _pending[id] = (completer: completer, timer: timer, type: type);
+    _pending[id] = (
+      completer: completer,
+      timer: timer,
+      type: type,
+      securityMutation: securityMutation,
+    );
     // Send synchronously against the captured channel, never after an async target lookup.
     unawaited(
       Future<void>.sync(() => _channel!.send(request)).catchError((
@@ -440,6 +561,11 @@ class AgentRepositoryImpl extends AgentRepository {
     bool acknowledgeUnknown = false,
   }) async {
     _requireUnlocked();
+    // Applies to every new Start, including generic/recovery-derived routes.
+    // API 2 grants still authorize list, recovery and existing-child controls.
+    if (_security?.supportsNewLaunch != true) {
+      throw const AgentFailure(newLaunchCompatibilityMessage);
+    }
     if (!_reconciled) {
       throw const AgentFailure(
         'Refresh security, projects and agents before starting.',
@@ -502,12 +628,65 @@ class AgentRepositoryImpl extends AgentRepository {
   }
 
   @override
+  Future<void> openAgent(
+    ManagedAgent agent, {
+    void Function(String peer, String room)? beforeHandoff,
+  }) async {
+    if (_disposed || !_valid || _security?.permitsControl != true) {
+      throw const AgentFailure('Host changed. Reopen the launcher.');
+    }
+    if (agent.state != 'running' || agent.roomId.trim().isEmpty) {
+      throw const AgentFailure('Agent is not confirmed running. Check status.');
+    }
+    final deadline = DateTime.now().add(timeout);
+    // Discovery can lag launch publication. Never substitute another room and
+    // never change the bound peer/channel while waiting.
+    refreshDiscovery();
+    while (!_conn.isRoomLive(_peer!, agent.roomId)) {
+      if (_disposed || !_valid || _security?.permitsControl != true) {
+        throw const AgentFailure('Host changed. Reopen the launcher.');
+      }
+      if (DateTime.now().isAfter(deadline)) {
+        throw const AgentFailure(
+          'Agent is running, but its room is not visible yet. Check status; do not start another.',
+        );
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    if (_disposed || !_valid || _security?.permitsControl != true) {
+      throw const AgentFailure('Host changed. Reopen the launcher.');
+    }
+    try {
+      await _preferences.setSelectedRoom(epk: _peer!, roomId: agent.roomId);
+    } on PlatformException {
+      throw const AgentFailure(
+        'Agent is running, but its chat selection could not be saved. Open it from Home; do not start another.',
+      );
+    }
+    if (_disposed ||
+        !_valid ||
+        _security?.permitsControl != true ||
+        !_conn.isRoomLive(_peer!, agent.roomId)) {
+      throw const AgentFailure('Host changed. Reopen the launcher.');
+    }
+    beforeHandoff?.call(_peer!, agent.roomId);
+    _expiry?.cancel();
+    // Intentional handoff consumes this management lease. Do not interpret our
+    // own room selection as an external target change during navigation.
+    unawaited(_messages?.cancel());
+    unawaited(_status?.cancel());
+    unawaited(_rooms?.cancel());
+    _conn.switchRoom(agent.roomId);
+  }
+
+  @override
   void refreshDiscovery() {
     if (_valid) _conn.refreshDiscovery();
   }
 
   @override
   void dispose() {
+    if (_disposed) return;
     _disposed = true;
     _expiry?.cancel();
     _messages?.cancel();

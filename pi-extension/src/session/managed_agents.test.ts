@@ -15,7 +15,7 @@ afterEach(async () => {
   dirs.splice(0).forEach(d => rmSync(d, { recursive: true, force: true }));
 });
 const allowed = async () => true;
-function harness(mode: "ready" | "timeout" | "enoent" | "crash" | "bad-room" | "rpc-only" | "ipc-only" | "output" = "ready", killOn = "SIGTERM", overrides: Partial<ManagedOptions> = {}) {
+function harness(mode: "ready" | "timeout" | "enoent" | "crash" | "bad-room" | "rpc-only" | "ipc-only" | "output" = "ready", killOn = "SIGTERM", overrides: Partial<ManagedOptions> = {}, model?: unknown, readyFirst = false) {
   const cwd = mkdtempSync(join(tmpdir(), "managed-agent-")); dirs.push(cwd);
   const children: ChildProcess[] = [];
   const spawnMock = vi.fn<ManagedSpawn>().mockImplementation((_command, args, options) => {
@@ -30,15 +30,16 @@ function harness(mode: "ready" | "timeout" | "enoent" | "crash" | "bad-room" | "
     child.stdin?.on("data", (data: Buffer) => {
       if (["timeout", "ipc-only"].includes(mode)) return;
       const rpc = JSON.parse(data.toString()) as { id: string };
-      child.stdout?.emit("data", Buffer.from(JSON.stringify({ type: "response", command: "get_state", id: rpc.id, success: true }) + "\n"));
+      child.stdout?.emit("data", Buffer.from(JSON.stringify({ type: "response", command: "get_state", id: rpc.id, success: true, data: { model } }) + "\n"));
     });
     queueMicrotask(() => {
       if (mode === "enoent") { child.emit("error", Object.assign(new Error("secret-path"), { code: "ENOENT" })); return; }
-      child.emit("spawn");
+      if (!readyFirst) child.emit("spawn");
       if (mode === "crash") { child.emit("exit", 1, null); return; }
       if (mode === "output") child.stdout?.emit("data", Buffer.alloc(70_000, "x"));
       if (!["timeout", "rpc-only"].includes(mode)) child.emit("message", { type: "remote_pi_managed_ready", ok: true, name: cfg.agent_name,
         room_id: mode === "bad-room" ? "wrong-room" : roomIdFor(cwd, cfg.agent_name) });
+      if (readyFirst) child.emit("spawn");
     });
     expect(args).not.toContain("--continue");
     expect(args).not.toContain("--resume");
@@ -58,6 +59,17 @@ function agent(result: ServerMessage) {
 }
 
 describe("ManagedAgents lifecycle", () => {
+  test("prepared sandbox spawn failure never misidentifies bubblewrap as missing Pi", async () => {
+    const h = harness("enoent", "SIGTERM", { prepareSpawn: async agent => ({ command: "/bin/bwrap", args: ["--approve"], options: { env: { REMOTE_PI_DIRECT_CONFIG: JSON.stringify({ agent_name: agent.name }) } }, close: async () => {} }) });
+    expect(await h.launch()).toMatchObject({ type: "error", message: "Secure sandbox process could not start; inspect local bubblewrap runtime and project permissions" });
+  });
+  test("unexpected preparation failure is truthful and never leaks exception details or claims missing Pi", async () => {
+    const h = harness("ready", "SIGTERM", { prepareSpawn: async () => { throw new Error("sensitive-unexpected-detail"); } });
+    const result = await h.launch();
+    expect(result).toMatchObject({ type: "error", code: "internal_error", message: "Pi startup failed unexpectedly; inspect the host launcher locally and refresh status before retrying" });
+    expect(JSON.stringify(result)).not.toMatch(/sensitive|PATH/);
+    expect(h.spawnMock).not.toHaveBeenCalled();
+  });
   test("prepared spawn rechecks lock authority synchronously and never starts a revoked child", async () => {
     let release!: () => void; let entered!: () => void; let granted = true;
     const waiting = new Promise<void>(r => { release = r; }); const preparing = new Promise<void>(r => { entered = r; });
@@ -383,4 +395,46 @@ test("session control owned stop uses exact captured child and rechecks late aut
   expect(await h.manager.stopOwnedChild("owner-a", next.agent_id, child, allowed)).toBe(false);
   expect(await h.manager.stopOwnedChild("owner-a", next.agent_id, h.children[1], allowed)).toBe(true);
   expect(h.children[1].kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+});
+
+const expectedModel = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", contextWindow: 500000, maxTokens: 128000 };
+test.each([true, false])("exact model gates publication in either readiness order (bridge first=%s)", async readyFirst => {
+  let finishPublication!: () => void;
+  const gate = new Promise<void>(r => { finishPublication = r; });
+  const dispose = vi.fn();
+  const publish = vi.fn(async () => { await gate; return dispose; });
+  const h = harness("ready", "SIGTERM", { publish, readinessMs: 1000,
+    prepareSpawn: async agent => ({ command: "pi", args: ["--approve"], options: { env: { REMOTE_PI_DIRECT_CONFIG: JSON.stringify({ agent_name: agent.name }) } }, expectedModel, close: async () => {} }),
+  }, expectedModel, readyFirst);
+  const result = h.launch(); await expect.poll(() => publish.mock.calls.length).toBe(1);
+  // Duplicate child-ready records must not create another room while publication awaits.
+  h.children[0].emit("message", { type: "remote_pi_managed_ready", ok: true, name: JSON.parse(h.spawnMock.mock.calls[0][2].env!.REMOTE_PI_DIRECT_CONFIG!).agent_name, room_id: roomIdFor(h.cwd, JSON.parse(h.spawnMock.mock.calls[0][2].env!.REMOTE_PI_DIRECT_CONFIG!).agent_name) });
+  finishPublication(); expect(await result).toMatchObject({ type: "agent_launch_result" });
+  expect(publish).toHaveBeenCalledTimes(1);
+});
+test.each([true, false].flatMap(order => [undefined, {}, { ...expectedModel, id: "gpt-5.5" }, { ...expectedModel, api: "openai-responses" }, { ...expectedModel, contextWindow: 272000 }].map(model => ({ order, model }))))("invalid/missing actual model never publishes ($order, $model)", async ({ order, model }) => {
+  const publish = vi.fn();
+  const h = harness("ready", "SIGTERM", { publish, prepareSpawn: async agent => ({ command: "pi", args: ["--approve"], options: { env: { REMOTE_PI_DIRECT_CONFIG: JSON.stringify({ agent_name: agent.name }) } }, expectedModel, close: async () => {} }) }, model, order);
+  expect(await h.launch()).toMatchObject({ type: "error", message: "Pi did not select the exact configured model; inspect the prepared runtime and configured defaults locally" });
+  expect(publish).not.toHaveBeenCalled(); expect(h.children[0].kill).toHaveBeenCalledWith("SIGTERM");
+});
+test("revocation during publication disposes the room and cleans up the exact child", async () => {
+  let granted = true; const dispose = vi.fn();
+  const h = harness("ready", "SIGTERM", { admitted: () => granted, publish: async () => { granted = false; return dispose; } });
+  expect(await h.launch()).toMatchObject({ type: "error" });
+  expect(dispose).toHaveBeenCalledTimes(1); expect(h.children[0].kill).toHaveBeenCalledWith("SIGTERM");
+});
+
+test("an authorization exception after publication cannot leak its disposer", async () => {
+  let throwAuth = false; const dispose = vi.fn();
+  const h = harness("ready", "SIGTERM", { publish: async () => { throwAuth = true; return dispose; } });
+  expect(await h.request({ type: "agent_launch", id: "auth-throws", cwd: h.cwd }, "owner-a", async () => { if (throwAuth) throw new Error("private-detail"); return true; })).toMatchObject({ type: "error" });
+  expect(dispose).toHaveBeenCalledTimes(1); expect(h.children[0].kill).toHaveBeenCalledWith("SIGTERM");
+});
+
+test("missing RPC state cannot publish a bridge-ready prepared child", async () => {
+  const publish = vi.fn(), close = vi.fn(async () => {});
+  const h = harness("ipc-only", "SIGTERM", { publish, prepareSpawn: async agent => ({ command: "pi", args: ["--approve"], options: { env: { REMOTE_PI_DIRECT_CONFIG: JSON.stringify({ agent_name: agent.name }) } }, expectedModel, close }) });
+  expect(await h.launch()).toMatchObject({ type: "error", code: "timeout" });
+  expect(publish).not.toHaveBeenCalled(); expect(close).toHaveBeenCalledTimes(1); expect(h.children[0].kill).toHaveBeenCalledWith("SIGTERM");
 });

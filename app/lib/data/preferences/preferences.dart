@@ -16,6 +16,8 @@ class Preferences extends ChangeNotifier {
   bool _collapseSubagents = true;
   bool _wrapTextByDefault = true;
   String? _selectedPeerEpk;
+  int _selectedRoomRevision = 0;
+  int get selectedRoomRevision => _selectedRoomRevision;
   String? _relayUrl;
   bool _onboardingCompleted = false;
   ThemeMode _themeMode = ThemeMode.system;
@@ -121,6 +123,7 @@ class Preferences extends ChangeNotifier {
     final selected = await _store.read(key: _kSelectedPeerEpkKey);
     final cleaned = (selected != null && selected.isNotEmpty) ? selected : null;
     if (cleaned != _selectedPeerEpk) {
+      _selectedRoomRevision++;
       _selectedPeerEpk = cleaned;
       changed = true;
     }
@@ -179,6 +182,7 @@ class Preferences extends ChangeNotifier {
   Future<void> setSelectedPeerEpk(String? value) async {
     final cleaned = (value != null && value.isNotEmpty) ? value : null;
     if (cleaned == _selectedPeerEpk) return;
+    _selectedRoomRevision++;
     _selectedPeerEpk = cleaned;
     if (cleaned == null) {
       await _store.delete(key: _kSelectedPeerEpkKey);

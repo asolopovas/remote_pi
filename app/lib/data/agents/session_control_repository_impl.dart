@@ -8,8 +8,9 @@ import 'package:app/protocol/protocol.dart';
 import 'package:app/protocol/uuid7.dart';
 
 class _StopLease {
-  _StopLease(this.peer, this.room, this.channel, this.epoch);
+  _StopLease(this.peer, this.room, this.channel, this.epoch, this.startedAt);
   final String peer, room;
+  final int? startedAt;
   final IChannel channel;
   final int epoch;
   final createdAt = DateTime.now();
@@ -35,12 +36,26 @@ class SessionControlRepositoryImpl extends SessionControlRepository {
       toStandardB64(_conn.activePeer!.remoteEpk) == toStandardB64(lease.peer) &&
       _conn.activeRoomId == lease.room &&
       _conn.roomSelectionEpoch == lease.epoch &&
-      _conn.isRoomLive(lease.peer, lease.room);
+      _conn.isRoomLive(lease.peer, lease.room) &&
+      _conn
+          .roomsFor(lease.peer)
+          .any((r) => r.roomId == lease.room && r.startedAt == lease.startedAt);
 
   _StopLease _capture(String peer, String room) {
     final channel = _conn.channel;
     if (channel == null) throw const SessionControlFailure('Agent offline.');
-    final lease = _StopLease(peer, room, channel, _conn.roomSelectionEpoch);
+    final incarnation = _conn
+        .roomsFor(peer)
+        .where((r) => r.roomId == room)
+        .firstOrNull
+        ?.startedAt;
+    final lease = _StopLease(
+      peer,
+      room,
+      channel,
+      _conn.roomSelectionEpoch,
+      incarnation,
+    );
     if (!_valid(lease)) {
       throw const SessionControlFailure('Agent changed or disconnected.');
     }
@@ -78,6 +93,8 @@ class SessionControlRepositoryImpl extends SessionControlRepository {
       canStop: status.canStop,
       token: status.token,
       reason: status.reason,
+      access: status.access,
+      launchingHost: status.launchingHost,
     );
   }
 

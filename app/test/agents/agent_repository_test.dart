@@ -1,4 +1,6 @@
+import 'package:app/data/preferences/preferences.dart';
 import 'dart:async';
+import 'package:flutter/services.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:app/data/agents/agent_repository_impl.dart';
@@ -15,6 +17,17 @@ const peer = PeerRecord(
   relayUrl: 'ws://unused',
   pairedAt: '2026-01-01',
 );
+
+class TestPreferences extends Preferences {
+  String? peer, room;
+  bool fail = false;
+  @override
+  Future<void> setSelectedRoom({String? epk, String? roomId}) async {
+    if (fail) throw PlatformException(code: 'storage-unavailable');
+    peer = epk;
+    room = roomId;
+  }
+}
 
 class Storage extends PairingStorage {
   @override
@@ -40,6 +53,7 @@ class Connection extends ConnectionManager {
     : super(factory: (_, _) async => current!, storage: Storage());
   IChannel? current;
   String room = 'launcher';
+  Set<String>? liveRooms;
   int epoch = 0;
   PeerRecord selected = peer;
   final statuses = StreamController<ConnectionStatus>.broadcast();
@@ -60,7 +74,8 @@ class Connection extends ConnectionManager {
   @override
   String get activeRoomId => room;
   @override
-  bool isRoomLive(String epk, String roomId) => current != null;
+  bool isRoomLive(String epk, String roomId) =>
+      current != null && (liveRooms == null || liveRooms!.contains(roomId));
   @override
   Future<void> switchTo(PeerRecord p) async {
     selected = p;
@@ -97,8 +112,10 @@ LauncherStatus security({
   String epoch = 'epoch-1',
   int? expiry,
   int cooldown = 0,
+  int? api = 3,
 }) => LauncherStatus(
   launcherId: 'launcher-1',
+  launcherApi: api,
   epoch: epoch,
   configured: configured,
   unlocked: unlocked,
@@ -147,6 +164,7 @@ void main() {
     late Connection conn;
     late AgentRepositoryImpl repo;
     late AgentMutationJournal journal;
+    late TestPreferences preferences;
     Future<void> replyStatus(LauncherStatus value) async {
       final request = channel.sent.last as LauncherRequest;
       channel.messages.add(
@@ -179,10 +197,12 @@ void main() {
       channel = Channel();
       conn = Connection(channel);
       journal = AgentMutationJournal();
+      preferences = TestPreferences();
       repo = AgentRepositoryImpl(
         conn,
         Storage(),
         journal,
+        preferences,
         timeout: const Duration(milliseconds: 40),
         mutationTimeout: const Duration(milliseconds: 60),
       );
@@ -196,6 +216,310 @@ void main() {
       await conn.rooms.close();
       conn.dispose();
     });
+    test('delayed exact room discovery never selects another room', () async {
+      await refresh();
+      conn.liveRooms = {'launcher', 'unrelated'};
+      final exact = ManagedAgent(
+        agentId: 'new',
+        name: 'New',
+        cwd: '/project',
+        roomId: 'exact-new-room',
+        state: 'running',
+      );
+      var completed = false;
+      final pending = repo.openAgent(exact).then((_) => completed = true);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(completed, false);
+      expect(conn.room, 'launcher');
+      expect(preferences.room, null);
+      conn.liveRooms!.add('exact-new-room');
+      await pending;
+      expect(conn.room, 'exact-new-room');
+      expect(preferences.peer, peer.remoteEpk);
+      expect(preferences.room, 'exact-new-room');
+    });
+
+    test(
+      'undiscovered launched room fails without switching or replay',
+      () async {
+        await refresh();
+        conn.liveRooms = {'launcher', 'unrelated'};
+        await expectLater(
+          repo.openAgent(
+            const ManagedAgent(
+              agentId: 'new',
+              name: 'New',
+              cwd: '/project',
+              roomId: 'exact-new-room',
+              state: 'running',
+            ),
+          ),
+          throwsA(
+            isA<AgentFailure>().having(
+              (e) => e.message,
+              'message',
+              contains('do not start another'),
+            ),
+          ),
+        );
+        expect(conn.room, 'launcher');
+        expect(preferences.room, null);
+        expect(
+          channel.sent.whereType<LauncherRequest>().where(
+            (r) => r.type == 'project_launch',
+          ),
+          isEmpty,
+        );
+      },
+    );
+
+    test(
+      'selection storage failure does not switch room or relaunch',
+      () async {
+        await refresh();
+        preferences.fail = true;
+        await expectLater(
+          repo.openAgent(
+            const ManagedAgent(
+              agentId: 'new',
+              name: 'New',
+              cwd: '/project',
+              roomId: 'new-room',
+              state: 'running',
+            ),
+          ),
+          throwsA(
+            isA<AgentFailure>().having(
+              (e) => e.message,
+              'message',
+              contains('do not start another'),
+            ),
+          ),
+        );
+        expect(conn.room, 'launcher');
+        expect(
+          channel.sent.whereType<LauncherRequest>().where(
+            (r) => r.type == 'project_launch',
+          ),
+          isEmpty,
+        );
+      },
+    );
+
+    test('target change while connecting cannot hand off', () async {
+      await refresh();
+      conn.liveRooms = {'launcher'};
+      final pending = repo.openAgent(
+        const ManagedAgent(
+          agentId: 'new',
+          name: 'New',
+          cwd: '/project',
+          roomId: 'new-room',
+          state: 'running',
+        ),
+      );
+      final failed = expectLater(pending, throwsA(isA<AgentFailure>()));
+      conn.switchRoom('other');
+      conn.liveRooms!.add('new-room');
+      await failed;
+      expect(conn.room, 'other');
+      expect(preferences.room, null);
+    });
+
+    const setup = LauncherStatus(
+      launcherId: 'launcher-1',
+      epoch: 'epoch-1',
+      configured: false,
+      unlocked: false,
+      expiresAt: null,
+      cooldownUntil: 0,
+      pinSetup: PinSetup.available,
+    );
+    Future<void> setupStatus(LauncherStatus value) async {
+      final pending = repo.status();
+      await replyStatus(value);
+      await pending;
+    }
+
+    test(
+      'setup is create-only, strict PIN boundaries and never auto-unlocks',
+      () async {
+        await setupStatus(security(unlocked: false));
+        await expectLater(
+          repo.initializePin('123456'),
+          throwsA(isA<AgentFailure>()),
+        );
+        await setupStatus(setup);
+        for (final pin in ['12345', '1234567890123', 'abcdef', '12345 ']) {
+          await expectLater(
+            repo.initializePin(pin),
+            throwsA(isA<AgentFailure>()),
+          );
+        }
+        for (final pin in ['123456', '123456789012']) {
+          final pending = repo.initializePin(pin);
+          final request = channel.sent.last as LauncherRequest;
+          expect(request.type, 'launcher_pin_initialize');
+          expect(request.pin, pin);
+          expect(request.status?.epoch, 'epoch-1');
+          expect(repo.launcherStatus, null);
+          await expectLater(
+            repo.initializePin(pin),
+            throwsA(isA<AgentFailure>()),
+          );
+          await replyStatus(security(epoch: 'setup-epoch', unlocked: false));
+          await pending;
+          expect(repo.launcherStatus?.permitsControl, false);
+          expect(repo.projects, isEmpty);
+          expect(repo.hasUnknownLaunch, false);
+          await expectLater(
+            repo.initializePin(pin),
+            throwsA(isA<AgentFailure>()),
+          );
+          await setupStatus(setup);
+        }
+        expect(
+          channel.sent.whereType<LauncherRequest>().where(
+            (r) => r.type == 'launcher_unlock',
+          ),
+          isEmpty,
+        );
+      },
+    );
+    test('only current correlated setup result grants control', () async {
+      await setupStatus(setup);
+      final pending = repo.initializePin('123456');
+      channel.messages.add(
+        LauncherStatusResult(
+          'launcher_status_result',
+          'wrong-id',
+          security(epoch: 'created'),
+          null,
+        ),
+      );
+      await tick();
+      expect(repo.launcherStatus, null);
+      await replyStatus(security(epoch: 'created'));
+      await pending;
+      expect(repo.launcherStatus?.permitsControl, true);
+      expect(repo.projects, isEmpty);
+      expect(
+        channel.sent.whereType<LauncherRequest>().where(
+          (r) => r.type == 'launcher_unlock',
+        ),
+        isEmpty,
+      );
+    });
+
+    test('foreign launcher setup result stays unknown and locked', () async {
+      await setupStatus(setup);
+      final pending = repo.initializePin('123456');
+      final failed = expectLater(
+        pending,
+        throwsA(
+          isA<AgentFailure>().having((e) => e.outcomeUnknown, 'unknown', true),
+        ),
+      );
+      await replyStatus(
+        LauncherStatus(
+          launcherId: 'different-launcher',
+          epoch: 'created',
+          configured: true,
+          unlocked: true,
+          expiresAt: DateTime.now().millisecondsSinceEpoch + 60000,
+          cooldownUntil: 0,
+        ),
+      );
+      await failed;
+      expect(repo.launcherStatus, null);
+    });
+
+    test(
+      'lost setup response is unknown and refresh never replays PIN',
+      () async {
+        await setupStatus(setup);
+        await expectLater(
+          repo.initializePin('123456'),
+          throwsA(
+            isA<AgentFailure>().having(
+              (e) => e.outcomeUnknown,
+              'unknown',
+              true,
+            ),
+          ),
+        );
+        expect(repo.launcherStatus, null);
+        expect(repo.hasUnknownLaunch, false);
+        await setupStatus(security(unlocked: false, epoch: 'configured'));
+        expect(repo.launcherStatus?.permitsControl, false);
+        expect(
+          channel.sent.whereType<LauncherRequest>().where(
+            (r) => r.type == 'launcher_pin_initialize',
+          ),
+          hasLength(1),
+        );
+        expect(
+          channel.sent.whereType<LauncherRequest>().where(
+            (r) => r.type == 'launcher_unlock',
+          ),
+          isEmpty,
+        );
+      },
+    );
+    test('setup disconnect outcome is unknown and revokes authority', () async {
+      await setupStatus(setup);
+      final pending = repo.initializePin('123456');
+      final assertion = expectLater(
+        pending,
+        throwsA(
+          isA<AgentFailure>().having((e) => e.outcomeUnknown, 'unknown', true),
+        ),
+      );
+      conn.current = null;
+      conn.statuses.add(const StatusNoPeer());
+      await assertion;
+      expect(repo.launcherStatus, null);
+      expect(repo.hasUnknownLaunch, false);
+    });
+    for (final api in <int?>[null, 1, 2]) {
+      test(
+        'API $api denies new Start without send but retains exact Stop',
+        () async {
+          await refresh(value: security(api: api));
+          final sent = channel.sent.length;
+          await expectLater(
+            repo.launch('project', null),
+            throwsA(
+              isA<AgentFailure>().having(
+                (e) => e.message,
+                'compatibility',
+                contains('launcher API 3'),
+              ),
+            ),
+          );
+          expect(channel.sent.length, sent);
+          expect(repo.hasUnknownLaunch, isFalse);
+          final stopping = repo.stop('agent');
+          await tick();
+          final request = channel.sent.last as LauncherRequest;
+          expect(request.type, 'launcher_agent_stop');
+          channel.messages.add(
+            AgentMutationResult(
+              'agent_stop_result',
+              request.id,
+              const ManagedAgent(
+                agentId: 'agent',
+                name: 'Agent',
+                cwd: '/project',
+                roomId: 'agent-room',
+                state: 'stopped',
+              ),
+            ),
+          );
+          expect((await stopping).state, 'stopped');
+        },
+      );
+    }
     test('locked setup gates project list and arbitrary cwd launch', () async {
       final pending = repo.list();
       final assertion = expectLater(pending, throwsA(isA<AgentFailure>()));
@@ -378,6 +702,7 @@ void main() {
             conn,
             Storage(),
             journal,
+            Preferences(),
             timeout: const Duration(milliseconds: 100),
             mutationTimeout: const Duration(milliseconds: 1),
           );
@@ -414,7 +739,7 @@ void main() {
         }
         // The first historical outcome was not silently evicted.
         repo.dispose();
-        repo = AgentRepositoryImpl(conn, Storage(), journal);
+        repo = AgentRepositoryImpl(conn, Storage(), journal, Preferences());
         await repo.bind(peer.remoteEpk, 'target-0');
         await refresh();
         expect(repo.hasUnknownLaunch, true);
@@ -488,6 +813,7 @@ void main() {
             conn,
             Storage(),
             journal,
+            Preferences(),
             mutationTimeout: const Duration(milliseconds: 1),
           );
           await repo.bind(peer.remoteEpk, 'settled-$i');
@@ -600,6 +926,7 @@ void main() {
         conn,
         Storage(),
         journal,
+        Preferences(),
         timeout: const Duration(milliseconds: 40),
       );
       await repo.bind(peer.remoteEpk, 'launcher');

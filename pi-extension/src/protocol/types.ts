@@ -207,16 +207,18 @@ export type AgentResult =
   | { type: "agent_stop_result"; in_reply_to: string; agent: ManagedAgent };
 
 export interface LauncherStatus {
+  launcher_api?: number;
   launcher_id: string;
   epoch: string;
   configured: boolean;
+  pin_setup?: "available" | "configured" | "unavailable";
   unlocked: boolean;
   expires_at: number | null;
   cooldown_until: number;
 }
 export type LauncherRequest =
   | { type: "project_list" | "launcher_status"; id: string }
-  | { type: "launcher_unlock"; id: string; launcher_id: string; epoch: string; pin: string }
+  | { type: "launcher_unlock" | "launcher_pin_initialize"; id: string; launcher_id: string; epoch: string; pin: string }
   | { type: "launcher_lock" | "launcher_shutdown"; id: string; launcher_id: string; epoch: string }
   | { type: "project_launch"; id: string; launcher_id: string; epoch: string; project_id: string; name?: string }
   | { type: "launcher_agent_stop"; id: string; launcher_id: string; epoch: string; agent_id: string };
@@ -229,7 +231,7 @@ export type SessionControlRequest =
   | { type: "session_control_status"; id: string; room_id: string }
   | { type: "session_stop"; id: string; room_id: string; token: string };
 export type SessionControlResult =
-  | { type: "session_control_status_result"; in_reply_to: string; room_id: string; can_stop: boolean; token?: string; reason?: string }
+  | { type: "session_control_status_result"; in_reply_to: string; room_id: string; can_stop: boolean; token?: string; reason?: string; access?: SessionControlAccess; launching_host?: { room_id: string; launcher_id: string } }
   | { type: "session_stop_result"; in_reply_to: string; room_id: string; state: "requested" | "stopped" };
 
 export type ClientMessage =
@@ -458,3 +460,6 @@ export interface WireModel {
 }
 
 export type ByeReason = "peer_stop" | "session_replaced" | "shutdown";
+
+/** Own-Owner, per-launcher grant snapshot, not machine-wide authority. */
+export interface SessionControlAccess { state: "unlocked" | "locked" | "expired" | "unavailable"; expires_at: number | null }

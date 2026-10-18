@@ -55,6 +55,75 @@ void main() {
     }
   });
   test(
+    'strict optional own access and authoritative launch origin; old hosts remain valid',
+    () {
+      final base = <String, dynamic>{
+        'type': 'session_control_status_result',
+        'in_reply_to': 'q',
+        'room_id': 'child',
+        'can_stop': false,
+      };
+      for (final state in ['unlocked', 'expired', 'locked', 'unavailable']) {
+        final result =
+            ServerMessage.fromJson({
+                  ...base,
+                  'access': {
+                    'state': state,
+                    'expires_at': state == 'unlocked' || state == 'expired'
+                        ? 1234
+                        : null,
+                  },
+                  'launching_host': {
+                    'room_id': 'actual-root',
+                    'launcher_id': 'actual-launcher',
+                  },
+                })
+                as SessionControlStatusResult;
+        expect(result.access!.state, state);
+        expect(result.launchingHost!.roomId, 'actual-root');
+      }
+      expect(
+        (ServerMessage.fromJson(base) as SessionControlStatusResult).access,
+        isNull,
+      );
+      for (final access in [
+        null,
+        {},
+        {'state': 'unknown', 'expires_at': null},
+        {'state': 'unlocked', 'expires_at': null},
+        {'state': 'expired', 'expires_at': -1},
+        {'state': 'locked', 'expires_at': 123},
+        {'state': 'locked', 'expires_at': null, 'owner': 'foreign'},
+        {'state': 'expired', 'expires_at': 1.5},
+      ]) {
+        expect(
+          () => ServerMessage.fromJson({...base, 'access': access}),
+          throwsFormatException,
+        );
+      }
+      for (final host in [
+        null,
+        {},
+        {'room_id': '', 'launcher_id': 'l'},
+        {'room_id': 'r', 'launcher_id': 'l', 'cwd': '/guess'},
+      ]) {
+        expect(
+          () => ServerMessage.fromJson({...base, 'launching_host': host}),
+          throwsFormatException,
+        );
+      }
+      expect(
+        () => ServerMessage.fromJson({
+          ...base,
+          'can_stop': true,
+          'token': 't',
+          'access': {'state': 'expired', 'expires_at': 1},
+        }),
+        throwsFormatException,
+      );
+    },
+  );
+  test(
     'malformed capabilities, unknown fields and invented completion fail closed',
     () {
       final base = {

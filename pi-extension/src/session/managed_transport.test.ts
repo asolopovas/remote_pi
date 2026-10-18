@@ -1,6 +1,10 @@
 import { test, expect, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { LaunchSecurity, setupLaunchPin } from "./launch_security.js";
 import { readFileSync } from "node:fs";
 import { generateEd25519Keypair } from "../pairing/crypto.js";
 
@@ -36,15 +40,16 @@ const { ManagedRoom } = await import("./managed_transport.js");
 const { MANAGED_SEND_LIMIT, RelayClient } = await import("../transport/relay_client.js");
 const rooms: InstanceType<typeof ManagedRoom>[] = [];
 afterEach(() => { for (const room of rooms) room.close(); rooms.length = 0; sockets.length = 0; });
-async function fixture() {
+async function fixture(security?: LaunchSecurity) {
   const child = Object.assign(new EventEmitter(), { connected: true, send: vi.fn(), kill: vi.fn(), exitCode: null, signalCode: null }) as unknown as ChildProcess;
   let epoch = "e", unlocked = true, paired = true, current = true, owned = true;
   const stopChild = vi.fn(async (authorized: () => Promise<boolean>) => { if (!await authorized() || !owned) return false; owned = false; child.emit("exit", 0, null); return true; });
-  const authorized = vi.fn(async (e: string) => paired && current && unlocked && e === epoch);
+  const authorized = vi.fn(async (e: string) => paired && current && (security ? await security.authorized("owner", e) : unlocked && e === epoch));
   const pairedCheck = vi.fn(async () => paired);
   const room = new ManagedRoom({ agent: { agent_id: "a", name: "assigned", cwd: "/assigned", room_id: "assigned-room", state: "running" }, child, owner: "owner", url: "ws://fixture", keypair: generateEd25519Keypair(),
-    currentEpoch: () => epoch, authorized, ownsChild: () => owned, stopChild,
-    paired: pairedCheck, current: () => current, hasGrant: e => unlocked && e === epoch });
+    currentEpoch: () => security?.epoch ?? epoch,
+    ...(security ? { access: (e: string) => security.access("owner", e), launchingHost: { room_id: "actual-root-room", launcher_id: security.launcherId } } : {}), authorized, ownsChild: () => owned, stopChild,
+    paired: pairedCheck, current: () => current, hasGrant: e => security ? security.hasGrant("owner", e) : unlocked && e === epoch });
   rooms.push(room); await room.connect(); const ws = sockets.at(-1)!;
   const emit = (message: object) => child.emit("message", { type: "managed_event", epoch, message });
   const meta = (value: object) => child.emit("message", { type: "managed_metadata", epoch, meta: value });
@@ -176,7 +181,7 @@ test("closing during pending managed completion neither retries nor kills an alr
 
 const controlSend = (f: Awaited<ReturnType<typeof fixture>>, message: object, peer = "owner") => f.ws.emit("message", Buffer.from(JSON.stringify({ peer, ct: Buffer.from(JSON.stringify(message)).toString("base64") })));
 const controlReplies = (f: Awaited<ReturnType<typeof fixture>>) => f.ws.sent.map(line => JSON.parse(line)).filter(m => m.ct).map(m => JSON.parse(Buffer.from(m.ct, "base64").toString()));
-const controlStatus = async (f: Awaited<ReturnType<typeof fixture>>) => { controlSend(f, { type: "session_control_status", id: "status", room_id: "assigned-room" }); await settle(); return controlReplies(f).at(-1); };
+const controlStatus = async (f: Awaited<ReturnType<typeof fixture>>) => { const count = controlReplies(f).length; controlSend(f, { type: "session_control_status", id: "status", room_id: "assigned-room" }); await expect.poll(() => controlReplies(f).length).toBeGreaterThan(count); return controlReplies(f).at(-1); };
 test("session control managed status while locked never returns a token", async () => {
   const f = await fixture(); f.lock();
   expect(await controlStatus(f)).toEqual({ type: "session_control_status_result", in_reply_to: "status", room_id: "assigned-room", can_stop: false, reason: "Unlock the launching host first." });
@@ -226,4 +231,71 @@ test("session control managed rejects malformed known fields with correlated err
   const f = await fixture(); controlSend(f, { type: "session_control_status", id: "bad", room_id: "assigned-room", pid: 123 }); await settle();
   expect(controlReplies(f).at(-1)).toMatchObject({ type: "error", in_reply_to: "bad" });
   expect(f.stopChild).not.toHaveBeenCalled();
+});
+
+
+test("correct root unlock → child capability → actual grant expiry → re-unlock; other launcher never grants child access", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "managed-access-"));
+  let now = Date.now();
+  try {
+    await setupLaunchPin("654321", dir);
+    const root = new LaunchSecurity("actual-root-launcher", dir, () => now);
+    const other = new LaunchSecurity("other-launcher", dir, () => now);
+    const f = await fixture(root);
+    await other.unlock("owner", "other-unlock", other.launcherId, other.epoch, "654321", async () => true);
+    let status = await controlStatus(f);
+    expect(status).toMatchObject({ can_stop: false, access: { state: "locked", expires_at: null }, launching_host: { room_id: "actual-root-room", launcher_id: root.launcherId } });
+    expect(status.token).toBeUndefined();
+    await root.unlock("owner", "correct", root.launcherId, root.epoch, "654321", async () => true);
+    status = await controlStatus(f);
+    expect(status.can_stop).toBe(true);
+    expect(status.access).toEqual({ state: "unlocked", expires_at: now + 300000 });
+    const oldToken = status.token;
+    now += 300001;
+    status = await controlStatus(f);
+    expect(status).toMatchObject({ can_stop: false, access: { state: "expired", expires_at: now - 1 } });
+    expect(status.token).toBeUndefined();
+    await root.unlock("owner", "correct-again", root.launcherId, root.epoch, "654321", async () => true);
+    status = await controlStatus(f);
+    expect(status.can_stop).toBe(true); expect(status.token).not.toBe(oldToken);
+    root.lock();
+    status = await controlStatus(f);
+    expect(status.access).toEqual({ state: "locked", expires_at: null }); expect(status.token).toBeUndefined();
+    controlSend(f, { type: "session_control_status", id: "foreign", room_id: "assigned-room" }, "not-owner");
+    await settle(); expect(controlReplies(f).at(-1).in_reply_to).not.toBe("foreign");
+    expect(f.stopChild).not.toHaveBeenCalled();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test.each(["lock", "replace", "unpair", "exit"])("access/origin suppressed after final pairing await races %s", async change => {
+  const dir = await mkdtemp(join(tmpdir(), "managed-access-race-"));
+  try {
+    const security = new LaunchSecurity("root", dir);
+    const f = await fixture(security);
+    let release!: (ok: boolean) => void;
+    f.pairedCheck.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    controlSend(f, { type: "session_control_status", id: "race", room_id: "assigned-room" });
+    await settle();
+    if (change === "lock") security.lock();
+    if (change === "replace") f.replace();
+    if (change === "unpair") f.unpair();
+    if (change === "exit") f.child.emit("exit", 0, null);
+    release(change !== "unpair"); await settle();
+    expect(controlReplies(f).filter(r => r.type === "session_control_status_result")).toHaveLength(0);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test.each(["hello", "auth"])("managed publication checks startup authority before %s without publishing after revocation", async phase => {
+  let granted = true;
+  const relay = new RelayClient("ws://fixture", generateEd25519Keypair());
+  let checks = 0;
+  await expect(relay.connect({ managed: true, current: () => granted, admitted: async () => {
+    checks++;
+    if (checks === (phase === "hello" ? 1 : 2)) granted = false;
+    return granted;
+  } })).rejects.toThrow();
+  const sent = sockets.at(-1)!.sent.map(line => JSON.parse(line));
+  expect(sent.some(m => m.type === "auth")).toBe(false);
+  expect(sent.some(m => m.type === "hello")).toBe(phase === "auth");
+  relay.terminateManaged();
 });

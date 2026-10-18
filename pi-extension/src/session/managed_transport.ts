@@ -1,6 +1,6 @@
 import { sendToManagedChild, managedChildConnected, decodeManagedMetadata, type ManagedMetadata } from "./managed_pipe.js";
 import type { ChildProcess } from "node:child_process";
-import type { ClientMessage, ManagedAgent, ServerMessage } from "../protocol/types.js";
+import type { ClientMessage, ManagedAgent, ServerMessage, SessionControlAccess } from "../protocol/types.js";
 import { RelayClient } from "../transport/relay_client.js";
 import type { Ed25519Keypair } from "../pairing/crypto.js";
 import { SessionControl } from "./session_control.js";
@@ -47,6 +47,9 @@ interface Options {
   paired(): Promise<boolean>;
   current(): boolean;
   hasGrant(epoch: string): boolean;
+  access?(epoch: string): SessionControlAccess;
+  launchingHost?: { room_id: string; launcher_id: string };
+  publication?: { current(): boolean; authorized(): Promise<boolean> };
 }
 /** Parent owns the WS signing identity and routes only one assigned room/Owner.
  * No private key, pair record, arbitrary destination or mesh operation reaches IPC. */
@@ -71,8 +74,9 @@ export class ManagedRoom {
     this.opts.child.on("message", this.publish);
     this.opts.child.once("exit", this.close);
     try {
-      await this.relay.connect({ managed: true, roomId: this.opts.agent.room_id, roomMeta: { name: this.opts.agent.name, cwd: this.opts.agent.cwd } });
-      if (this.closed || !managedChildConnected(this.opts.child)) throw new Error("Child closed during publication");
+      const current = () => !this.closed && this.opts.current() && this.opts.ownsChild() && this.opts.publication?.current() !== false;
+      await this.relay.connect({ managed: true, current, admitted: async () => (await this.opts.publication?.authorized() ?? true) && await this.opts.paired() && current(), roomId: this.opts.agent.room_id, roomMeta: { name: this.opts.agent.name, cwd: this.opts.agent.cwd } });
+      if (!current() || !managedChildConnected(this.opts.child)) throw new Error("Child closed or authority changed during publication");
       sendToManagedChild(this.opts.child, { type: "managed_init", owner: this.opts.owner, room_id: this.opts.agent.room_id, epoch: this.opts.currentEpoch() });
     } catch (error) { this.close(); throw error; }
   }
@@ -123,7 +127,17 @@ export class ManagedRoom {
           const current = () => !this.closed && this.opts.current() && epoch === this.opts.currentEpoch() &&
             (this.live() && this.opts.ownsChild() || this.stopping);
           const authorized = async () => await this.opts.authorized(epoch) && current() && this.opts.hasGrant(epoch);
-          const reply = (result: ServerMessage) => this.send(JSON.stringify({ peer: this.opts.owner, ct: Buffer.from(JSON.stringify(result)).toString("base64") }));
+          const reply = (result: ServerMessage) => {
+            // Same captured Owner/room/epoch and final authority checks as the capability.
+            if (!current()) return;
+            if (result.type === "session_control_status_result") {
+              const access = this.opts.access?.(epoch);
+              // A grant may expire synchronously before publication: never emit its token.
+              if (result.can_stop && !this.opts.hasGrant(epoch)) result = { type: result.type, in_reply_to: result.in_reply_to, room_id: result.room_id, can_stop: false, reason: "Access expired. Check launching host." };
+              result = { ...result, ...(access ? { access } : {}), ...(this.opts.launchingHost ? { launching_host: this.opts.launchingHost } : {}) };
+            }
+            this.send(JSON.stringify({ peer: this.opts.owner, ct: Buffer.from(JSON.stringify(result)).toString("base64") }));
+          };
           let grant = false;
           // This flag belongs to the captured capability, not the completed
           // status request whose target is retained for later confirmation.

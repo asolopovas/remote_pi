@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+import type { ExpectedModel } from "./launch_runtime.js";
 import { LaunchPreflightError } from "./launch_preflight.js";
 import { ManagedLineDecoder, parseManagedFrame, markPipeChild } from "./managed_pipe.js";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
@@ -50,7 +52,7 @@ export interface ManagedOptions {
   stopMs?: number;
   spawn?: ManagedSpawn;
   env?: NodeJS.ProcessEnv;
-  prepareSpawn?: (agent: ManagedAgent, owner: string, requestId: string) => Promise<{ command: string; args: string[]; options: SpawnOptions; pipe?: boolean; close(): Promise<void> }>;
+  prepareSpawn?: (agent: ManagedAgent, owner: string, requestId: string) => Promise<{ command: string; args: string[]; options: SpawnOptions; pipe?: boolean; expectedModel?: ExpectedModel; close(): Promise<void> }>;
   admitted?: (owner: string, requestId: string) => boolean;
   publish?: (agent: ManagedAgent, owner: string, child: ChildProcess) => Promise<() => void>;
 }
@@ -175,7 +177,7 @@ export class ManagedAgents {
     } catch (err) {
       if (!entry.stopRequested) {
         entry.agent.state = "failed";
-        entry.agent.error = err instanceof AgentFailure ? err.message : "Could not start Pi; verify that pi is on PATH and the extension is built";
+        entry.agent.error = err instanceof AgentFailure ? err.message : "Pi startup failed unexpectedly; inspect the host launcher locally and refresh status before retrying";
       }
       try { await this.cleanupChild(entry); } catch { entry.agent.error = (entry.agent.error ?? "Startup stopped") + "; cleanup failed — host shutdown will retry"; }
       throw err instanceof AgentFailure ? err : new AgentFailure("internal_error", entry.agent.error ?? "Startup stopped");
@@ -197,7 +199,6 @@ export class ManagedAgents {
           stdio: ["pipe", "pipe", "pipe", "ipc"], windowsHide: true });
       entry.child = child;
       if (prepared?.pipe) markPipeChild(child);
-      let ready = false;
       let rpcReady = false;
       let settled = false;
       let buf = "";
@@ -209,7 +210,22 @@ export class ManagedAgents {
         if (error) reject(error);
         else resolveReady();
       };
-      const checkReady = () => { if (ready && rpcReady) finish(); };
+      let bridgeReady = false;
+      let publishing = false;
+      const current = () => !settled && !!entry.child && !entry.stopRequested && !this.closing && this.opts.admitted?.(entry.owner, entry.requestId!) !== false;
+      const checkReady = () => {
+        if (!bridgeReady || !rpcReady || publishing || !current()) return;
+        publishing = true;
+        void (async () => {
+          if (!await authorized() || !current()) throw new AgentFailure("invalid_message", "Launch authority changed before publication");
+          const dispose = await this.opts.publish?.(entry.agent, entry.owner, child);
+          let adopted = false;
+          try {
+            if (!current() || !await authorized() || !current()) throw new AgentFailure("invalid_message", "Launch authority changed during publication");
+            entry.dispose = dispose; adopted = true; finish();
+          } finally { if (!adopted) dispose?.(); }
+        })().catch(error => finish(error instanceof AgentFailure ? error : new AgentFailure("internal_error", "Could not publish managed room")));
+      };
       entry.exited = new Promise<void>((resolveExit) => {
         child.once("exit", (code, signal) => {
           entry.child = undefined;
@@ -223,7 +239,9 @@ export class ManagedAgents {
         });
         child.once("error", (err: NodeJS.ErrnoException) => {
           if (!child.pid) { entry.child = undefined; resolveExit(); }
-          finish(new AgentFailure("internal_error", err.code === "ENOENT"
+          finish(new AgentFailure("internal_error", prepared
+            ? "Secure sandbox process could not start; inspect local bubblewrap runtime and project permissions"
+            : err.code === "ENOENT"
             ? "Pi executable not found; install Pi and make it available on the host PATH"
             : "Unable to start Pi; check executable and directory permissions"));
         });
@@ -241,8 +259,15 @@ export class ManagedAgents {
         while ((end = buf.indexOf("\n")) !== -1) {
           const line = buf.slice(0, end); buf = buf.slice(end + 1);
           try {
-            const data = JSON.parse(line) as { type?: string; command?: string; id?: string; success?: boolean };
+            const data = JSON.parse(line) as { type?: string; command?: string; id?: string; success?: boolean; data?: { model?: Record<string, unknown> } };
             if (data.type === "response" && data.command === "get_state" && data.id === entry.agent.agent_id && data.success === true) {
+              if (prepared?.expectedModel) {
+                const actual = data.data?.model, expected = prepared.expectedModel;
+                if (!actual || (["provider", "id", "api", "contextWindow", "maxTokens", "compat", "thinkingLevelMap", "reasoning", "input"] as const).some(key => !isDeepStrictEqual(actual[key], expected[key]))) {
+                  finish(new AgentFailure("invalid_message", "Pi did not select the exact configured model; inspect the prepared runtime and configured defaults locally"));
+                  continue;
+                }
+              }
               rpcReady = true; checkReady();
             }
           } catch { /* bounded non-RPC extension output */ }
@@ -259,21 +284,12 @@ export class ManagedAgents {
           } else consume(Buffer.from(line));
         }); } catch { finish(new AgentFailure("invalid_message", "Invalid managed pipe frame")); child.kill("SIGKILL"); }
       });
-      let publishing = false;
       child.on("message", (message: unknown) => {
         const m = message as { type?: unknown; name?: unknown; room_id?: unknown; ok?: unknown } | null;
         if (m?.type !== "remote_pi_managed_ready") return;
         if (m.ok !== true || m.name !== entry.agent.name || m.room_id !== entry.agent.room_id) {
           finish(new AgentFailure("internal_error", "Child could not publish its independent room; check relay, identity storage and name admission"));
-        } else if (!publishing) {
-          publishing = true;
-          if (this.opts.publish) {
-            void this.opts.publish(entry.agent, entry.owner, child).then(dispose => {
-              if (settled || !entry.child || entry.stopRequested || this.closing) { dispose(); return; }
-              entry.dispose = dispose; ready = true; checkReady();
-            }, () => finish(new AgentFailure("internal_error", "Could not publish managed room")));
-          } else { ready = true; checkReady(); }
-        }
+        } else { bridgeReady = true; checkReady(); }
       });
       child.once("spawn", () => {
         child.stdin?.write(JSON.stringify({ type: "get_state", id: entry.agent.agent_id }) + "\n");

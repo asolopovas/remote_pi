@@ -12,6 +12,7 @@ import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/domain/session_state.dart';
+import 'package:app/domain/contracts/agent_repository.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -467,6 +468,17 @@ void main() {
           room: 'main',
         ),
       );
+      s.ch.push(
+        ScopedActionError(
+          ErrorMessage(
+            inReplyTo: 'act_retired',
+            code: 'invalid_message',
+            message: 'Launcher locked/expired',
+          ),
+          peer: s.epk,
+          room: 'main',
+        ),
+      );
       await _settle();
       expect(s.sync.isWorking, isTrue);
       expect(s.sync.streaming?.buffer, 'partial');
@@ -479,6 +491,50 @@ void main() {
         ),
         isFalse,
       );
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'setup status and late setup errors never enter chat history or interrupt streaming',
+    () async {
+      final s = await setup();
+      s.ch.push(UserInput(id: 'u-setup', text: 'Continue'));
+      s.ch.push(AgentChunk(inReplyTo: 'u-setup', delta: 'partial'));
+      await _settle();
+      final before = messages(s.epk).length;
+      s.ch.push(
+        LauncherStatusResult(
+          'launcher_status_result',
+          'launcher-setup:retired',
+          const LauncherStatus(
+            launcherId: 'launcher',
+            epoch: 'epoch',
+            configured: true,
+            unlocked: false,
+            expiresAt: null,
+            cooldownUntil: 0,
+            pinSetup: PinSetup.configured,
+          ),
+          null,
+        ),
+      );
+      s.ch.push(
+        LauncherSetupError(
+          ErrorMessage(
+            inReplyTo: 'launcher-setup:retired',
+            code: 'invalid_message',
+            message: 'Already configured',
+          ),
+          peer: s.epk,
+          room: 'main',
+        ),
+      );
+      await _settle();
+      expect(s.sync.isWorking, true);
+      expect(s.sync.streaming?.buffer, 'partial');
+      expect(messages(s.epk).length, before);
       s.conn.dispose();
       s.sync.dispose();
     },

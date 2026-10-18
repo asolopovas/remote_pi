@@ -1,6 +1,6 @@
 import { test, expect, vi } from "vitest";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, symlink, chmod, cp, stat, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -11,8 +11,21 @@ import { generateEd25519Keypair, ed25519Verify } from "../pairing/crypto.js";
 import type { LauncherRequest, ServerMessage } from "../protocol/types.js";
 import { decodeLauncherRequest } from "../protocol/codec.js";
 
+// Keep the parent loopback proxy outside the child's disconnected network NS.
+vi.mock("node:child_process", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: ((command: string, args: string[], options: import("node:child_process").SpawnOptions) => actual.spawn(command, command === "/bin/bwrap" ? ["--unshare-net", ...args] : args, options)) };
+});
+
 test("real sandbox Pi + parent-only signing/rooms, gated dispatch, direct child control and Lock, owner shutdown", async () => {
   const root = await mkdtemp(join(tmpdir(), "secure-launch-integration-"));
+  // Freeze a built installed-package layout, with only the existing cached deps.
+  const release = join(root, "installed-release"); await mkdir(release);
+  await cp(resolve("dist"), join(release, "dist"), { recursive: true });
+  await mkdir(join(release, "build"));
+  await cp(resolve("build/managed-runtime"), join(release, "build/managed-runtime"), { recursive: true });
+  await cp(resolve("package.json"), join(release, "package.json"));
+  await symlink(resolve("node_modules"), join(release, "node_modules"));
   const project = join(root, "project"); await mkdir(project);
   const registry = new LaunchRegistry(join(root, "store"));
   const entry = await registry.add("fixture", project, [project]);
@@ -39,10 +52,14 @@ test("real sandbox Pi + parent-only signing/rooms, gated dispatch, direct child 
   });
   vi.stubEnv("REMOTE_PI_RELAY", `http://127.0.0.1:${address.port}`);
   const credentials = join(root, "credentials"); await mkdir(credentials);
-  await writeFile(join(credentials, "auth.json"), JSON.stringify({ openai: { type: "api_key", key: "fixture-not-a-real-key" } }), { mode: 0o600 });
+  await writeFile(join(credentials, "auth.json"), JSON.stringify({ "openai-codex": { type: "oauth", access: "synthetic", refresh: "synthetic", expires: Date.now() + 86400000 } }), { mode: 0o600 });
+  const settings = join(root, "synthetic-settings.json");
+  await writeFile(settings, JSON.stringify({ defaultProvider: "openai-codex", defaultModel: "gpt-6.1-sol", extensions: ["must-not-load"] }));
+  await chmod(settings, 0o664);
+  await symlink(settings, join(credentials, "settings.json"));
   vi.stubEnv("PI_CODING_AGENT_DIR", credentials);
   let paired = true;
-  const launcher = new SecureLauncher({ cwd: project, extensionPath: resolve("dist/index.js"), registry, keypair: async () => keypair, paired: async () => paired, current: () => true });
+  const launcher = new SecureLauncher({ cwd: project, rootRoom: () => "actual-published-root-not-derived-from-project", extensionPath: join(release, "dist/index.js"), registry, keypair: async () => keypair, paired: async () => paired, current: () => true });
   const handle = (request: LauncherRequest, owner = "owner-a") => launcher.handle(owner, decodeLauncherRequest(request), async () => paired);
   const security = (type: "launcher_unlock" | "launcher_lock" | "launcher_shutdown", id: string): LauncherRequest => ({ type, id, launcher_id: launcher.agents.launcherId, epoch: launcher.security.epoch, ...(type === "launcher_unlock" ? { pin: "654321" } : {}) } as LauncherRequest);
   try {
@@ -69,15 +86,28 @@ test("real sandbox Pi + parent-only signing/rooms, gated dispatch, direct child 
     await expect.poll(() => metadata.some(m => m.room_id === launched.agent.room_id && m.meta.working === false && typeof m.meta.model === "string" && typeof m.meta.thinking === "string")).toBe(true);
     const ws = rooms.get(launched.agent.room_id)!;
     const send = (inner: unknown, peer = "owner-a") => ws.send(JSON.stringify({ peer, ct: Buffer.from(JSON.stringify(inner)).toString("base64") }));
+    send({ type: "session_control_status", id: "origin-status", room_id: launched.agent.room_id });
+    await expect.poll(() => replies.find(r => r.type === "session_control_status_result" && r.in_reply_to === "origin-status")).toMatchObject({
+      can_stop: true,
+      access: { state: "unlocked", expires_at: expect.any(Number) },
+      launching_host: { room_id: "actual-published-root-not-derived-from-project", launcher_id: launcher.agents.launcherId },
+    });
     send({ type: "ping", id: "direct" });
     await expect.poll(() => replies.some(r => r.type === "pong" && r.in_reply_to === "direct")).toBe(true);
     send({ type: "list_models", id: "models" });
-    await expect.poll(() => replies.some(r => r.type === "models_list" && r.in_reply_to === "models" && r.models.some(m => m.provider === "openai"))).toBe(true);
+    await expect.poll(() => replies.some(r => r.type === "models_list" && r.in_reply_to === "models" && r.models.some(m => m.provider === "openai-codex"))).toBe(true);
     send({ type: "session_sync", id: "history", limit: 10 });
     await expect.poll(() => replies.some(r => r.type === "session_history" && r.in_reply_to === "history")).toBe(true);
     send({ type: "ping", id: "wrong-owner" }, "owner-b");
     await new Promise(r => setTimeout(r, 100)); expect(replies.some(r => r.type === "pong" && r.in_reply_to === "wrong-owner")).toBe(false);
     expect(await handle(security("launcher_lock", "lock"))).toMatchObject({ status: { unlocked: false } });
+    send({ type: "session_control_status", id: "locked-origin-status", room_id: launched.agent.room_id });
+    await expect.poll(() => replies.find(r => r.type === "session_control_status_result" && r.in_reply_to === "locked-origin-status")).toMatchObject({
+      can_stop: false, access: { state: "locked", expires_at: null },
+      launching_host: { room_id: "actual-published-root-not-derived-from-project", launcher_id: launcher.agents.launcherId },
+    });
+    const lockedControls = replies.find(r => r.type === "session_control_status_result" && r.in_reply_to === "locked-origin-status");
+    expect(lockedControls).not.toHaveProperty("token");
     send({ type: "ping", id: "locked-direct" });
     send({ type: "user_message", id: "locked-prompt", text: "must not execute" });
     await new Promise(r => setTimeout(r, 150));
@@ -93,6 +123,9 @@ test("real sandbox Pi + parent-only signing/rooms, gated dispatch, direct child 
     expect(foreignShutdown).toMatchObject({ type: "launcher_shutdown_result", stopped: true, status: { unlocked: false } });
     expect(rooms.has(launched.agent.room_id)).toBe(true);
     await handle(security("launcher_unlock", "unlock-final"));
+    const stopped = await handle({ type: "launcher_agent_stop", id: "stop-a", launcher_id: launcher.agents.launcherId, epoch: launcher.security.epoch, agent_id: launched.agent.agent_id });
+    expect(stopped).toMatchObject({ type: "agent_stop_result", agent: { state: "stopped", agent_id: launched.agent.agent_id } });
+    expect((await stat(settings)).mode & 0o777).toBe(0o664);
     const shutdown = await handle(security("launcher_shutdown", "shutdown-a"));
     expect(shutdown).toMatchObject({ type: "launcher_shutdown_result", stopped: true, status: { unlocked: false } });
     await expect.poll(() => rooms.size).toBe(0);
@@ -102,6 +135,9 @@ test("real sandbox Pi + parent-only signing/rooms, gated dispatch, direct child 
     await launcher.shutdown();
     for (const ws of server.clients) ws.terminate();
     await new Promise<void>(r => server.close(() => r()));
-    vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true });
+    vi.unstubAllEnvs();
+    const unseal = async (p: string): Promise<void> => { await chmod(p, 0o700); for (const e of await readdir(p, { withFileTypes: true })) if (e.isDirectory()) await unseal(join(p, e.name)); };
+    await unseal(root);
+    await rm(root, { recursive: true, force: true });
   }
 }, 35000);

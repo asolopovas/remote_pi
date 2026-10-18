@@ -1,3 +1,5 @@
+import 'package:app/data/agents/fresh_launcher_repository_impl.dart';
+import 'package:app/data/agents/launcher_recovery_repository_impl.dart';
 import 'package:app/data/agents/agent_repository_impl.dart';
 import 'package:app/data/agents/session_control_repository_impl.dart';
 import 'package:app/domain/contracts/session_control_repository.dart';
@@ -144,6 +146,16 @@ Future<void> setupDependencies() async {
         _injector.get<ConnectionManager>(),
         _injector.get<PairingStorage>(),
         _injector.get<AgentMutationJournal>(),
+        _injector.get<Preferences>(),
+      ),
+      fresh: FreshLauncherRepositoryImpl(
+        _injector.get<ConnectionManager>(),
+        _injector.get<PairingStorage>(),
+      ),
+      recovery: LauncherRecoveryRepositoryImpl(
+        _injector.get<ConnectionManager>(),
+        _injector.get<PairingStorage>(),
+        _injector.get<SessionControlRepository>(),
       ),
     ),
   );

@@ -116,6 +116,42 @@ void main() {
       expect(channel.sent.length, count);
     },
   );
+  test(
+    'same room new incarnation invalidates old Stop capability without sending',
+    () async {
+      final capability = await inspect();
+      channel.controls.add(
+        RoomAnnounced(peer: peer.remoteEpk, roomId: 'one', startedAt: 2),
+      );
+      await settle();
+      final count = channel.sent.length;
+      await expectLater(
+        repo.stop(capability),
+        throwsA(isA<SessionControlFailure>()),
+      );
+      expect(channel.sent.length, count);
+    },
+  );
+  test(
+    'same room new incarnation rejects a late access/status snapshot',
+    () async {
+      final pending = repo.inspect(peer.remoteEpk, 'one');
+      final assertion = expectLater(
+        pending,
+        throwsA(isA<SessionControlFailure>()),
+      );
+      await settle();
+      final id = (channel.sent.last as SessionControlStatus).id;
+      channel.controls.add(
+        RoomAnnounced(peer: peer.remoteEpk, roomId: 'one', startedAt: 2),
+      );
+      await settle();
+      channel.messages.add(
+        SessionControlStatusResult(id, 'one', true, 'stale', null),
+      );
+      await assertion;
+    },
+  );
   test('stopped response is distinct from requested', () async {
     final capability = await inspect();
     final pending = repo.stop(capability);

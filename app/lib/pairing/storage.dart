@@ -198,6 +198,10 @@ class PeerRecord {
 class PairingStorage extends ChangeNotifier {
   final FlutterSecureStorage _store;
 
+  /// Local pairing authority revision; room-cache writes do not change it.
+  int _peerRevision = 0;
+  int get peerRevision => _peerRevision;
+
   /// Plan 24 — optional fire-and-forget hook that runs after every
   /// peer mutation (`savePeer` / `deletePeer`). The `MeshSyncService`
   /// registers this so changes propagate to the relay's
@@ -255,11 +259,13 @@ class PairingStorage extends ChangeNotifier {
       key: _peerKey(record.remoteEpk),
       value: jsonEncode(record.toJson()),
     );
+    _peerRevision++;
     notifyListeners();
   }
 
   Future<void> _erasePeer(String remoteEpk) async {
     await _store.delete(key: _peerKey(remoteEpk));
+    _peerRevision++;
     notifyListeners();
   }
 
@@ -288,6 +294,7 @@ class PairingStorage extends ChangeNotifier {
         await _store.delete(key: key);
       }
     }
+    _peerRevision++;
     notifyListeners();
   }
 

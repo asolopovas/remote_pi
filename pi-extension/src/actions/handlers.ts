@@ -105,7 +105,7 @@ export interface ActionCtx {
  * but lets tests fake catalogs without instantiating the real one.
  */
 export interface ActionModelRegistry {
-  refresh(): void;
+  refresh(): void | PromiseLike<void | { aborted: boolean; errors: ReadonlyMap<string, Error> }>;
   getAvailable(): Model<any>[];
   find(provider: string, modelId: string): Model<any> | undefined;
 }
@@ -237,65 +237,79 @@ export function handleThinkingSet(
   });
 }
 
+// SDK errors can include provider configuration or credentials. Only our fixed
+// messages cross the phone boundary; never log or forward caught SDK errors.
+class ModelActionError extends Error {}
+const modelFailure = "Could not refresh or select models; retry on the current session";
+function assertModelCurrent(isCurrent: () => boolean): void {
+  if (!isCurrent()) throw new ModelActionError("Session changed; retry on the current session");
+}
+async function refreshModels(reg: ActionModelRegistry, provider?: string): Promise<void> {
+  const result = await reg.refresh(); // SDK0.79 void and SDK1.3 Promise
+  if (result && (result.aborted || (provider ? result.errors.has(provider) : result.errors.size > 0))) {
+    throw new ModelActionError(modelFailure);
+  }
+}
+function liveModelRegistry(ctx: ActionCtx | null): ActionModelRegistry {
+  // Exactly one guarded read. No cached/stub registry may authorize a mutation.
+  const reg = ctx?.modelRegistry;
+  if (!reg) throw new ModelActionError("Models unavailable (no active session ctx)");
+  return reg;
+}
+function safeModelError(error: unknown): string {
+  return error instanceof ModelActionError ? error.message : modelFailure;
+}
+
 export async function handleModelSet(
   pi: ActionPi,
   ctx: ActionCtx | null,
-  reg: ActionModelRegistry,
   sender: ActionReplySender,
   msg: ModelSetMsg,
   onPersist?: (provider: string, modelId: string) => void,
+  isCurrent: () => boolean = () => true,
 ): Promise<void> {
-  await runAsync(sender, msg, "model_set", async () => {
-    // Prefer Pi's LIVE session registry when available so the app sees models
-    // registered dynamically by extensions via `pi.registerProvider(...)`.
-    // Fall back to remote-pi's own disk-backed registry when no ctx exists.
-    const liveReg = ctx?.modelRegistry ?? reg;
-    // Refresh first so a model just-added via `/login` is visible.
-    liveReg.refresh();
-    const model = liveReg.find(msg.provider, msg.model_id);
-    if (!model) {
-      throw new Error(`model "${msg.provider}/${msg.model_id}" not in registry`);
-    }
+  try {
+    assertModelCurrent(isCurrent);
+    const reg = liveModelRegistry(ctx);
+    await refreshModels(reg, msg.provider);
+    assertModelCurrent(isCurrent);
+    const model = reg.find(msg.provider, msg.model_id);
+    if (!model) throw new ModelActionError("Requested model not in registry");
+    assertModelCurrent(isCurrent);
     const success = await pi.setModel(model);
-    if (!success) throw new Error("no auth configured for this model");
-    // `pi.setModel` only sets the LIVE model — it does NOT persist. Without
-    // this, a model picked from the app reverts to the saved default on the
-    // next Pi/daemon restart (the TUI persists because AgentSession.setModel
-    // writes the default; this path doesn't). `onPersist` writes the new
-    // default so the app's choice survives. Best-effort — the caller's writer
-    // must not throw, so a failed settings write never fails the model change.
+    // An already admitted mutation is neither rolled back nor replayed. It
+    // must not persist a default or claim success for a replacement session.
+    assertModelCurrent(isCurrent);
+    if (!success) throw new ModelActionError("no auth configured for this model");
     onPersist?.(model.provider, model.id);
-  });
+    ok(sender, msg, "model_set");
+  } catch (error) {
+    fail(sender, msg, "model_set", safeModelError(error));
+  }
 }
 
-export function handleListModels(
+export async function handleListModels(
   ctx: ActionCtx | null,
-  reg: ActionModelRegistry,
   sender: ActionReplySender,
   msg: ListModelsMsg,
-): void {
-  // refresh() can throw if `models.json` is malformed — wrap in try so the
-  // app gets an explicit error reply instead of a silent drop.
+  isCurrent: () => boolean = () => true,
+): Promise<void> {
   try {
-    // Prefer Pi's LIVE session registry when available so the app sees models
-    // registered dynamically by extensions via `pi.registerProvider(...)`.
-    // Fall back to remote-pi's own disk-backed registry when no ctx exists.
-    const liveReg = ctx?.modelRegistry ?? reg;
-    liveReg.refresh();
-    const models = liveReg.getAvailable().map(wireFromModel);
+    assertModelCurrent(isCurrent);
+    const reg = liveModelRegistry(ctx);
+    await refreshModels(reg);
+    assertModelCurrent(isCurrent);
+    const models = reg.getAvailable().map(wireFromModel);
     const current = ctx?.getModel?.();
+    assertModelCurrent(isCurrent);
     sender.send({
-      type: "models_list",
-      in_reply_to: msg.id,
-      models,
+      type: "models_list", in_reply_to: msg.id, models,
       current: current ? wireFromModel(current) : undefined,
     });
-  } catch (e) {
+  } catch (error) {
     sender.send({
-      type: "error",
-      in_reply_to: msg.id,
-      code: "internal_error",
-      message: e instanceof Error ? e.message : String(e),
+      type: "error", in_reply_to: msg.id, code: "internal_error",
+      message: safeModelError(error),
     });
   }
 }

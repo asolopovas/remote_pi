@@ -374,6 +374,10 @@ GoRouter buildRouter(
               initialTitle: initialTitle,
               initialDevice: initialDevice,
               initialOnline: initialOnline,
+              controlsRequest:
+                  extra is Map && extra['controls'] is SessionControlsRequest
+                  ? extra['controls'] as SessionControlsRequest
+                  : null,
             ),
           );
         },

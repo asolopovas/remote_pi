@@ -4813,6 +4813,8 @@ describe("managed-child automatic Relay presence", () => {
     cwd = mkdtempSync(join(tmpdir(), "pi-presence-"));
     process.argv = ["node", "pi"];
     vi.stubEnv("PI_SUBAGENT_CHILD", undefined);
+    vi.stubEnv("DSA_EXEC", undefined);
+    vi.stubEnv("DSA_CALL", undefined);
     vi.stubEnv("REMOTE_PI_DAEMON", undefined);
     vi.stubEnv("REMOTE_PI_DIRECT_CONFIG", JSON.stringify({
       agent_name: "continue",
@@ -4839,8 +4841,8 @@ describe("managed-child automatic Relay presence", () => {
     await captureHandler("remote-pi")("", makeMockCtx(cwd));
   }
 
-  test("auto=true managed child retains local mesh/lock but opens no Relay; explicit relay start works", async () => {
-    vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+  test.each(["legacy", "durable"])("%s child retains mesh/lock but opens no Relay; explicit relay start works", async marker => {
+    vi.stubEnv(marker === "legacy" ? "PI_SUBAGENT_CHILD" : "DSA_EXEC", marker === "legacy" ? "1" : "tasks:0@1#1.1");
     await startSession();
 
     expect(_getLockedNameForTest()).toBe("continue");
@@ -4852,6 +4854,20 @@ describe("managed-child automatic Relay presence", () => {
     expect(relayInstances).toHaveLength(1);
     expect(_getState()).toBe("started");
     expect(_hasMeshNodeForTest()).toBe(true);
+  });
+
+  test("DSA_CALL alone does not classify a root; metadata is not execution authority", async () => {
+    vi.stubEnv("DSA_CALL", "call:1");
+    await startSession();
+    expect(relayInstances).toHaveLength(1);
+  });
+
+  test("intentional phone-managed child is not suppressed by inherited worker markers", async () => {
+    vi.stubEnv("REMOTE_PI_MANAGED_CHILD", "1");
+    vi.stubEnv("DSA_EXEC", "tasks:0@1#1.1");
+    vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+    await startSession();
+    expect(relayInstances).toHaveLength(1);
   });
 
   test("genuine same-cwd root still exposes Relay even when its lock name has a suffix", async () => {
@@ -4910,8 +4926,8 @@ describe("managed-child automatic Relay presence", () => {
     expect(relayInstances).toHaveLength(0);
   });
 
-  test("reused disposed managed child re-arms its local mesh without automatic Relay", async () => {
-    vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+  test.each(["legacy", "durable"])("reused disposed %s child re-arms mesh without automatic Relay", async marker => {
+    vi.stubEnv(marker === "legacy" ? "PI_SUBAGENT_CHILD" : "DSA_EXEC", marker === "legacy" ? "1" : "tasks:0@1#1.1");
     await startSession();
     await captureEventHandler("session_shutdown")({ type: "session_shutdown", reason: "resume" });
     expect(_hasMeshNodeForTest()).toBe(false);
@@ -4921,8 +4937,8 @@ describe("managed-child automatic Relay presence", () => {
     expect(_getState()).toBe("idle");
   });
 
-  test.each([false, true])("pending managed-child lock retains replacement authority (stop=%s)", async (stopReplacement) => {
-    vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+  test.each([false, true])("pending Durable-child lock retains replacement authority (stop=%s)", async (stopReplacement) => {
+    vi.stubEnv("DSA_EXEC", "tasks:0@1#1.1");
     const lockGate = deferred<Awaited<ReturnType<typeof acquireCwdLock>>>();
     const staleRelease = vi.fn();
     const lockModule = await import("./session/cwd_lock.js");
@@ -6415,22 +6431,51 @@ describe("phone agent request routing", () => {
       status: { launcher_id: "host", epoch: "epoch", configured: true, unlocked: false, expires_at: null, cooldown_until: 0 },
     }));
     try {
-      for (const type of ["launcher_status", "project_list", "launcher_unlock", "launcher_lock", "launcher_shutdown", "project_launch", "launcher_agent_stop"]) {
+      for (const type of ["launcher_status", "project_list", "launcher_unlock", "launcher_pin_initialize", "launcher_lock", "launcher_shutdown", "project_launch", "launcher_agent_stop"]) {
         const request = { type, id: type, ...(!["launcher_status", "project_list"].includes(type) ? { launcher_id: "host", epoch: "epoch" } : {}),
-          ...(type === "launcher_unlock" ? { pin: "654321" } : {}), ...(type === "project_launch" ? { project_id: "registered-project" } : {}), ...(type === "launcher_agent_stop" ? { agent_id: "owned-agent" } : {}) };
+          ...(["launcher_unlock", "launcher_pin_initialize"].includes(type) ? { pin: "654321" } : {}), ...(type === "project_launch" ? { project_id: "registered-project" } : {}), ...(type === "launcher_agent_stop" ? { agent_id: "owned-agent" } : {}) };
         send(request);
         await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ inner: expect.objectContaining({ in_reply_to: type }) })));
       }
-      await vi.waitFor(() => expect(handle).toHaveBeenCalledTimes(7));
+      await vi.waitFor(() => expect(handle).toHaveBeenCalledTimes(8));
       expect(handle.mock.calls.every(call => call[0] === OWNER_STANDARD_FIXTURE)).toBe(true);
       send({ type: "project_launch", id: "remote-path", launcher_id: "host", epoch: "epoch", project_id: "registered-project", cwd: "/arbitrary" });
       await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ inner: expect.objectContaining({ type: "error", in_reply_to: "remote-path" }) })));
-      expect(handle).toHaveBeenCalledTimes(7);
+      expect(handle).toHaveBeenCalledTimes(8);
       _knownPeers.length = 0;
-      send({ type: "launcher_unlock", id: "revoked-unlock", launcher_id: "host", epoch: "epoch", pin: "654321" });
+      send({ type: "launcher_pin_initialize", id: "revoked-unlock", launcher_id: "host", epoch: "epoch", pin: "654321" });
       await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ inner: expect.objectContaining({ type: "error", in_reply_to: "revoked-unlock" }) })));
-      expect(handle).toHaveBeenCalledTimes(7);
+      expect(handle).toHaveBeenCalledTimes(8);
     } finally { handle.mockRestore(); }
+  });
+  test("managed child ingress cannot initialize PIN or reach launcher handler", async () => {
+    const { SecureLauncher } = await import("./session/secure_launcher.js");
+    const handle = vi.spyOn(SecureLauncher.prototype, "handle");
+    try {
+      vi.stubEnv("REMOTE_PI_MANAGED_CHILD", "1");
+      send({ type: "launcher_pin_initialize", id: "child-init", launcher_id: "host", epoch: "e", pin: "654321" });
+      await vi.waitFor(() => expect(replies()).toContainEqual(expect.objectContaining({ inner: expect.objectContaining({ type: "error", in_reply_to: "child-init" }) })));
+      expect(handle).not.toHaveBeenCalled();
+    } finally { handle.mockRestore(); }
+  });
+
+  test.each(["disconnect", "lifecycle replacement"])("PIN initialization channel authority is revoked by %s", async change => {
+    const { SecureLauncher } = await import("./session/secure_launcher.js");
+    const entered = deferred<void>(); const release = deferred<void>();
+    let finalCurrent: (() => boolean) | undefined;
+    let authority: (() => Promise<boolean>) | undefined;
+    const handle = vi.spyOn(SecureLauncher.prototype, "handle").mockImplementation(async (_owner, request, paired, current) => {
+      authority = paired; finalCurrent = current; entered.resolve(); await release.promise;
+      return { type: "error", in_reply_to: request.id, code: "invalid_message", message: "revoked" };
+    });
+    try {
+      send({ type: "launcher_pin_initialize", id: "init-race", launcher_id: "host", epoch: "e", pin: "654321" });
+      await entered.promise;
+      expect(finalCurrent?.()).toBe(true); expect(await authority?.()).toBe(true);
+      if (change === "disconnect") await captureHandler("remote-pi relay")("stop", makeMockCtx());
+      else await captureEventHandler("session_shutdown")({ type: "session_shutdown", reason: "resume" });
+      expect(finalCurrent?.()).toBe(false); expect(await authority?.()).toBe(false);
+    } finally { release.resolve(); handle.mockRestore(); }
   });
   test.each(["project_list", "agent_list"].flatMap(type => ["Lock", "channel replacement", "lifecycle replacement"].map(change => [type, change])))("%s final peer lookup cannot publish after %s", async (type, change) => {
     const { SecureLauncher } = await import("./session/secure_launcher.js");
@@ -6692,5 +6737,84 @@ describe("session control root routing", () => {
     vi.stubEnv("REMOTE_PI_MANAGED_CHILD", "1");
     expect(await status()).toMatchObject({ can_stop: false, reason: "Use the launching host session." });
     expect(frames().some(m => m.token)).toBe(false); expect(ctx.shutdown).not.toHaveBeenCalled();
+  });
+});
+
+describe("production model dispatcher async incarnation fences (plan105)", () => {
+  const model = { provider: "fixture", id: "exact", name: "Exact", reasoning: false, contextWindow: 123 };
+  let nativeId: string;
+  let start: EventHandler;
+  let root: string;
+  let ctx: ReturnType<typeof makeMockCtx> & { sessionManager: { getSessionId(): string }; modelRegistry: import("./actions/handlers.js").ActionModelRegistry };
+  let sender: { send: ReturnType<typeof vi.fn> };
+  let setModel: ReturnType<typeof vi.fn>;
+  const settle = () => new Promise<void>(resolve => setImmediate(resolve));
+  const dispatch = (type: "model_set" | "list_models" = "model_set") => _routeClientMessageFrom(sender as never,
+    type === "model_set" ? { type, id: "model-request", provider: model.provider, model_id: model.id } : { type, id: "model-request" }, ctx);
+  beforeEach(async () => {
+    await captureHandler("remote-pi stop")("", makeMockCtx());
+    _setDisposedForTest(false); _setAutoInitedForTest(true);
+    root = mkdtempSync(join(tmpdir(), "model-dispatch-"));
+    vi.spyOn(process, "cwd").mockReturnValue(root);
+    nativeId = "native-a";
+    ctx = { ...makeMockCtx(root), sessionManager: { getSessionId: () => nativeId }, modelRegistry: {
+      refresh() {}, find: () => model, getAvailable: () => [model],
+    } };
+    start = captureEventHandler("session_start"); start({ type: "session_start" }, ctx);
+    sender = { send: vi.fn() }; setModel = vi.fn(async () => true);
+    _setPiForTest({ setModel });
+  });
+  afterEach(async () => {
+    await captureHandler("remote-pi stop")("", makeMockCtx());
+    vi.restoreAllMocks(); _setDisposedForTest(false); _setAutoInitedForTest(false);
+    rmSync(root, { recursive: true, force: true });
+  });
+  test.each(["session", "reload", "aba", "native", "stop"])("%s during refresh denies mutation, persistence and success", async change => {
+    const refresh = deferred<void>(); ctx.modelRegistry.refresh = () => refresh.promise;
+    dispatch(); await settle(); expect(setModel).not.toHaveBeenCalled();
+    if (change === "session" || change === "reload") start({ type: "session_start" }, { ...ctx });
+    if (change === "native") nativeId = "native-b";
+    if (change === "aba") {
+      nativeId = "native-b"; start({ type: "session_start" }, { ...ctx });
+      nativeId = "native-a"; start({ type: "session_start" }, { ...ctx });
+    }
+    if (change === "stop") await captureHandler("remote-pi stop")("", ctx);
+    refresh.resolve(); await settle();
+    expect(setModel).not.toHaveBeenCalled(); expect(sender.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "action_error", in_reply_to: "model-request" }));
+    expect(readdirSync(root)).toEqual([]);
+  });
+  test("session change during setModel cannot persist or falsely acknowledge already-admitted mutation", async () => {
+    const gate = deferred<boolean>(); setModel.mockImplementation(() => gate.promise);
+    dispatch(); await settle(); expect(setModel).toHaveBeenCalledOnce();
+    start({ type: "session_start" }, { ...ctx }); gate.resolve(true); await settle();
+    expect(setModel).toHaveBeenCalledOnce(); expect(readdirSync(root)).toEqual([]);
+    expect(sender.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "action_error" }));
+  });
+  test("ordinary model/metadata updates do not self-invalidate positive selection", async () => {
+    const gate = deferred<boolean>(); setModel.mockImplementation(() => gate.promise);
+    // Capture before dispatch; factory registration changes _pi, not session authority.
+    const select = captureEventHandler("model_select"); _setPiForTest({ setModel });
+    dispatch(); await settle();
+    select({ type: "model_select", model }, { ...ctx });
+    gate.resolve(true); await settle();
+    expect(setModel).toHaveBeenCalledOnce();
+    expect(sender.send).toHaveBeenCalledExactlyOnceWith({ type: "action_ok", in_reply_to: "model-request", action: "model_set" });
+    expect(JSON.parse(readFileSync(join(root, ".pi", "settings.json"), "utf8"))).toMatchObject({ defaultProvider: "fixture", defaultModel: "exact" });
+  });
+  test.each(["stale-getter", "no-context"])("%s produces a correlated safe failure without crashing or mutation", async mode => {
+    if (mode === "stale-getter") Object.defineProperty(ctx, "modelRegistry", { get() { throw new Error("synthetic-secret"); } });
+    else {
+      await captureEventHandler("session_shutdown")({ type: "session_shutdown" }, ctx);
+      _setDisposedForTest(false); _setPiForTest({ setModel });
+    }
+    dispatch(); await settle(); expect(setModel).not.toHaveBeenCalled();
+    expect(sender.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "action_error", in_reply_to: "model-request" }));
+    expect(JSON.stringify(sender.send.mock.calls)).not.toContain("synthetic-secret"); expect(readdirSync(root)).toEqual([]);
+  });
+  test("stale list after refresh has no catalogue success", async () => {
+    const gate = deferred<void>(); ctx.modelRegistry.refresh = () => gate.promise;
+    dispatch("list_models"); nativeId = "native-b"; gate.resolve(); await settle();
+    expect(sender.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "error", in_reply_to: "model-request" }));
+    expect(setModel).not.toHaveBeenCalled();
   });
 });

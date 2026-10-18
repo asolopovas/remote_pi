@@ -1,3 +1,4 @@
+import 'package:app/domain/contracts/session_control_repository.dart';
 import 'package:app/domain/contracts/agent_repository.dart';
 import 'dart:convert';
 
@@ -1869,8 +1870,12 @@ class SessionControlStatusResult extends ServerMessage {
     this.roomId,
     this.canStop,
     this.token,
-    this.reason,
-  );
+    this.reason, {
+    this.access,
+    this.launchingHost,
+  });
+  final SessionAccess? access;
+  final LaunchingHost? launchingHost;
   final String inReplyTo, roomId;
   final bool canStop;
   final String? token, reason;
@@ -1883,6 +1888,8 @@ class SessionControlStatusResult extends ServerMessage {
         'can_stop',
         'token',
         'reason',
+        'access',
+        'launching_host',
       }.contains(key),
     )) {
       throw const FormatException('Unknown session control field');
@@ -1893,6 +1900,44 @@ class SessionControlStatusResult extends ServerMessage {
         !canStop && json.containsKey('token')) {
       throw const FormatException('Invalid session stop capability');
     }
+    SessionAccess? access;
+    LaunchingHost? host;
+    if (json.containsKey('access')) {
+      final a = json['access'];
+      if (a is! Map<String, dynamic> ||
+          a.length != 2 ||
+          !a.containsKey('expires_at') ||
+          !const [
+            'unlocked',
+            'locked',
+            'expired',
+            'unavailable',
+          ].contains(a['state'])) {
+        throw const FormatException('Invalid access snapshot');
+      }
+      final expires = a['expires_at'];
+      final timed = a['state'] == 'unlocked' || a['state'] == 'expired';
+      if ((timed
+              ? expires is! int || expires < 0 || expires > 9007199254740991
+              : expires != null) ||
+          canStop && a['state'] != 'unlocked') {
+        throw const FormatException('Invalid access expiry');
+      }
+      access = SessionAccess(a['state'] as String, expires as int?);
+    }
+    if (json.containsKey('launching_host')) {
+      final h = json['launching_host'];
+      if (h is! Map<String, dynamic> ||
+          h.length != 2 ||
+          !h.containsKey('room_id') ||
+          !h.containsKey('launcher_id')) {
+        throw const FormatException('Invalid launching host');
+      }
+      host = LaunchingHost(
+        _sessionControlText(h['room_id']),
+        _sessionControlText(h['launcher_id']),
+      );
+    }
     return SessionControlStatusResult(
       _sessionControlText(json['in_reply_to']),
       _sessionControlText(json['room_id']),
@@ -1901,6 +1946,8 @@ class SessionControlStatusResult extends ServerMessage {
       json.containsKey('reason')
           ? _sessionControlText(json['reason'], limit: 512)
           : null,
+      access: access,
+      launchingHost: host,
     );
   }
 }
@@ -2049,6 +2096,15 @@ class LauncherStatusResult extends ServerMessage {
         unlocked: s['unlocked'] as bool,
         expiresAt: s['expires_at'] as int?,
         cooldownUntil: s['cooldown_until'] as int,
+        launcherApi: s['launcher_api'] as int?,
+        pinSetup: !s.containsKey('pin_setup')
+            ? null
+            : switch (s['pin_setup']) {
+                'available' => PinSetup.available,
+                'configured' => PinSetup.configured,
+                'unavailable' => PinSetup.unavailable,
+                _ => throw const FormatException('Invalid pin_setup'),
+              },
       ),
       j['type'] == 'launcher_shutdown_result' ? j['stopped'] as bool : null,
     );

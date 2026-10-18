@@ -446,7 +446,11 @@ class SyncService extends Service {
   }
 
   void _onServerMessage(ServerMessage msg, [String? originEpk]) {
-    if (msg is SessionControlError) return;
+    if (msg is SessionControlError ||
+        msg is LauncherSetupError ||
+        msg is ScopedActionError) {
+      return;
+    }
     // Plan/32f — drop frames from a peer whose channel is no longer the active
     // session (a stale connection still draining after `switchTo`). Without
     // this, a straggler write targets `_activeEpk` — which already points at

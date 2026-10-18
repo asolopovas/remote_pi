@@ -1,4 +1,5 @@
 import 'package:app/ui/agents/agents_page.dart';
+import 'package:app/ui/chat/chat_page.dart' show SessionControlsRequest;
 import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart' show RoomInfo;
@@ -414,56 +415,54 @@ class HomePage extends StatelessWidget {
     HomeViewModel vm,
     HomeState state,
   ) async {
-    final online = state is HomeList
-        ? state
-              .items(normalizeEpk: toStandardB64)
-              .where(
-                (item) => vm.isRoomLive(item.peer.remoteEpk, item.room.roomId),
-              )
-              .toList()
-        : <HomeItem>[];
-    if (online.isEmpty) {
+    final machines = vm.launchMachines;
+    if (machines.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No online paired sessions available.')),
+        const SnackBar(
+          content: Text('No online paired machines. Check status.'),
+        ),
       );
       return;
     }
-    final selection = context.read<SessionSelection>();
-    HomeItem? target;
-    for (final item in online) {
-      if (selection.matches(item.peer.remoteEpk, item.room.roomId)) {
-        target = item;
-        break;
-      }
-    }
-    if (target == null && online.length == 1) target = online.single;
-    // Only ask when the destination is genuinely ambiguous. No bottom sheet
-    // between the + action and the creation form for a known host/session.
-    target ??= await Navigator.of(context).push<HomeItem>(
-      MaterialPageRoute(
-        builder: (picker) => Scaffold(
-          appBar: AppBar(title: const Text('Choose launch host')),
-          body: ListView(
-            children: [
-              for (final item in online)
-                ListTile(
-                  title: Text(_deviceFor(item.peer)),
-                  subtitle: Text(_titleFor(item.peer, item.room)),
-                  onTap: () => Navigator.of(picker).pop(item),
+    // An existing chat selection is never an implicit choice among machines.
+    final machine = machines.length == 1
+        ? machines.single
+        : await Navigator.of(context).push<List<HomeItem>>(
+            MaterialPageRoute(
+              builder: (picker) => Scaffold(
+                appBar: AppBar(title: const Text('Choose launch host')),
+                body: ListView(
+                  children: [
+                    for (final group in machines)
+                      ListTile(
+                        title: Text(_deviceFor(group.first.peer)),
+                        subtitle: Text(
+                          toStandardB64(group.first.peer.remoteEpk),
+                        ),
+                        onTap: () => Navigator.of(picker).pop(group),
+                      ),
+                  ],
                 ),
-            ],
-          ),
-        ),
-      ),
-    );
-    if (!context.mounted || target == null) return;
+              ),
+            ),
+          );
+    if (!context.mounted || machine == null) return;
+    final selection = context.read<SessionSelection>();
+    final preferred = machine
+        .where(
+          (item) => selection.matches(item.peer.remoteEpk, item.room.roomId),
+        )
+        .firstOrNull;
+    final target = machine.first;
     context.push(
       '/agents',
       extra: AgentsTarget(
         target.peer.remoteEpk,
         target.room.roomId,
         _deviceFor(target.peer),
-        _titleFor(target.peer, target.room),
+        'Checking status…',
+        freshStart: true,
+        preferredRoom: preferred?.room.roomId,
       ),
     );
   }
@@ -503,6 +502,11 @@ class HomePage extends StatelessWidget {
     HomeItem it, {
     required bool isLive,
   }) {
+    final selection = context.read<SessionSelection>();
+    final revision = selection.revision;
+    final roomCurrent = vm.roomActionGuard(it);
+    bool current() =>
+        context.mounted && selection.revision == revision && roomCurrent();
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: context.colors.bg,
@@ -525,26 +529,27 @@ class HomePage extends StatelessWidget {
               ),
               ListTile(
                 leading: Icon(
-                  LucideIcons.trash2,
-                  color: isLive ? colors.muted : colors.error,
+                  isLive ? LucideIcons.info : LucideIcons.trash2,
+                  color: isLive ? colors.accent : colors.error,
                 ),
-                enabled: !isLive,
-                title: Text(
-                  'Delete session (local only)',
-                  style: TextStyle(color: isLive ? colors.muted : colors.text),
-                ),
-                subtitle: isLive
-                    ? Text(
-                        'Only available when the room is offline',
-                        style: TextStyle(color: colors.muted, fontSize: 11),
-                      )
-                    : null,
-                onTap: isLive
-                    ? null
-                    : () {
-                        Navigator.of(sheetCtx).pop();
-                        _confirmDelete(context, vm, it);
-                      },
+                title: Text(isLive ? 'Agent controls…' : 'Remove from list…'),
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  if (!current()) {
+                    _feedback(context, 'Session changed. Open the menu again.');
+                    return;
+                  }
+                  if (isLive) {
+                    _openControls(
+                      context,
+                      vm,
+                      it,
+                      () => context.mounted && selection.revision == revision,
+                    );
+                  } else {
+                    _confirmDelete(context, vm, it, current);
+                  }
+                },
               ),
             ],
           ),
@@ -605,17 +610,25 @@ class HomePage extends StatelessWidget {
     BuildContext context,
     HomeViewModel vm,
     HomeItem it,
+    bool Function() current,
   ) async {
+    if (!vm.isRelayConnected) {
+      _feedback(context, 'Status unknown. Reconnect before removing.');
+      return;
+    }
     final ok = await showDialog<bool>(
       context: context,
       builder: (dCtx) {
         final colors = dCtx.colors;
         return AlertDialog(
           backgroundColor: colors.bg,
-          title: Text('Delete session?', style: TextStyle(color: colors.text)),
+          title: Text(
+            'Remove from list?',
+            style: TextStyle(color: colors.text),
+          ),
           content: Text(
-            'Removes locally only. If the session comes back online on '
-            'the Pi, it reappears in the list.',
+            'Removes this device’s entry only. History and pairing are kept. '
+            'A running agent must be stopped first; online sessions reappear.',
             style: TextStyle(color: colors.muted, fontSize: 12),
           ),
           actions: [
@@ -625,14 +638,76 @@ class HomePage extends StatelessWidget {
             ),
             TextButton(
               onPressed: () => Navigator.of(dCtx).pop(true),
-              child: Text('Delete', style: TextStyle(color: colors.error)),
+              child: Text('Remove', style: TextStyle(color: colors.error)),
             ),
           ],
         );
       },
     );
-    if (ok != true) return;
-    await vm.deleteRoom(it.peer.remoteEpk, it.room.roomId);
+    if (!context.mounted || ok != true) return;
+    if (!current()) {
+      _feedback(context, 'Session changed. Open the menu again.');
+      return;
+    }
+    try {
+      final removed = await vm.deleteRoom(
+        it.peer.remoteEpk,
+        it.room.roomId,
+        isCurrent: current,
+      );
+      if (!context.mounted) return;
+      _feedback(
+        context,
+        removed
+            ? 'Removed from list.'
+            : 'Not removed. Status or session changed; check agent controls.',
+      );
+    } on Exception {
+      if (!context.mounted) return;
+      _feedback(context, 'Could not remove session. Try again.');
+    }
+  }
+
+  static void _feedback(BuildContext context, String message) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context)
+      ..removeCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _openControls(
+    BuildContext context,
+    HomeViewModel vm,
+    HomeItem item,
+    bool Function() current,
+  ) async {
+    try {
+      final lease = await vm.openControls(item, isCurrent: current);
+      if (!context.mounted) return;
+      if (!lease()) {
+        _feedback(context, 'Session changed. Open the menu again.');
+        return;
+      }
+      // Dedicated chat route on both form factors; never borrow the detail
+      // pane's controls or an access token from another selection.
+      context.push(
+        '/chat',
+        extra: {
+          'title': _titleFor(item.peer, item.room),
+          'device': _deviceFor(item.peer),
+          'online': true,
+          'controls': SessionControlsRequest(
+            item.peer.remoteEpk,
+            item.room.roomId,
+            item.room.startedAt,
+            lease,
+          ),
+        },
+      );
+    } on Exception {
+      if (!context.mounted) return;
+      _feedback(context, 'Could not open agent controls. Try again.');
+    }
   }
 
   static Future<void> _open(

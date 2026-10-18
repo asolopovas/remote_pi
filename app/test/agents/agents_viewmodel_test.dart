@@ -18,6 +18,17 @@ class Repo extends AgentRepository {
     maxAgents: 4,
     agents: [agent],
   );
+  ManagedAgent? opened;
+  Completer<void>? connecting;
+  @override
+  Future<void> openAgent(
+    ManagedAgent agent, {
+    void Function(String peer, String room)? beforeHandoff,
+  }) async {
+    if (connecting != null) await connecting!.future;
+    opened = agent;
+  }
+
   int launches = 0, stops = 0, locks = 0, shutdowns = 0;
   bool unknownLaunch = false;
   bool partialShutdown = false;
@@ -26,6 +37,7 @@ class Repo extends AgentRepository {
   bool get hasUnknownLaunch => unknownLaunch;
   LauncherStatus security = LauncherStatus(
     launcherId: 'launcher-1',
+    launcherApi: 3,
     epoch: 'epoch-1',
     configured: true,
     unlocked: true,
@@ -53,6 +65,7 @@ class Repo extends AgentRepository {
     }
     security = const LauncherStatus(
       launcherId: 'launcher-1',
+      launcherApi: 3,
       epoch: 'epoch-1',
       configured: true,
       unlocked: false,
@@ -68,7 +81,11 @@ class Repo extends AgentRepository {
   @override
   Stream<void> get invalidations => invalid.stream;
   @override
-  Future<void> bind(String peer, String room) async {}
+  Future<void> bind(
+    String peer,
+    String room, {
+    bool Function()? isCurrent,
+  }) async {}
   @override
   Future<AgentAvailability> list() async {
     if (listFails) throw const AgentFailure('List failed');
@@ -112,6 +129,50 @@ class Repo extends AgentRepository {
 }
 
 void main() {
+  for (final state in ['failed', 'stopped', 'starting', 'unknown', 'running']) {
+    test('launch $state with invalid readiness cannot claim success', () async {
+      final repo = Repo();
+      final vm = AgentsViewModel(repo);
+      await vm.initialize('peer', 'room');
+      repo.pending = Completer<ManagedAgent>();
+      final pending = vm.launch('project', null, confirmed: true);
+      expect(vm.state.message, 'Starting…');
+      repo.pending!.complete(
+        ManagedAgent(
+          agentId: 'new',
+          name: 'New',
+          cwd: '/project',
+          roomId: state == 'running' ? '' : 'room-new',
+          state: state,
+        ),
+      );
+      expect(await pending, null);
+      expect(vm.state.message, isNot(contains('Agent running')));
+      expect(repo.opened, null);
+      expect(repo.launches, 1);
+      vm.dispose();
+    });
+  }
+
+  test(
+    'confirmed launch waits for connection without another launch',
+    () async {
+      final repo = Repo();
+      final vm = AgentsViewModel(repo);
+      await vm.initialize('peer', 'room');
+      final launched = await vm.launch('project', null, confirmed: true);
+      repo.connecting = Completer<void>();
+      final opened = vm.openAgent(launched!);
+      expect(vm.state.busy, true);
+      expect(vm.state.message, 'Connecting…');
+      await vm.launch('project', null, confirmed: true);
+      expect(repo.launches, 1);
+      repo.connecting!.complete();
+      expect(await opened, true);
+      expect(repo.opened?.roomId, 'new-room');
+      vm.dispose();
+    },
+  );
   test(
     'locked machine status blocks Start and Stop; Lock keeps agents, shutdown partial wording',
     () async {

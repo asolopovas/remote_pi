@@ -94,7 +94,7 @@ export function decodeAgentRequest(value: unknown): AgentRequest {
   return o as AgentRequest;
 }
 
-export const LAUNCHER_REQUEST_TYPES = new Set(["project_list", "launcher_status", "launcher_unlock", "launcher_lock", "launcher_shutdown", "project_launch", "launcher_agent_stop"]);
+export const LAUNCHER_REQUEST_TYPES = new Set(["project_list", "launcher_status", "launcher_unlock", "launcher_pin_initialize", "launcher_lock", "launcher_shutdown", "project_launch", "launcher_agent_stop"]);
 /** Exact additive contract; no remote filesystem paths, environment, or flags. */
 export function decodeLauncherRequest(value: unknown): LauncherRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new DecodeError("invalid_message", "Expected launcher request");
@@ -106,7 +106,7 @@ export function decodeLauncherRequest(value: unknown): LauncherRequest {
     keys.push("launcher_id", "epoch");
     if (!text(o.launcher_id) || !text(o.epoch)) throw new DecodeError("invalid_message", "Refresh launcher security status");
   }
-  if (o.type === "launcher_unlock") { keys.push("pin"); if (typeof o.pin !== "string" || !/^\d{6,12}$/.test(o.pin)) throw new DecodeError("invalid_message", "Invalid PIN format"); }
+  if (o.type === "launcher_unlock" || o.type === "launcher_pin_initialize") { keys.push("pin"); if (typeof o.pin !== "string" || !/^\d{6,12}$/.test(o.pin)) throw new DecodeError("invalid_message", "Invalid PIN format"); }
   if (o.type === "project_launch") {
     keys.push("project_id", "name");
     if (!text(o.project_id) || o.name !== undefined && !text(o.name, 80)) throw new DecodeError("invalid_message", "Invalid project or agent name");
@@ -128,9 +128,20 @@ export function decodeSessionControlResult(value: unknown): SessionControlResult
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new DecodeError("invalid_message", "Invalid session control result");
   const o = value as Record<string, unknown>;
   const status = o.type === "session_control_status_result";
-  const keys = ["type", "in_reply_to", "room_id", ...(status ? ["can_stop", "token", "reason"] : ["state"])];
+  const keys = ["type", "in_reply_to", "room_id", ...(status ? ["can_stop", "token", "reason", "access", "launching_host"] : ["state"])];
   if (!controlText(o.in_reply_to) || !controlText(o.room_id) || Object.keys(o).some(k => !keys.includes(k)) ||
       (status ? typeof o.can_stop !== "boolean" || (o.can_stop ? !controlText(o.token) : o.token !== undefined) || o.reason !== undefined && !controlText(o.reason)
         : o.type !== "session_stop_result" || !["requested", "stopped"].includes(String(o.state)))) throw new DecodeError("invalid_message", "Invalid session control result");
+  if (status && o.access !== undefined) {
+    const a = o.access as Record<string, unknown>;
+    if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).length !== 2 || Object.keys(a).some(k => !["state", "expires_at"].includes(k)) ||
+        !["unlocked", "locked", "expired", "unavailable"].includes(String(a.state)) ||
+        (["unlocked", "expired"].includes(String(a.state)) ? !Number.isSafeInteger(a.expires_at) || Number(a.expires_at) < 0 : a.expires_at !== null) ||
+        o.can_stop === true && a.state !== "unlocked") throw new DecodeError("invalid_message", "Invalid access snapshot");
+  }
+  if (status && o.launching_host !== undefined) {
+    const h = o.launching_host as Record<string, unknown>;
+    if (!h || typeof h !== "object" || Array.isArray(h) || Object.keys(h).length !== 2 || Object.keys(h).some(k => !["room_id", "launcher_id"].includes(k)) || !controlText(h.room_id) || !controlText(h.launcher_id)) throw new DecodeError("invalid_message", "Invalid launching host");
+  }
   return o as SessionControlResult;
 }

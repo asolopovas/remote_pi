@@ -2,9 +2,11 @@
 
 This surface controls only this host session's newly launched agents. It does not take over existing Pi sessions, change Relay membership, stop unrelated agents, or shut down the operating system. Linux with working `/bin/bwrap` is required; there is no unrestricted fallback.
 
-## Local operator setup (never run remotely)
+## Initial PIN from phone / local operator setup
 
-Build the extension using its already installed dependencies, then run:
+A currently paired phone may create the **first** PIN on a supported root host via the additive contract below. Existing, corrupt or unsafe verifier files require local operator recovery; remote setup never replaces them. No default PIN exists. Project registration and credential/sandbox prerequisites remain local.
+
+For local setup/reset, build the extension using its already installed dependencies, then run:
 
 ```sh
 node /absolute/path/to/pi-extension/dist/bin/launcher.js pin-setup
@@ -17,11 +19,11 @@ node /absolute/path/to/pi-extension/dist/bin/launcher.js project-remove <project
 
 Local data is `~/.pi/remote/launcher/{pin,projects}.json`, files 0600 in a 0700 directory, atomic rename + fsync. Cross-process transactions serialize local edits, PIN resets and persisted attempt/cooldown updates. A crashed transaction leaves `transaction.lock`: operations fail closed; an operator must establish no setup/unlock transaction is alive before removing that stale lock locally. Do not blindly delete locks.
 
-Register exact absolute canonical directories, not glob patterns or a home/system root. Cwd must be within one explicitly allowed folder. Symlink components, `.`/`..`, replacements of any recorded ancestor/directory, host Pi credential directories and runtime overlap are rejected. Removing/re-adding a project creates a new ID. Registry listing is not a filesystem index: it never enumerates unregistered directories, and the phone cannot write registry/PIN/configuration.
+Register exact absolute canonical directories, not glob patterns or a home/system root. Cwd must be within one explicitly allowed folder. Symlink components, `.`/`..`, replacements of any recorded ancestor/directory, host Pi credential directories and runtime overlap are rejected. Removing/re-adding a project creates a new ID. Registry listing is not a filesystem index: it never enumerates unregistered directories, and the phone cannot write registry/configuration or replace a PIN.
 
 Before launch, writable roots are descriptor-pinned and scanned without following symlinks, with a shared 100,000-entry / 5-second / 128-level budget. Hardlinked regular files, nested mounts/filesystems, sockets/FIFOs/devices, inaccessible or oversized trees fail closed. An existing pnpm/hardlinked dependency tree can consequently be unavailable: prepare a private normal-file working copy or smaller project **locally**, then register it; the launcher never deletes, dereferences, changes caches, or silently excludes user files. Launch errors report the preflight category, not file contents. Local `project-list` reports only registered metadata; launch performs the full preflight.
 
-A usable **stored** Pi model credential in `PI_CODING_AGENT_DIR/auth.json` (default `~/.pi/agent/auth.json`) must exist and be private 0600. Use local Pi `/login` if needed; no credentials are invented. Only the configured global `defaultProvider` credential is copied, or the lexicographically first stored provider if no default is configured. Only sanitized `defaultProvider`/`defaultModel` settings accompany it. Literal API keys and OAuth records are supported; host credential commands, environment-only/ambient credentials, arbitrary `models.json`, skills/packages/custom providers and project extensions/settings are not inherited. OAuth refreshes affect only the private child copy. Model selection on the child can select models whose copied provider credential is usable.
+A usable **stored** Pi model credential in `PI_CODING_AGENT_DIR/auth.json` (default `~/.pi/agent/auth.json`) must exist and be private 0600. Use local Pi `/login` if needed; no credentials are invented. Only the configured global `defaultProvider` credential is copied, or the lexicographically first stored provider if no default is configured. Only validated `defaultProvider`/`defaultModel` settings accompany it. The fixed host `settings.json` may be a dotfiles symlink: resolve it locally, then open the canonical final path with `O_NOFOLLOW` and validate the descriptor (regular file, current user, at most 128 KiB, not world-writable). Normal 0664 public settings remain supported without chmod or mutation; reads remain bounded even if a file grows. The canonical settings file and agent directory cannot be included in writable project roots. No remote-supplied settings path is accepted. `auth.json` remains nonsymlink/private; settings compatibility never relaxes credential checks. Literal API keys and OAuth records are supported; host credential commands, environment-only/ambient credentials, arbitrary `models.json`, skills/packages/custom providers and project extensions/settings are not inherited. OAuth refreshes affect only the private child copy. Model selection on the child can select models whose copied provider credential is usable.
 
 For a **future new host process**, not a reload of existing agents, use the operator's explicit trusted endpoint. Example from the intended host working directory, with built extension and an already installed compatible Pi:
 
@@ -39,16 +41,18 @@ Inner JSON travels through the existing authenticated Relay/paired Owner channel
 
 ```ts
 interface LauncherStatus {
+  launcher_api?: number; // new hosts emit 3; exact configured model/readiness support, never authority
   launcher_id: string;
   epoch: string;
   configured: boolean;
+  pin_setup?: "available" | "configured" | "unavailable"; // omitted by old hosts
   unlocked: boolean;
   expires_at: number | null; // epoch milliseconds, this Owner only
   cooldown_until: number;  // epoch milliseconds, shared local verifier cooldown
 }
 type LauncherRequest =
   | { type: "project_list" | "launcher_status"; id: string }
-  | { type: "launcher_unlock"; id: string; launcher_id: string; epoch: string; pin: string }
+  | { type: "launcher_unlock" | "launcher_pin_initialize"; id: string; launcher_id: string; epoch: string; pin: string }
   | { type: "launcher_lock" | "launcher_shutdown"; id: string; launcher_id: string; epoch: string }
   | { type: "project_launch"; id: string; launcher_id: string; epoch: string; project_id: string; name?: string }
   | { type: "launcher_agent_stop"; id: string; launcher_id: string; epoch: string; agent_id: string };
@@ -65,6 +69,7 @@ Mappings and prerequisites:
 | Request | Response | Prerequisite |
 |---|---|---|
 | `launcher_status` | `launcher_status_result` | Currently paired host Owner |
+| `launcher_pin_initialize` | `launcher_status_result` | Current root paired Owner/channel, current launcher+epoch, safely absent verifier only; after publication and final authority checks, rotates epoch and unlocks only initiating Owner |
 | `launcher_unlock` | `launcher_status_result` | Current launcher+epoch, local verifier, correct PIN, no cooldown |
 | `launcher_lock` | `launcher_status_result` | Currently paired host Owner, current launcher+epoch (can revoke even while locked) |
 | `project_list` | `project_list_result` | Current paired Owner **and unexpired unlock** |
@@ -75,17 +80,17 @@ Mappings and prerequisites:
 
 Existing launch/stop result `agent` fields remain: `agent_id`, `name`, `cwd`, `room_id`, `state` (`starting/running/stopped/failed`), optional `error`. Agent-list fields remain `available`, optional `launcher_id/reason`, `cwd`, `max_agents` (4), `agents`.
 
-Failures use existing correlated `error` (`in_reply_to`, `code`, `message`), normally `invalid_message`; managed lifecycle can also return `rate_limited`, `timeout`, `internal_error`. Refresh status after unlock failure to obtain cooldown/epoch. The server never echoes the PIN. Legacy arbitrary-cwd `agent_launch` and legacy `agent_stop` are refused; they cannot bypass the protected contract.
+Failures use existing correlated `error` (`in_reply_to`, `code`, `message`), normally `invalid_message`; managed lifecycle can also return `rate_limited`, `timeout`, `internal_error`. Refresh status after unlock failure to obtain cooldown/epoch. `launcher_api:3` guarantees exact configured built-in defaults and model-verified readiness for new starts. API2 hosts still support existing child access/control, but must not receive new phone starts from the upgraded App. The field cannot bypass pairing/PIN checks. Known settings/auth/runtime/sandbox prerequisites return fixed actionable preflight errors, never raw JSON, stderr, credentials or sensitive paths. Unexpected startup/preparation failures report an unexpected host failure, not an invented missing-Pi/PATH diagnosis. The server never echoes the PIN. Legacy arbitrary-cwd `agent_launch` and legacy `agent_stop` are refused; they cannot bypass the protected contract.
 
 ### App sequencing/security UX
 
 1. Select the paired host; request `launcher_status` and wait for its reply (initial channel attachment is asynchronous).
-2. If `configured:false`, explain local `pin-setup` is required. Do not propose a default or remote setup.
+2. Offer Create PIN/confirm **only** for `pin_setup:"available"`. Both entries must match; submit a fresh `launcher_pin_initialize` ID with the current launcher/epoch, then clear inputs immediately. Adopt the returned epoch/status: new hosts grant the initiating Owner only (`unlocked:true`), so proceed to project selection. Older hosts may remain locked: require normal unlock without retaining/replaying the creation PIN. `configured` means use the existing PIN; `unavailable` requires local inspection. Omitted `pin_setup` is an old host: explain local setup is required, never attempt remote setup.
 3. Submit a fresh unlock ID with current `launcher_id`/`epoch`; clear the PIN immediately and never retain/replay it.
 4. Adopt the returned status/epoch, then fetch `project_list` and `agent_list`. Start only a returned `project_id`; `cwd`/folders are descriptive, not launch inputs.
 5. Refresh status after Lock, shutdown, reconnect/expiry or stale authority errors. Do not retain/replay security mutations or substitute a new epoch into an old mutation ID.
 
-Grants last five minutes, are Owner+launcher scoped, and are never restored after host restart/session reload. Verifier replacement invalidates old grants. Wrong attempts impose persisted exponential cooldown from two seconds up to five minutes; only one slow verification is admitted at a time and no attempt-history key is evicted to enable replay. Mutation/credential-check histories are bounded (256); refresh/restart rather than guessing acceptance after capacity errors.
+Grants last five minutes, are Owner+launcher scoped, and are never restored after host restart/session reload. Verifier replacement invalidates old grants. Wrong attempts impose persisted exponential cooldown from two seconds up to five minutes; only one slow verification is admitted at a time and no attempt-history key is evicted to enable replay. Initialization and unlock share one single-flight and non-evicting credential request-ID budget (256 IDs total, no PIN payload retained). Initialization uses the same private scrypt record and cross-process transaction lock as local setup, with atomic create-only publication and renewed pairing/channel/lifecycle/epoch checks after derivation and immediately before publication, then **after all asynchronous publication/cleanup and transaction-lock release**. Only a still-current paired initiating Owner receives a fresh five-minute fingerprint-bound grant; other Owners remain locked. A concurrent Lock/revoke/disconnect/lifecycle change wins: setup may be durably configured but locked, with no overwrite or rollback. Refresh status to reconcile. Existing verifier cooldowns cannot be reset by initialization. Mutation/credential-check histories are bounded (256); refresh/restart rather than guessing acceptance after capacity errors.
 
 Every successful unlock rotates the global epoch, invalidating pending old-epoch admissions; already-unlocked other Owners keep their remaining expiration but must obtain the new epoch via status. **Lock is global for this launcher**, invalidates all grants/replay authority before any await and leaves already-running children alive. Parent-mediated child-room controls/history/output are also gated; a paired locked caller receives a correlated denial, not child data. Work accepted before Lock can continue in the background; Lock is not a rollback of completed actions.
 
@@ -118,3 +123,160 @@ These are private host changes only: Relay uses its existing `room_meta_update` 
 Tests use cached Pi SDK/runtime 0.79.10 (not the unrelated global Pi 1.2.0), TypeScript 6, Vitest 4.1.9 and bubblewrap 0.9.0. Current global Pi docs were read for spawn/extension/RPC/credential behavior; CLI options were cross-checked against the actual cached runtime (its `--no-extensions` also excludes MCP; newer `--no-mcp` is unsupported). No package fetching/installation, live Relay contacts, OS keyring writes, real model turns/provider inference requests, global config changes or live-agent reload occurred. Final tests use synthetic provider keys; an early filesystem-only probe copied the existing credential file read-only into its private namespace before fixture isolation was added, without logging values or making a provider request. Real namespace write denial, real cached Pi startup/credential model listing, parent challenge-signature verification and direct child room Lock/shutdown/Owner tests pass against a loopback test Relay. No production App-to-owned-Relay end-to-end run or manual PIN TTY session has been claimed.
 
 Full-suite legacy session-replacement/reconnect failures reproduce using `ac106709` index+tests in this isolated checkout with the same cached dependencies; focused secure-launch and routing tests are separate passing evidence. See the task acceptance report for exact commands/counts and commit.
+
+### Setup uncertainty and transport limits
+
+Never journal, log, put in chat/history, auto-replay or retain PIN-bearing frames. After a lost setup response/reconnect, clear inputs and request fresh status; do not replay the mutation or assume success/unlock. Once publication is submitted under current authority, later revocation cannot roll back the durable write (nor frames already admitted). A filesystem/fsync failure may leave a configured verifier despite an error; status reconciliation, not retry, resolves uncertainty. There is no remote reset/recovery. The existing authenticated TLS Relay transport is **not end-to-end encrypted**: the Relay operator remains in the trust boundary. Request IDs are not secrets; use unique IDs.
+
+### Automatic worker presence
+
+Ordinary `PI_SUBAGENT_CHILD=1` and Durable workers with nonempty `DSA_EXEC` retain local mesh and cwd/name locks but do not automatically open Relay rooms. `DSA_CALL` alone is metadata, not child authority. Explicit `/remote-pi relay start` remains available. Intentional phone-managed children retain their parent-mediated room lifecycle. This is authoritative worker-role suppression, not cwd/name deduplication; genuine same-cwd roots remain distinct. Reload/teardown uses the existing lifecycle cleanup and cannot publish an outgoing worker continuation.
+
+### Plan100 isolated host regression evidence
+
+The synthetic symlinked 0664 settings regression first failed through full
+SecureLauncher/ManagedAgents startup with the original generic PATH/build error
+(`/tmp/plan100-host-red.log`). This reproduces the verified settings ELOOP cause;
+unsafe synthetic credential fixtures are negative tests, **not** a diagnosis of
+operator credential permissions.
+
+The regression now freezes a copied built `dist`/package layout with a symlink to
+already cached dependencies, starts the actual cached Pi under real bubblewrap,
+verifies parent Ed25519 challenge signatures on a loopback Relay, waits for actual
+running state and assigned-room metadata, exercises gated ping/model/history,
+then explicitly stops the exact returned agent. It uses synthetic credentials and
+symlinked public settings, checks settings mode remains 0664, never submits an
+unlocked provider prompt, and never connects to production. The Relay fixture
+verifies auth signatures and routes assigned-room frames; it is not a production
+Relay or a phone end-to-end acceptance claim.
+
+Validation runs set temporary HOME/USERPROFILE/REMOTE_PI_HOME/PI_CODING_AGENT_DIR
+before module imports, unset PI_SUBAGENT_CHILD/DSA_EXEC/DSA_CALL, and invoke cached
+pnpm and Node via absolute paths under `pi-durable-subagents hold machine --`.
+No dependency download, actual settings/auth/PIN access, live deployment/reload,
+ADB operation or checkout cleanup is part of this host task.
+
+Final host validation: `pnpm typecheck` and `pnpm build` pass; the 13-suite
+focused Vitest run passes **120 tests** (`/tmp/plan100-host-green.log`). Suites:
+`launch_initialize`, `launch_initialize_publication`, `launch_model_files`,
+`launch_sandbox`, `launch_preflight`, `launch_security`, `launch_store`,
+`managed_agents`, `secure_launcher.integration`, `managed_pipe`,
+`managed_transport`, `session_control`, and `protocol/launcher_contract`.
+The separate `/tmp/plan100-installed-launch-proof.mjs` reproduces failure using
+HEAD's original sandbox helper in a copied installed layout, and current-source
+green records `running; challenge signatures=1; stopped; settings mode=664`
+(`/tmp/plan100-installed-{red,green}.log`). Its red run uses the new truthful
+fallback; the earlier regression log records the original PATH/build message.
+LSP probing reported no errors (six files confirmed clean, four inconclusive);
+compiler typecheck is the definitive full-project type check. Full legacy suite,
+phone delivery and live-host acceptance are not claimed.
+
+### Managed session access and launching host (plan 101)
+
+`session_control_status_result` may add these strict, optional fields (old hosts
+may omit both):
+
+```json
+{"access":{"state":"expired","expires_at":1770000000000},"launching_host":{"room_id":"actual-root-room","launcher_id":"actual-launcher-incarnation"}}
+```
+
+`access` describes only the authenticated assigned Owner's grant on this launcher,
+not machine-wide access. `unlocked` and `expired` carry the actual absolute grant
+expiry; `locked` and `unavailable` carry `null`. Expired means a retained real
+grant expired, never that a process is old. Lock/revoke clears grant evidence.
+A denied capability has no Stop token. The five-minute TTL, per-launcher grant
+isolation and 30-second, single-use Stop confirmation remain unchanged.
+
+The parent takes `launching_host` from its actually published current root room
+and launcher instance, not cwd, names, process IDs or room naming conventions.
+Only the assigned paired Owner receives it, after the final captured
+current/epoch/authority checks used for session controls. Locked room discovery
+still publishes only the permitted working metadata, not model/transcript data.
+
+The App uses this origin to open that exact launching host for explicit private
+operator unlock, then returns to the captured live paired child and queries new
+session controls. Parent unlock alone is not proof of child access. No old Stop
+confirmation or PIN is replayed, no Stop is automatic, and no PIN is persisted.
+Missing legacy origin requires explicit same-peer host selection; no aliases or
+paths are treated as provenance, and no settled launch result is reconstructed
+from the mutation-request journal. There is no added origin registry.
+
+Host updates do **not** activate safely by reloading a root with running managed
+children: root shutdown/reload tears them down. Leave existing user jobs alone.
+The App's explicit legacy selection works without host reload; optional host
+metadata becomes available on safely updated/new host sessions only.
+
+
+## Managed runtime packaging (API3)
+
+The SDK dependency of this extension remains 0.79.10. **It is not the secure
+child runtime.** That catalog lacks `openai-codex/gpt-6.1-sol` and its settings-only
+resolver silently falls back to GPT5.5. Copying Sol metadata to that old adapter
+would not implement Sol semantics.
+
+On the host, prepare once (offline, under the machine lease for builds/tests):
+
+```sh
+node scripts/prepare-managed-runtime.mjs
+```
+
+The script resolves `pi` through the host-local PATH, follows its legitimate CLI
+symlink, and accepts the validated published **Pi 1.3.0 bundled CLI** layout only.
+It never imports the extension's old SDK to find the new runtime. It creates
+`build/managed-runtime` inside this extension package, with private immutable
+files/directories (0400/0500), a SHA256 manifest, and no source hardlinks/symlinks:
+
+- Pi's package metadata, README, complete `dist` (bundled CLI, modern adapter,
+  virtual SDK bridge, lazy chunks, workers, assets and unbundled support files).
+- Only its external bundle/extension-loader dependencies: `typebox` 1.3.27,
+  `undici` 8.10.2, `jiti` 2.7.0, `@silvia-odwyer/photon-node` 0.3.4 (WASM included).
+- Matching Pi AI 1.3.0 public bundled provider catalog data, for recognition and
+  trusted expected metadata. No user catalog cache or account pool.
+
+No downloads, lockfile changes, whole global package tree mounts, credentials,
+resource configuration or user extensions are involved. Preparation is bounded
+at 15,000 entries/160 MiB and rejects unsafe source ownership/permissions and
+symlink entries. Bun package-cache source hardlinks are copied as bytes, not
+linked. Source public metadata in the user's primary group may be 0664; the
+snapshot is always private and nonwritable. An existing snapshot is not replaced
+implicitly. Its owner must explicitly unseal/remove it and prepare a replacement
+only when no managed child uses that package. Do not reload a root with children.
+
+Every launch validates the entire snapshot's entries, ownership, read-only modes,
+file hashes and required package versions (5-second bound), rejects overlap with
+registered writable folders, and mounts the snapshot read-only. The child uses
+the host's Node >=22.19, a minimal private agent directory and selected-provider
+private auth. Runtime commands/paths/options are not remotely selectable. Staging
+an installed release must copy the snapshot too, preserving modes; copying just
+`dist` and old `node_modules` is insufficient. The preparation script is included
+in the npm package; generated snapshots are not committed.
+
+Both `defaultProvider` and `defaultModel` must be configured. Missing/partial,
+unknown or custom defaults fail with fixed actionable errors; no arbitrary model
+is chosen when defaults are absent. Existing `models.json`/`models.jsonc` causes
+an explicit refusal rather than silently discarding endpoint/API overrides or
+copying credential commands. The settings symlink is supported as before; only
+validated provider/model strings are copied, never parent `ctx.model` or resource
+settings. Selected catalog metadata must exist before spawning. Explicit
+`--provider`/`--model` are passed and RPC `get_state.data.model` must match
+provider, ID, API, context/output limits and compatibility/thinking capabilities
+before **any** parent-managed room publication. Child-ready and RPC-ready may
+arrive in either order; publication is single-flight. Startup authority is fenced
+again before hello and signed auth, and failed/late publications are disposed.
+Locked metadata remains working-only; no extra model IDs/thinking strings leak.
+
+Reproduce source/dev and staged-release checks without another checkout:
+
+```sh
+PNPM_NATIVE=<existing-offline-native-pnpm> \
+  pi-durable-subagents hold machine -- bash scripts/validate-managed-model.sh
+```
+
+The script prepares a missing snapshot before isolating HOME/USERPROFILE,
+REMOTE_PI_HOME and PI_CODING_AGENT_DIR, clears worker/legacy child markers before
+imports, and runs typecheck/build/tests without dependency verification/downloads.
+Real CLI fixtures use synthetic credentials and a disconnected child network
+namespace, issue `get_state` only (no model turn), and keep the signed loopback
+parent proxy outside that namespace. They prove old0.79.10 fallback, modern Sol
+capabilities and full managed preload/publication/control/fixture-Stop behavior.
+No production relay, provider call, actual credentials or user process is needed.

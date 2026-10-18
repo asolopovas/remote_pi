@@ -8,6 +8,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
+import 'package:go_router/go_router.dart';
+import 'package:app/routing/adaptive.dart';
 import 'agents_viewmodel_test.dart' show Repo;
 
 Future<void> selectProject(WidgetTester tester) async {
@@ -52,6 +54,7 @@ Future<void> openRunning(WidgetTester tester) async {
 LauncherStatus locked({bool configured = true, String epoch = 'epoch-1'}) =>
     LauncherStatus(
       launcherId: 'launcher-1',
+      launcherApi: 3,
       epoch: epoch,
       configured: configured,
       unlocked: false,
@@ -67,6 +70,7 @@ class _UnlockRepo extends Repo {
     unlocks++;
     security = LauncherStatus(
       launcherId: security.launcherId,
+      launcherApi: 3,
       epoch: 'unlocked-epoch',
       configured: true,
       unlocked: true,
@@ -76,7 +80,434 @@ class _UnlockRepo extends Repo {
   }
 }
 
+const initialSetup = LauncherStatus(
+  launcherId: 'launcher-1',
+  launcherApi: 3,
+  epoch: 'epoch-1',
+  configured: false,
+  unlocked: false,
+  expiresAt: null,
+  cooldownUntil: 0,
+  pinSetup: PinSetup.available,
+);
+
+class _SetupRepo extends _UnlockRepo {
+  _SetupRepo() {
+    security = initialSetup;
+  }
+  int setups = 0, statuses = 0;
+  bool loseReply = false, grant = false;
+  @override
+  Future<void> initializePin(String pin) async {
+    setups++;
+    security = LauncherStatus(
+      launcherId: 'launcher-1',
+      launcherApi: 3,
+      epoch: 'created',
+      configured: true,
+      unlocked: grant,
+      expiresAt: grant ? DateTime.now().millisecondsSinceEpoch + 600000 : null,
+      cooldownUntil: 0,
+      pinSetup: PinSetup.configured,
+    );
+    if (loseReply) {
+      throw const AgentFailure(
+        'Setup result unknown. Refresh status.',
+        outcomeUnknown: true,
+      );
+    }
+  }
+
+  @override
+  Future<void> status() async {
+    statuses++;
+  }
+}
+
 void main() {
+  testWidgets('explicit API 2 session keeps controls but has no new Start', (
+    tester,
+  ) async {
+    final repo = Repo()
+      ..security = LauncherStatus(
+        launcherId: 'launcher-1',
+        epoch: 'epoch-1',
+        configured: true,
+        unlocked: true,
+        expiresAt: DateTime.now().millisecondsSinceEpoch + 600000,
+        cooldownUntil: 0,
+        launcherApi: 2,
+      );
+    final vm = AgentsViewModel(repo);
+    await tester.pumpWidget(page(vm));
+    await tester.pumpAndSettle();
+    expect(find.text(newLaunchCompatibilityMessage), findsOneWidget);
+    expect(find.byKey(const Key('launch-agent')), findsNothing);
+    await vm.launch('project', null, confirmed: true);
+    expect(repo.launches, 0);
+    await openRunning(tester);
+    expect(find.text('New Pi'), findsOneWidget);
+    expect(repo.stops, 0);
+    await tester.pumpWidget(const SizedBox());
+    vm.dispose();
+  });
+
+  testWidgets(
+    'Create keyboard Next and Done unlock once without retaining PIN',
+    (tester) async {
+      final repo = _SetupRepo()..grant = true;
+      final vm = AgentsViewModel(repo);
+      await tester.pumpWidget(page(vm));
+      await tester.pumpAndSettle();
+      final first = find.byKey(const Key('launcher-create-pin'));
+      final second = find.byKey(const Key('launcher-confirm-pin'));
+      expect(find.text('Session: Project'), findsOneWidget);
+      expect(find.text('Create PIN & unlock'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(first).keyboardType,
+        TextInputType.number,
+      );
+      expect(tester.widget<TextField>(first).autofillHints, isEmpty);
+      expect(
+        tester.widget<TextField>(first).enableIMEPersonalizedLearning,
+        false,
+      );
+      expect(tester.widget<TextField>(first).obscureText, true);
+      final a = tester.widget<TextField>(first).controller!;
+      final b = tester.widget<TextField>(second).controller!;
+      await tester.enterText(first, '123456');
+      await tester.testTextInput.receiveAction(TextInputAction.next);
+      await tester.pump();
+      expect(tester.widget<TextField>(second).focusNode!.hasFocus, true);
+      await tester.enterText(second, '1');
+      await tester.pump();
+      expect(find.text('PINs do not match.'), findsNothing);
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(repo.setups, 0);
+      expect(find.text('PINs do not match.'), findsOneWidget);
+      await tester.enterText(second, '123456');
+      await tester.pump();
+      expect(find.text('PINs do not match.'), findsNothing);
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+      expect(a.text, isEmpty);
+      expect(b.text, isEmpty);
+      expect(repo.setups, 1);
+      expect(repo.unlocks, 0);
+      expect(find.byKey(const Key('launch-project-project')), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      vm.dispose();
+    },
+  );
+
+  testWidgets('Show PIN resets masked and empty on background', (tester) async {
+    final repo = _SetupRepo();
+    final vm = AgentsViewModel(repo);
+    await tester.pumpWidget(page(vm));
+    await tester.pumpAndSettle();
+    final first = find.byKey(const Key('launcher-create-pin'));
+    await tester.enterText(first, '123456');
+    await tester.tap(find.byTooltip('Show PIN').first);
+    await tester.pump();
+    expect(tester.widget<TextField>(first).obscureText, false);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    expect(tester.widget<TextField>(first).obscureText, true);
+    expect(tester.widget<TextField>(first).controller!.text, isEmpty);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpWidget(const SizedBox());
+    vm.dispose();
+  });
+
+  testWidgets(
+    'cooldown counts down, disables input, and re-enables without refresh',
+    (tester) async {
+      final repo = _UnlockRepo();
+      repo.security = LauncherStatus(
+        launcherId: 'launcher-1',
+        launcherApi: 3,
+        epoch: 'epoch-1',
+        configured: true,
+        unlocked: false,
+        expiresAt: null,
+        cooldownUntil: DateTime.now().millisecondsSinceEpoch + 1050,
+      );
+      final vm = AgentsViewModel(repo);
+      await tester.pumpWidget(page(vm));
+      await tester.pump();
+      await tester.pump();
+      final field = find.byKey(const Key('launcher-pin'));
+      expect(tester.widget<TextField>(field).enabled, false);
+      expect(find.textContaining('Try again in'), findsOneWidget);
+      tester.widget<TextField>(field).onSubmitted!('123456');
+      expect(repo.unlocks, 0);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 1100)),
+      );
+      await tester.pump(const Duration(seconds: 2));
+      expect(tester.widget<TextField>(field).enabled, true);
+      expect(find.textContaining('Try again in'), findsNothing);
+      await tester.enterText(field, '123456');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+      expect(repo.unlocks, 1);
+      await tester.pumpWidget(const SizedBox());
+      vm.dispose();
+    },
+  );
+
+  testWidgets(
+    'running launch connects then navigates only to exact returned room',
+    (tester) async {
+      tester.view.physicalSize = const Size(400, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final repo = Repo()..connecting = Completer<void>();
+      final vm = AgentsViewModel(repo);
+      final selection = SessionSelection();
+      final router = GoRouter(
+        initialLocation: '/agents',
+        routes: [
+          GoRoute(
+            path: '/agents',
+            builder: (_, _) => const AgentsPage(
+              target: AgentsTarget(
+                'original-peer',
+                'launcher-room',
+                'Laptop',
+                'Launcher session',
+              ),
+            ),
+          ),
+          GoRoute(
+            path: '/home',
+            builder: (_, _) => const Scaffold(body: Text('Home')),
+          ),
+          GoRoute(
+            path: '/chat',
+            builder: (_, _) => const Scaffold(body: Text('Exact chat')),
+          ),
+        ],
+      );
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider.value(value: vm),
+            ChangeNotifierProvider.value(value: selection),
+          ],
+          child: MaterialApp.router(
+            theme: buildDarkTheme(),
+            routerConfig: router,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await selectProject(tester);
+      await tester.tap(find.byKey(const Key('launch-agent')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Start'));
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('Connecting…'), findsOneWidget);
+      expect(selection.current, null);
+      expect(find.text('Exact chat'), findsNothing);
+      expect(repo.launches, 1);
+      repo.connecting!.complete();
+      await tester.pumpAndSettle();
+      expect(find.text('Exact chat'), findsOneWidget);
+      expect(selection.current?.epk, 'original-peer');
+      expect(selection.current?.roomId, 'new-room');
+      expect(repo.opened?.roomId, 'new-room');
+      await tester.pumpWidget(const SizedBox());
+      router.dispose();
+      selection.dispose();
+      vm.dispose();
+    },
+  );
+
+  testWidgets(
+    'Create PIN validates locally, clears both, then ordinary unlock and project confirmation',
+    (tester) async {
+      final repo = _SetupRepo();
+      final vm = AgentsViewModel(repo);
+      await tester.pumpWidget(page(vm));
+      await tester.pumpAndSettle();
+      final first = find.byKey(const Key('launcher-create-pin'));
+      final second = find.byKey(const Key('launcher-confirm-pin'));
+      final submit = find.byKey(const Key('create-launcher-pin'));
+      final a = tester.widget<TextField>(first).controller!;
+      final b = tester.widget<TextField>(second).controller!;
+      bool enabled() => tester.widget<FilledButton>(submit).onPressed != null;
+      await tester.enterText(first, '12345');
+      await tester.enterText(second, '12345');
+      await tester.pump();
+      expect(enabled(), false);
+      await tester.enterText(first, '123456');
+      await tester.enterText(second, '654321');
+      await tester.pump();
+      expect(enabled(), false);
+      expect(find.text('PINs do not match.'), findsOneWidget);
+      await tester.enterText(first, '1234567890123');
+      expect(a.text.length, 12);
+      await tester.enterText(first, '123456');
+      await tester.enterText(second, '123456');
+      await tester.pump();
+      expect(enabled(), true);
+      expect(repo.setups, 0);
+      await tester.ensureVisible(submit);
+      await tester.tap(submit);
+      expect(a.text, isEmpty);
+      expect(b.text, isEmpty);
+      await tester.pumpAndSettle();
+      expect(repo.setups, 1);
+      expect(repo.unlocks, 0);
+      expect(find.text('Unlock'), findsOneWidget);
+      expect(find.byType(RadioListTile<String>), findsNothing);
+      await tester.enterText(find.byKey(const Key('launcher-pin')), '123456');
+      await tester.pump();
+      await tester.tap(find.text('Unlock'));
+      await tester.pumpAndSettle();
+      expect(repo.unlocks, 1);
+      await selectProject(tester);
+      await tester.tap(find.byKey(const Key('launch-agent')));
+      await tester.pumpAndSettle();
+      expect(find.text('Start agent?'), findsOneWidget);
+      expect(repo.launches, 0);
+      await tester.tap(find.text('Start'));
+      await tester.pumpAndSettle();
+      expect(repo.launches, 1);
+      await tester.pumpWidget(const SizedBox());
+      vm.dispose();
+    },
+  );
+
+  for (final cause in [
+    'inactive',
+    'target',
+    'reload',
+    'expiry',
+    'disconnect',
+    'refresh',
+    'owner',
+    'dispose',
+  ]) {
+    testWidgets('both setup inputs clear on $cause', (tester) async {
+      final repo = _SetupRepo();
+      final vm = AgentsViewModel(repo);
+      await tester.pumpWidget(page(vm));
+      await tester.pumpAndSettle();
+      final first = find.byKey(const Key('launcher-create-pin'));
+      final second = find.byKey(const Key('launcher-confirm-pin'));
+      final a = tester.widget<TextField>(first).controller!;
+      final b = tester.widget<TextField>(second).controller!;
+      await tester.enterText(first, '123456');
+      await tester.enterText(second, '123456');
+      switch (cause) {
+        case 'inactive':
+          tester.binding.handleAppLifecycleStateChanged(
+            AppLifecycleState.inactive,
+          );
+          tester.binding.handleAppLifecycleStateChanged(
+            AppLifecycleState.resumed,
+          );
+        case 'target':
+          await tester.pumpWidget(page(vm, room: 'other'));
+        case 'dispose':
+          await tester.pumpWidget(const SizedBox());
+        case 'owner':
+          final replacement = AgentsViewModel(_SetupRepo());
+          await tester.pumpWidget(page(replacement));
+          await tester.pumpAndSettle();
+          replacement.dispose();
+        case 'disconnect':
+        case 'expiry':
+          repo.invalid.add(null);
+        case 'reload':
+          repo.security = const LauncherStatus(
+            launcherId: 'launcher-2',
+            launcherApi: 3,
+            epoch: 'new',
+            configured: false,
+            unlocked: false,
+            expiresAt: null,
+            cooldownUntil: 0,
+            pinSetup: PinSetup.available,
+          );
+          await vm.refresh();
+        case 'refresh':
+          await vm.refresh();
+      }
+      await tester.pumpAndSettle();
+      expect(a.text, isEmpty);
+      expect(b.text, isEmpty);
+      expect(repo.setups, 0);
+      await tester.pumpWidget(const SizedBox());
+      vm.dispose();
+    });
+  }
+
+  testWidgets(
+    'lost setup reconciles status only, never automatically unlocks or replays',
+    (tester) async {
+      final repo = _SetupRepo()..loseReply = true;
+      final vm = AgentsViewModel(repo);
+      await tester.pumpWidget(page(vm));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('launcher-create-pin')),
+        '123456',
+      );
+      await tester.enterText(
+        find.byKey(const Key('launcher-confirm-pin')),
+        '123456',
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('create-launcher-pin')));
+      await tester.pumpAndSettle();
+      expect(repo.setups, 1);
+      expect(repo.statuses, 1);
+      expect(repo.unlocks, 0);
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('launcher-pin')))
+            .controller!
+            .text,
+        isEmpty,
+      );
+      await vm.refresh();
+      await tester.pumpAndSettle();
+      expect(repo.setups, 1);
+      await tester.pumpWidget(const SizedBox());
+      vm.dispose();
+    },
+  );
+
+  testWidgets('unsafe storage offers local repair, never remote overwrite', (
+    tester,
+  ) async {
+    final repo = _SetupRepo()
+      ..security = const LauncherStatus(
+        launcherId: 'launcher-1',
+        launcherApi: 3,
+        epoch: 'epoch-1',
+        configured: false,
+        unlocked: false,
+        expiresAt: null,
+        cooldownUntil: 0,
+        pinSetup: PinSetup.unavailable,
+      );
+    final vm = AgentsViewModel(repo);
+    await tester.pumpWidget(page(vm));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('repair it locally'), findsOneWidget);
+    expect(find.byType(TextField), findsNothing);
+    expect(find.byKey(const Key('create-launcher-pin')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    vm.dispose();
+  });
+
   for (final scale in [1.0, 2.0]) {
     for (final dark in [true, false]) {
       testWidgets(
@@ -243,6 +674,7 @@ void main() {
     await selectProject(tester);
     repo.security = LauncherStatus(
       launcherId: 'launcher-1',
+      launcherApi: 3,
       epoch: 'epoch-2',
       configured: true,
       unlocked: true,

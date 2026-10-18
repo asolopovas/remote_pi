@@ -37,7 +37,9 @@ class AgentFailure implements Exception {
 }
 
 abstract class AgentRepository extends Repository {
-  Future<void> bind(String peer, String room);
+  /// Guarded recovery binds only to the already-selected exact target. The
+  /// guard remains authoritative for the lifetime of the resulting lease.
+  Future<void> bind(String peer, String room, {bool Function()? isCurrent});
   Stream<void> get invalidations;
   Stream<void> get changes => const Stream.empty();
 
@@ -46,6 +48,8 @@ abstract class AgentRepository extends Repository {
   LauncherStatus? get launcherStatus => null;
   List<LauncherProject> get projects => const [];
   Future<void> status() async =>
+      throw const AgentFailure('Update/setup the host launcher.');
+  Future<void> initializePin(String pin) async =>
       throw const AgentFailure('Update/setup the host launcher.');
   Future<void> unlock(String pin) async =>
       throw const AgentFailure('Update/setup the host launcher.');
@@ -58,6 +62,14 @@ abstract class AgentRepository extends Repository {
     bool acknowledgeUnknown = false,
   });
   Future<ManagedAgent> stop(String agentId);
+
+  /// Wait for the exact returned room, then select it on the bound peer.
+  /// [beforeHandoff] runs synchronously after all asynchronous authority checks,
+  /// immediately before selecting the exact running child on the bound peer.
+  Future<void> openAgent(
+    ManagedAgent agent, {
+    void Function(String peer, String room)? beforeHandoff,
+  });
   void refreshDiscovery();
 }
 
@@ -73,6 +85,13 @@ String? validateAgentInput(String cwd, String? name) {
   return null;
 }
 
+const newLaunchCompatibilityMessage =
+    'New agents require launcher API 3 to preserve the configured model. '
+    'Update the host after running jobs finish, then check status. '
+    'Existing agents remain available.';
+
+enum PinSetup { available, configured, unavailable }
+
 class LauncherStatus {
   const LauncherStatus({
     required this.launcherId,
@@ -81,11 +100,16 @@ class LauncherStatus {
     required this.unlocked,
     required this.expiresAt,
     required this.cooldownUntil,
+    this.pinSetup,
+    this.launcherApi,
   });
   final String launcherId, epoch;
   final bool configured, unlocked;
+  final PinSetup? pinSetup;
+  final int? launcherApi;
   final int? expiresAt;
   final int cooldownUntil;
+  bool get supportsNewLaunch => (launcherApi ?? 0) >= 3;
   bool get permitsControl =>
       configured &&
       unlocked &&

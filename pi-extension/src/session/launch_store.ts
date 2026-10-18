@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, rename, unlink, rmdir } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rename, unlink, rmdir, link } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, parse, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -65,6 +65,26 @@ export async function writePrivateJson(dir: string, name: string, data: unknown)
   finally { await fd.close(); }
   try { await rename(temp, join(dir, name)); const d = await open(dir, "r"); try { await d.sync(); } finally { await d.close(); } }
   finally { await unlink(temp).catch(() => {}); }
+}
+/** Absence must be positively established with lstat: dangling links are not absent. */
+export async function launchPinAbsent(dir: string): Promise<boolean> {
+  await privateDirectory(dir);
+  try { await lstat(join(dir, "pin.json")); return false; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; }
+}
+/** Caller holds the transaction lock. Atomic create-only publication, never rename-overwrite.
+ * Authority is checked after all staging I/O, directly before submitting publication. */
+export async function createPrivatePin(dir: string, data: unknown, authorize: () => Promise<void>, current: () => void): Promise<void> {
+  await privateDirectory(dir);
+  const temp = join(dir, "." + randomUUID());
+  const fd = await open(temp, "wx", 0o600);
+  try {
+    try { await fd.writeFile(JSON.stringify(data)); await fd.sync(); } finally { await fd.close(); }
+    await authorize();
+    current();
+    await link(temp, join(dir, "pin.json"));
+    const d = await open(dir, "r"); try { await d.sync(); } finally { await d.close(); }
+  } finally { await unlink(temp).catch(() => {}); }
 }
 export class LaunchRegistry {
   constructor(readonly dir = launchStoreDir()) {}

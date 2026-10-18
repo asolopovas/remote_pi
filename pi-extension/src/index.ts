@@ -1210,6 +1210,8 @@ let _relayLifecycleGeneration = 0;
 // those generations. Stop/off/session replacement advance this separate epoch
 // so a queued root can never regain authority by creating a newer child.
 let _rootLifecycleGeneration = 0;
+// Every session_start, including same-native-ID reload/ABA, revokes old model actions.
+let _modelSessionGeneration = 0;
 // Coalesces concurrent `/remote-pi` startup paths inside ONE extension instance.
 // Separate Pi processes still keep the existing #N behavior via the cwd lock.
 let _cmdRootInFlight: Promise<void> | null = null;
@@ -2464,6 +2466,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // New session. Fires on startup/new/fork/reload/resume; the ctx is always
   // bound to the current session.
   pi.on("session_start", (_event, ctx) => {
+    _modelSessionGeneration += 1;
     // Some hosts reuse this factory after replacing a session.
     process.off("disconnect", onLauncherGone);
     if (process.env[MANAGED_CHILD_ENV] === "1" && process.send) process.once("disconnect", onLauncherGone);
@@ -2890,10 +2893,11 @@ async function _cmdRootInner(
   // clears while an outgoing continuation may still be pending.
   if (!_isCurrentRootLifecycle(rootLifecycleGeneration)) return;
 
-  // Native managed workers inherit the parent's config, but are not primary
-  // mobile sessions. Keep their local mesh/locks; only explicit `relay start`
-  // may expose them. Never infer this role from UI mode, cwd, or assigned name.
-  const autoStartRelay = process.env["PI_SUBAGENT_CHILD"] !== "1";
+  // Native/Durable workers are not primary mobile sessions. Keep local mesh/locks
+  // and explicit `relay start`. DSA_EXEC is Durable's authoritative child marker;
+  // DSA_CALL alone is metadata. Intentional phone-managed rooms use their parent bridge.
+  const autoStartRelay = process.env[MANAGED_CHILD_ENV] === "1" ||
+    (process.env["PI_SUBAGENT_CHILD"] !== "1" && !process.env["DSA_EXEC"]);
   const cwd = "cwd" in ctx ? (ctx as ExtensionCommandContext).cwd : process.cwd();
   // Lock identity is (cwd, name). Several agents may run in the SAME folder; the
   // requested name just has to be made unique. Derive the name the same way
@@ -4562,7 +4566,7 @@ function _abortCurrentTurn(
 
 function _getSecureLauncher(cwd: string): SecureLauncher {
   if (_secureLauncher) return _secureLauncher;
-  const launcher: SecureLauncher = new SecureLauncher({ cwd, extensionPath: fileURLToPath(import.meta.url),
+  const launcher: SecureLauncher = new SecureLauncher({ cwd, rootRoom: () => _myRoomId ?? undefined, extensionPath: fileURLToPath(import.meta.url),
     keypair: async () => { if (!_cachedEd25519) throw new Error("Host identity unavailable"); return _cachedEd25519; },
     paired: async owner => !!await _findKnownPeer(owner),
     current: () => !_disposed && _secureLauncher === launcher,
@@ -4579,7 +4583,10 @@ async function _routeLauncherRequest(sender: PlainPeerChannel, raw: unknown): Pr
     if (!owner || _disposed || !await _findKnownPeer(owner) || generation !== _rootLifecycleGeneration || _activePeers.get(owner) !== sender || process.env[MANAGED_CHILD_ENV] === "1") throw new Error("A paired host channel is required");
     const launcher = _getSecureLauncher(_lastCtx?.cwd ?? process.cwd());
     const epoch = launcher.security.epoch;
-    const result = await launcher.handle(owner, request, async () => !_disposed && generation === _rootLifecycleGeneration && !!await _findKnownPeer(owner));
+    const result = await launcher.handle(owner, request, async () => {
+      const paired = await _findKnownPeer(owner);
+      return !!paired && !_disposed && generation === _rootLifecycleGeneration && _secureLauncher === launcher && _activePeers.get(owner) === sender;
+    }, () => !_disposed && generation === _rootLifecycleGeneration && _secureLauncher === launcher && _activePeers.get(owner) === sender);
     const protectedResult = ["project_list_result", "agent_launch_result", "agent_stop_result"].includes(result.type);
     if (protectedResult && !await launcher.security.authorized(owner, epoch)) return;
     const paired = await _findKnownPeer(owner);
@@ -4681,6 +4688,26 @@ async function _routeSessionControl(sender: PlainPeerChannel, raw: unknown): Pro
       if (paired && channelCurrent()) sender.send({ type: "error", ...(id ? { in_reply_to: id } : {}), code: "invalid_message", message: "Session control denied; refresh session controls" });
     } catch { /* pairing unavailable: fail closed */ }
   }
+}
+
+// Stable lifecycle + native identity, not ctx object identity: ordinary metadata
+// and model_select updates must not invalidate an admitted model operation.
+function _captureModelActionAuthority(): () => boolean {
+  const root = _rootLifecycleGeneration;
+  const session = _modelSessionGeneration;
+  const pi = _pi;
+  const captured = (_lastEventCtx ?? _lastCtx) as Partial<Pick<ExtensionContext, "sessionManager">> | null;
+  try {
+    const nativeId = captured?.sessionManager?.getSessionId();
+    if (!nativeId) return () => false;
+    return () => {
+      try {
+        return !_disposed && _pi === pi && root === _rootLifecycleGeneration &&
+          session === _modelSessionGeneration &&
+          ((_lastEventCtx ?? _lastCtx) as typeof captured)?.sessionManager?.getSessionId() === nativeId;
+      } catch { return false; }
+    };
+  } catch { return () => false; }
 }
 
 export function _routeClientMessageFrom(
@@ -4901,25 +4928,18 @@ export function _routeClientMessageFrom(
       break;
     }
     case "model_set":
-      void handleModelSet(
-        _pi,
-        (_lastEventCtx ?? _lastCtx) as ActionCtx | null,
-        ensureModelRegistry((_lastEventCtx ?? _lastCtx) as ActionCtx | null),
-        sender,
-        msg,
-        _persistModelDefault,
-      );
+    case "list_models": {
+      const modelCtx = (_lastEventCtx ?? _lastCtx) as ActionCtx | null;
+      const isCurrent = _captureModelActionAuthority();
+      if (msg.type === "model_set") {
+        void handleModelSet(_pi, modelCtx, sender, msg, _persistModelDefault, isCurrent);
+      } else {
+        void handleListModels(modelCtx, sender, msg, isCurrent);
+      }
       break;
+    }
     case "thinking_set":
       handleThinkingSet(_pi, sender, msg);
-      break;
-    case "list_models":
-      handleListModels(
-        ((_lastEventCtx ?? _lastCtx) as ActionCtx | null),
-        ensureModelRegistry((_lastEventCtx ?? _lastCtx) as ActionCtx | null),
-        sender,
-        msg,
-      );
       break;
   }
 }

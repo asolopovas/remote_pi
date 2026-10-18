@@ -61,6 +61,9 @@ export interface ConnectOptions {
   roomMeta?: RoomMeta;
   /** Private parent-owned managed room: bound hello/auth as well as output. */
   managed?: true;
+  /** Managed startup authority, rechecked before hello and signed auth. */
+  admitted?: () => Promise<boolean>;
+  current?: () => boolean;
 }
 
 /** Relay rejected hello because another peer already holds (pubkey, room_id). */
@@ -261,6 +264,7 @@ export class RelayClient extends EventEmitter {
     const hello: HelloMsg = { type: "hello", pubkey: pubkeyB64 };
     if (opts.roomId) hello.room_id = opts.roomId;
     if (opts.roomMeta) hello.room_meta = opts.roomMeta;
+    if (opts.managed && (opts.admitted && !await opts.admitted() || opts.current?.() === false)) throw new Error("Managed publication authority changed");
     this._rawSend(ws, JSON.stringify(hello), opts.managed);
 
     const challengeRaw = await this._nextMsg(ws);
@@ -281,6 +285,7 @@ export class RelayClient extends EventEmitter {
       throw new Error(`relay auth_failed: expected challenge, got ${challengeRaw}`);
     }
 
+    if (opts.managed && (opts.admitted && !await opts.admitted() || opts.current?.() === false)) throw new Error("Managed publication authority changed");
     const nonce = Buffer.from((challenge as ChallengeMsg).nonce, "base64");
     const sig = ed25519Sign(this.keypair.secretKey, nonce);
     const auth: AuthMsg = {

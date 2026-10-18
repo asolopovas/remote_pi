@@ -60,6 +60,35 @@ void main() {
       },
     );
   }
+  for (final room in ['selected-room', null]) {
+    test(
+      'late setup errors keep classification without request history room=$room',
+      () async {
+        final transport = _Transport();
+        final channel = PlainPeerChannel(transport: transport);
+        final pending = channel.serverMessages.first;
+        transport.frames.add((
+          peer: 'verified-owner',
+          room: room,
+          bytes: Uint8List.fromList(
+            utf8.encode(
+              jsonEncode({
+                'type': 'error',
+                'in_reply_to': '${launcherSetupRequestPrefix}retired',
+                'code': 'invalid_message',
+                'message': 'Already configured',
+              }),
+            ),
+          ),
+        ));
+        final message = await pending;
+        expect(message, isA<LauncherSetupError>());
+        expect((message as LauncherSetupError).peer, 'verified-owner');
+        expect(message.room, room);
+        await channel.close();
+      },
+    );
+  }
   test('ordinary chat errors retain their existing classification', () async {
     final transport = _Transport();
     final channel = PlainPeerChannel(transport: transport);

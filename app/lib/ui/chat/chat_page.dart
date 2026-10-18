@@ -36,6 +36,19 @@ import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 
+/// Validated target connection lease, not a Stop capability.
+class SessionControlsRequest {
+  const SessionControlsRequest(
+    this.peer,
+    this.room,
+    this.startedAt,
+    this.isCurrent,
+  );
+  final String peer, room;
+  final int startedAt;
+  final bool Function() isCurrent;
+}
+
 class ChatPage extends StatefulWidget {
   /// Plan/24-fix-title: optional title hint passed via `go_router`
   /// `extra` from the Home tile. Used as the peer-label fallback in
@@ -62,6 +75,7 @@ class ChatPage extends StatefulWidget {
   /// detail pane (no navigation stack to pop back to). Hides the back
   /// arrow; defaults to `true` for the phone full-screen route.
   final bool showBack;
+  final SessionControlsRequest? controlsRequest;
 
   const ChatPage({
     super.key,
@@ -69,6 +83,7 @@ class ChatPage extends StatefulWidget {
     this.initialDevice,
     this.initialOnline = false,
     this.showBack = true,
+    this.controlsRequest,
   });
 
   @override
@@ -82,6 +97,7 @@ class _ChatPageState extends State<ChatPage> {
   Object? _session;
   final Set<_SessionInfoLease> _infoDialogs = {};
   bool _infoOwnerActive = true;
+  bool _controlsOpened = false;
 
   @override
   void deactivate() {
@@ -116,10 +132,37 @@ class _ChatPageState extends State<ChatPage> {
   @override
   Widget build(BuildContext context) {
     final vm = context.watch<ChatViewModel>();
+    final controls = widget.controlsRequest;
+    if (controls != null) vm.bindControlsLease(controls.isCurrent);
     for (final lease in _infoDialogs) {
       if (!identical(lease.vm, vm)) {
         lease.invalidate(deferNotification: true);
       }
+    }
+    final request = widget.controlsRequest;
+    if (!_controlsOpened &&
+        request != null &&
+        (vm.activeRoom != null ||
+            !request.isCurrent() ||
+            vm.state is ChatNoPeer)) {
+      _controlsOpened = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted ||
+            !request.isCurrent() ||
+            vm.activePeer?.remoteEpk != request.peer ||
+            vm.activeRoom?.roomId != request.room ||
+            vm.activeRoom?.startedAt != request.startedAt) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Could not open agent controls. Try again.'),
+              ),
+            );
+          }
+          return;
+        }
+        _showSessionInfo(context, vm, vm.activePeer!);
+      });
     }
     final state = vm.state;
     final session = (vm.activePeer?.remoteEpk, vm.activePeer?.roomId);
@@ -381,6 +424,8 @@ class _ChatPageState extends State<ChatPage> {
                       room.roomId,
                       peerLabel,
                       roomName,
+                      freshStart: true,
+                      preferredRoom: room.roomId,
                     ),
                   )
                 : null,
@@ -483,10 +528,12 @@ class _ChatPageState extends State<ChatPage> {
       isCurrentOwner: () =>
           mounted &&
           _infoOwnerActive &&
+          (widget.controlsRequest?.isCurrent() ?? true) &&
           identical(this.context.read<ChatViewModel>(), vm),
     );
     _infoDialogs.add(lease);
     var closeChat = false;
+    var recoverAccess = false;
     try {
       final navigator = Navigator.of(context, rootNavigator: true);
       final route = DialogRoute<void>(
@@ -567,8 +614,26 @@ class _ChatPageState extends State<ChatPage> {
                             label: 'Paired',
                             value: pairedAt.split('T').first,
                           ),
+                          if (widget.controlsRequest != null)
+                            const Text(
+                              'Stop the running agent before removing its local entry.',
+                            ),
+                          Text(
+                            lease.controlsLoading
+                                ? 'Checking access…'
+                                : lease.stopCapability?.access?.label ??
+                                      'Access unknown · Check access',
+                          ),
+                          if (lease.stopCapability?.launchingHost
+                              case final host?)
+                            _InfoRow(
+                              label: 'Launching host',
+                              value: '${host.roomId} · ${host.launcherId}',
+                            ),
                           if (lease.stopError != null ||
-                              lease.stopCapability?.canStop == false &&
+                              lease.stopCapability?.access?.state ==
+                                      'unlocked' &&
+                                  lease.stopCapability?.canStop == false &&
                                   lease.stopCapability?.reason != null)
                             Text(
                               lease.stopError ?? lease.stopCapability!.reason!,
@@ -580,11 +645,36 @@ class _ChatPageState extends State<ChatPage> {
                       ),
               ),
               actions: [
-                if (snapshot != null && !lease.controlsLoading &&
-                    (lease.stopError != null || lease.stopCapability?.canStop == false && lease.stopCapability?.reason != null))
+                if (snapshot != null && !lease.controlsLoading)
                   TextButton(
-                    onPressed: lease.stopBusy ? null : () { unawaited(lease.refreshControls()); },
-                    child: const Text('Refresh'),
+                    onPressed: lease.stopBusy
+                        ? null
+                        : () {
+                            recoverAccess = true;
+                            Navigator.of(dCtx).pop();
+                          },
+                    child: Text(
+                      lease.stopCapability?.launchingHost != null &&
+                              const [
+                                'locked',
+                                'expired',
+                              ].contains(lease.stopCapability?.access?.state)
+                          ? 'Unlock launching host'
+                          : 'Check access',
+                    ),
+                  ),
+                if (snapshot != null &&
+                    !lease.controlsLoading &&
+                    (lease.stopError != null ||
+                        lease.stopCapability?.canStop == false &&
+                            lease.stopCapability?.reason != null))
+                  TextButton(
+                    onPressed: lease.stopBusy
+                        ? null
+                        : () {
+                            unawaited(lease.refreshControls());
+                          },
+                    child: const Text('Check status'),
                   ),
                 if (snapshot != null && lease.controlsLoading)
                   const Padding(
@@ -626,6 +716,34 @@ class _ChatPageState extends State<ChatPage> {
       // The pop-result Future completes before the reverse animation. Keep the
       // lease (including page invalidation) through actual overlay teardown.
       await route.completed;
+      if (recoverAccess && mounted && lease.readSnapshot() != null) {
+        final captured = lease.readSnapshot()!;
+        final message = await this.context.push<String>(
+          '/agents',
+          extra: AgentsTarget(
+            captured.peer.remoteEpk,
+            captured.room.roomId,
+            _peerDisplayName(captured.peer, null),
+            sessionDisplayName(captured.room, captured.peer),
+            resolveOrigin: true,
+            recoverChild: true,
+          ),
+        );
+        if (!mounted) return;
+        if (message != null) {
+          ScaffoldMessenger.of(
+            this.context,
+          ).showSnackBar(SnackBar(content: Text(message)));
+        }
+        if (vm.activePeer?.remoteEpk == captured.peer.remoteEpk &&
+            vm.activeRoom?.roomId == captured.room.roomId &&
+            vm.activeRoom?.startedAt == captured.room.startedAt &&
+            (widget.controlsRequest?.isCurrent() ?? true) &&
+            vm.isRoomLive) {
+          // New dialog/new lease/new inspect. The pre-navigation token is never reused.
+          await _showSessionInfo(this.context, vm, captured.peer);
+        }
+      }
       if (closeChat && mounted && lease.readSnapshot() != null) {
         final router = GoRouter.maybeOf(this.context);
         if (router != null) {
@@ -1156,7 +1274,7 @@ class _RevokedBanner extends StatelessWidget {
 }
 
 /// One info action's exact VM/peer/room lease, never a selection-following view.
-class _SessionInfoLease extends ChangeNotifier {
+class _SessionInfoLease extends ChangeNotifier with WidgetsBindingObserver {
   _SessionInfoLease(
     this.vm,
     this.peerEpk,
@@ -1164,6 +1282,7 @@ class _SessionInfoLease extends ChangeNotifier {
     required this.isCurrentOwner,
   }) {
     if (readSnapshot() != null) vm.addListener(_changed);
+    WidgetsBinding.instance.addObserver(this);
   }
 
   final ChatViewModel vm;
@@ -1174,7 +1293,9 @@ class _SessionInfoLease extends ChangeNotifier {
   bool _disposed = false;
   bool _notificationPending = false;
   int _controlsRevision = 0;
+  int? _roomStartedAt;
   bool controlsLoading = false, stopBusy = false;
+  Timer? _accessTimer;
   SessionStopCapability? stopCapability;
   String? stopError;
 
@@ -1182,6 +1303,7 @@ class _SessionInfoLease extends ChangeNotifier {
     if (_disposed || readSnapshot() == null) return null;
     final revision = ++_controlsRevision;
     controlsLoading = true;
+    stopCapability = null;
     stopError = null;
     _notify();
     try {
@@ -1193,6 +1315,20 @@ class _SessionInfoLease extends ChangeNotifier {
       }
       if (capability.peer != peerEpk || capability.room != roomId) return null;
       stopCapability = capability;
+      _accessTimer?.cancel();
+      final expires = capability.access?.expiresAt;
+      final remaining =
+          capability.access?.state != 'unlocked' || expires == null
+          ? 30000
+          : expires - DateTime.now().millisecondsSinceEpoch;
+      _accessTimer = Timer(
+        Duration(milliseconds: remaining.clamp(0, 30000)),
+        () {
+          stopCapability = null;
+          stopError = 'Access snapshot stale. Check access.';
+          _notify();
+        },
+      );
       return capability;
     } on SessionControlFailure catch (error) {
       if (!_disposed &&
@@ -1237,14 +1373,33 @@ class _SessionInfoLease extends ChangeNotifier {
         peer.remoteEpk != peerEpk ||
         (peer.roomId ?? 'main') != roomId ||
         room == null ||
-        room.roomId != roomId) {
+        room.roomId != roomId ||
+        _roomStartedAt != null && room.startedAt != _roomStartedAt) {
       invalidate(deferNotification: true);
       return null;
     }
+    _roomStartedAt ??= room.startedAt;
     return (peer: peer, room: room);
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed && !_disposed) {
+      ++_controlsRevision;
+      controlsLoading = false;
+      stopCapability = null;
+      stopError = 'Access snapshot stale. Check access.';
+      _notify();
+    }
+  }
+
   void _changed() {
+    if (!vm.isRoomLive) {
+      ++_controlsRevision;
+      controlsLoading = false;
+      stopCapability = null;
+      stopError = 'Session offline. Check status.';
+    }
     if (readSnapshot() != null) _notify();
   }
 
@@ -1275,6 +1430,8 @@ class _SessionInfoLease extends ChangeNotifier {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _accessTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _valid = false;
     vm.removeListener(_changed);
     super.dispose();

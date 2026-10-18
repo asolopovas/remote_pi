@@ -1,7 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:app/data/actions/actions_repository.dart';
+import 'package:app/data/transport/connection_manager.dart';
+import 'package:app/pairing/storage.dart';
 import 'package:app/data/transport/peer_channel.dart';
 import 'package:app/data/transport/channel.dart';
 import 'package:app/domain/contracts/agent_repository.dart';
@@ -28,7 +32,7 @@ Map<String, dynamic> _pong(
 
 class LocalRelay {
   final HttpServer server;
-  final authenticated = Completer<WebSocket>();
+  var authenticated = Completer<WebSocket>();
   WebSocket? socket;
   final outbound = StreamController<Map<String, dynamic>>.broadcast();
 
@@ -59,6 +63,7 @@ class LocalRelay {
       LocalRelay._(await HttpServer.bind(InternetAddress.loopbackIPv4, 0));
 
   Future<WsTransport> connect() async {
+    if (authenticated.isCompleted) authenticated = Completer<WebSocket>();
     final transport = await WsTransport.connect(
       relayUrl: 'ws://127.0.0.1:${server.port}',
       peerPubkey: _urlPeer,
@@ -83,7 +88,131 @@ class LocalRelay {
   }
 }
 
+class _ActionStorage extends PairingStorage {
+  @override
+  Future<List<PeerRecord>> listPeers() async => [];
+}
+
 void main() {
+  for (final changeRoom in [false, true]) {
+    test('repository ModelSet captures original WS room; no replay after '
+        '${changeRoom ? "room change" : "timeout"}', () async {
+      final relay = await LocalRelay.start();
+      final transport = await relay.connect();
+      final ch = PlainPeerChannel(transport: transport);
+      final cm = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: _ActionStorage(),
+        emitDebounce: Duration.zero,
+      );
+      final repo = ActionsRepository(
+        cm,
+        timeout: const Duration(milliseconds: 100),
+      );
+      final frames = <Map<String, dynamic>>[];
+      final sub = relay.outbound.stream.listen(frames.add);
+      addTearDown(() async {
+        repo.dispose();
+        cm.dispose();
+        await sub.cancel();
+        await ch.close();
+        await relay.close();
+      });
+      cm.adopt(
+        ch,
+        const PeerRecord(
+          remoteEpk: _peer,
+          roomId: 'project',
+          sessionName: 'pi',
+          relayUrl: 'ws://localhost',
+          pairedAt: 'now',
+        ),
+      );
+      // adopt does not implicitly select a persisted room on this path.
+      cm.switchRoom('project');
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      relay.send({
+        'type': 'room_announced',
+        'peer': _peer,
+        'room_id': 'project',
+        'started_at': 1,
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(cm.roomsFor(_peer).single.startedAt, 1);
+      final mutation = repo.setModel('actual', 'actual');
+      final failed = expectLater(mutation, throwsA(isA<ActionFailure>()));
+      // No await between repository invocation and selection change: this
+      // exercises the full synchronous capture chain, not a recording fake.
+      if (changeRoom) cm.switchRoom('next');
+      await failed;
+      cm.switchRoom('next');
+      cm.switchRoom('project');
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      final actions = frames.where((f) => f['ct'] != null).where((f) {
+        final inner = jsonDecode(utf8.decode(base64.decode(f['ct'] as String)));
+        return inner['type'] == 'model_set';
+      }).toList();
+      expect(actions, hasLength(1));
+      expect(actions.single['room'], 'project');
+      final inner = jsonDecode(
+        utf8.decode(base64.decode(actions.single['ct'] as String)),
+      );
+      expect(inner['provider'], 'actual');
+      expect(inner['model_id'], 'actual');
+    });
+  }
+
+  test(
+    'action send captures selected room synchronously and ingress keeps authenticated scope',
+    () async {
+      final relay = await LocalRelay.start();
+      final transport = await relay.connect();
+      final channel = PlainPeerChannel(transport: transport);
+      final incoming = channel.actionReplies.first;
+      final outbound = relay.outbound.stream.first;
+      final send = transport.send(
+        Uint8List.fromList(
+          utf8.encode(
+            jsonEncode({
+              'type': 'model_set',
+              'id': 'act_scope',
+              'provider': 'actual',
+              'model_id': 'actual',
+            }),
+          ),
+        ),
+      );
+      transport.setActiveRoom('next');
+      await send;
+      expect((await outbound)['room'], 'project');
+      for (final scope in [
+        (_other, 'next'),
+        (_peer, 'project'),
+        (_peer, 'next'),
+      ]) {
+        relay.send({
+          'peer': scope.$1,
+          'room': scope.$2,
+          'ct': base64.encode(
+            utf8.encode(
+              jsonEncode({
+                'type': 'error',
+                'in_reply_to': 'act_scope',
+                'code': 'invalid_message',
+                'message': 'Launcher locked',
+              }),
+            ),
+          ),
+        });
+      }
+      final reply = await incoming.timeout(const Duration(seconds: 2));
+      expect(reply.peer, _peer);
+      expect(reply.room, 'next');
+      expect(reply.message, isA<ScopedActionError>());
+      await channel.close();
+      await relay.close();
+    },
+  );
   test(
     'launcher transport scopes all security requests and nested replies to exact paired host and room',
     () async {
@@ -121,6 +250,7 @@ void main() {
           'launcher_status',
           'project_list',
           'launcher_unlock',
+          'launcher_pin_initialize',
           'launcher_lock',
           'launcher_shutdown',
           'project_launch',
@@ -133,7 +263,9 @@ void main() {
             status: type == 'launcher_status' || type == 'project_list'
                 ? null
                 : status,
-            pin: type == 'launcher_unlock' ? '123456' : null,
+            pin: ['launcher_unlock', 'launcher_pin_initialize'].contains(type)
+                ? '123456'
+                : null,
             projectId: type == 'project_launch' ? 'p' : null,
             agentId: type == 'launcher_agent_stop' ? 'a' : null,
           );
@@ -190,6 +322,19 @@ void main() {
           },
           {
             'type': 'error',
+            'in_reply_to':
+                '${launcherSetupRequestPrefix}retired-with-no-cache-entry',
+            'code': 'invalid_message',
+            'message': 'Already configured',
+          },
+          {
+            'type': 'error',
+            'in_reply_to': 'launcher_pin_initialize',
+            'code': 'invalid_message',
+            'message': 'Already configured',
+          },
+          {
+            'type': 'error',
             'in_reply_to': 'launcher_unlock',
             'code': 'invalid_message',
             'message': 'Wrong PIN',
@@ -208,7 +353,8 @@ void main() {
         await done;
         expect(messages.whereType<LauncherStatusResult>().length, 2);
         expect(messages.whereType<ProjectListResult>().length, 1);
-        expect(messages.whereType<ErrorMessage>().length, 2);
+        expect(messages.whereType<ErrorMessage>().length, 4);
+        expect(messages.whereType<LauncherSetupError>().length, 1);
         expect(messages.whereType<SessionControlStatusResult>().length, 1);
         expect(messages.whereType<SessionStopResult>().length, 1);
         expect(messages.whereType<SessionControlError>().length, 1);

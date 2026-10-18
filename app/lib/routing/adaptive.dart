@@ -83,6 +83,8 @@ class ShellLayout extends ChangeNotifier {
 /// toque. Vive enquanto o app roda (não é restaurada entre execuções, já
 /// que queremos iniciar sempre sem seleção).
 class SessionSelection extends ChangeNotifier {
+  int _revision = 0;
+  int get revision => _revision;
   ({String epk, String roomId, String title, String device, bool online})?
   _current;
 
@@ -113,6 +115,7 @@ class SessionSelection extends ChangeNotifier {
     if (c != null && c.epk == epk && c.roomId == roomId) {
       return; // no-op — evita rebuild do detail/master
     }
+    _revision++;
     _current = (
       epk: epk,
       roomId: roomId,
@@ -125,6 +128,7 @@ class SessionSelection extends ChangeNotifier {
 
   void clear() {
     if (_current == null) return;
+    _revision++;
     _current = null;
     notifyListeners();
   }

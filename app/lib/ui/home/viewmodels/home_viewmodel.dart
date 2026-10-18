@@ -1,3 +1,5 @@
+import 'package:app/domain/value_objects/launch_machine_key.dart';
+import 'package:app/data/transport/relay_config.dart';
 import 'dart:async';
 
 import 'package:app/data/preferences/preferences.dart';
@@ -176,6 +178,24 @@ class HomeViewModel extends ViewModel<HomeState> {
     return (all: all.length, online: online, offline: all.length - online);
   }
 
+  /// Start-only grouping; ordinary Home rows/counts remain session-based.
+  List<List<HomeItem>> get launchMachines {
+    final s = state;
+    if (s is! HomeList) return const [];
+    final groups = <String, List<HomeItem>>{};
+    for (final item in s.items(normalizeEpk: normalizeEpkForLookup)) {
+      if (!_online(item)) continue;
+      final key = launchMachineKey(
+        item.peer.remoteEpk,
+        resolveRelayUrl(_prefs),
+      );
+      if (key == null) continue;
+      final group = groups.putIfAbsent(key, () => []);
+      if (!group.any((i) => i.room.roomId == item.room.roomId)) group.add(item);
+    }
+    return groups.values.toList();
+  }
+
   bool get canClearInactive =>
       !_disposed && !_clearingInactive && _relayConnected && counts.offline > 0;
 
@@ -219,14 +239,19 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// `ConnectionManager._connect` falls back to room `'main'` → Pi
   /// never sees the frame → ChatViewModel sits on Connecting/offline
   /// even though the WS is alive.
-  Future<void> openSession(String epk, {String? roomId}) async {
+  Future<void> openSession(
+    String epk, {
+    String? roomId,
+    bool Function()? isCurrent,
+  }) async {
     final peers = await _storage.listPeers();
-    if (_disposed) return;
+    if (_disposed || !(isCurrent?.call() ?? true)) return;
     final match = peers.where((p) => p.remoteEpk == epk).cast<PeerRecord?>();
     if (match.isEmpty) return;
     final peer = match.first!;
     final effectiveRoom = (roomId == null || roomId.isEmpty) ? 'main' : roomId;
     await _prefs.setSelectedRoom(epk: epk, roomId: effectiveRoom);
+    if (_disposed || !(isCurrent?.call() ?? true)) return;
     if (peer.roomId != effectiveRoom) {
       // ignore: unawaited_futures
       _storage.savePeer(peer.copyWith(roomId: effectiveRoom));
@@ -250,10 +275,50 @@ class HomeViewModel extends ViewModel<HomeState> {
   Future<void> renameRoom(String epk, String roomId, String? name) =>
       _conn.setRoomLocalName(epk, roomId, name);
 
-  /// Long-press menu — delete a cached room locally. Caller should
-  /// gate on `!isRoomLive` (only offline rooms can be removed).
-  Future<void> deleteRoom(String epk, String roomId) =>
-      _conn.deleteCachedRoom(epk, roomId);
+  bool Function() roomActionGuard(HomeItem item) {
+    final pairing = _storage.peerRevision;
+    final current = _conn.roomActionGuard(
+      item.peer.remoteEpk,
+      item.room.roomId,
+      item.room.startedAt,
+    );
+    return () => !_disposed && pairing == _storage.peerRevision && current();
+  }
+
+  /// Controls own an explicit foreground connection, not the old menu socket.
+  Future<bool Function()> openControls(
+    HomeItem item, {
+    required bool Function() isCurrent,
+  }) async {
+    var revision = _prefs.selectedRoomRevision;
+    bool current() =>
+        !_disposed && isCurrent() && revision == _prefs.selectedRoomRevision;
+    return _conn.openRoomControls(
+      item.peer.remoteEpk,
+      item.room.roomId,
+      item.room.startedAt,
+      isCurrent: current,
+      prepare: () async {
+        final target = '${item.peer.remoteEpk}:${item.room.roomId}';
+        if (_prefs.selectedRoomRaw != target) revision++;
+        await _prefs.setSelectedRoom(
+          epk: item.peer.remoteEpk,
+          roomId: item.room.roomId,
+        );
+      },
+    );
+  }
+
+  /// Only local metadata; never sends process control or deletes history.
+  Future<bool> deleteRoom(
+    String epk,
+    String roomId, {
+    bool Function()? isCurrent,
+  }) => _conn.deleteInactiveCachedRoom(
+    epk,
+    roomId,
+    isCurrent: () => !_disposed && (isCurrent?.call() ?? true),
+  );
 
   @override
   void dispose() {

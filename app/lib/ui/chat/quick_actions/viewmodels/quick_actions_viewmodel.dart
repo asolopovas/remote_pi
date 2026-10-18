@@ -24,12 +24,39 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
   final _errorController = StreamController<String>.broadcast();
   StreamSubscription<ActiveRoomMeta>? _metaSub;
   bool _disposed = false;
+  late final bool Function() _scope;
+  int _modelRevision = 0;
+  int _loadRevision = 0;
+
+  static const sessionChangedMessage =
+      'Session changed. Return to sessions and reopen this chat.';
+
+  /// Read-only status of this VM's original authority; never renews it.
+  bool get hasValidScope => _scope();
+
+  void _checkScope() {
+    if (!_scope()) {
+      throw const ActionFailure(sessionChangedMessage);
+    }
+  }
+
+  void _report(Object error) {
+    if (!_disposed) {
+      _errorController.add(
+        error is ActionFailure ? error.message : 'Action failed: $error',
+      );
+    }
+  }
 
   QuickActionsViewModel(this._repo) : super(const QuickActionsIdle()) {
     // Plan/28 Wave D — seed from the repo's current snapshot before
     // anything is shown so the first build already has the right
     // highlight (instead of a flash of "null" while the stream
     // delivers its first event).
+    final source = _repo;
+    _scope = source is IActionScopeSource
+        ? (source as IActionScopeSource).captureActionScope()
+        : () => true;
     _adoptMeta(_repo.activeRoomMeta);
     _metaSub = _repo.activeRoomMetaStream.listen(_adoptMeta);
   }
@@ -56,57 +83,81 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
   }
 
   Future<void> setModel(WireModel model) async {
+    _checkScope();
+    if (_disposed || state is QuickActionsBusy) {
+      throw const ActionFailure('Action already in progress.');
+    }
+    _modelRevision++;
     // Optimistic highlight — flip the current model immediately so the
     // picker row reflects the tap before the round-trip resolves.
     final previous = state.currentModel;
     final previousName = state.currentModelName;
-    _emitIfAlive(QuickActionsBusy(
-      action: ActionName.modelSet,
-      currentModel: model,
-      currentModelName: model.name,
-      currentThinking: state.currentThinking,
-    ));
-    try {
-      await _repo.setModel(model.provider, model.id);
-      _emitIfAlive(QuickActionsIdle(
+    _emitIfAlive(
+      QuickActionsBusy(
+        action: ActionName.modelSet,
         currentModel: model,
         currentModelName: model.name,
         currentThinking: state.currentThinking,
-      ));
-    } on ActionFailure catch (e) {
+      ),
+    );
+    try {
+      await _repo.setModel(model.provider, model.id);
+      _checkScope();
+      _modelRevision++;
+      _emitIfAlive(
+        QuickActionsIdle(
+          currentModel: model,
+          currentModelName: model.name,
+          currentThinking: state.currentThinking,
+        ),
+      );
+    } catch (e) {
       // Revert optimistic highlight on failure.
-      _emitIfAlive(QuickActionsIdle(
-        currentModel: previous,
-        currentModelName: previousName,
-        currentThinking: state.currentThinking,
-      ));
-      _errorController.add(e.message);
+      _emitIfAlive(
+        QuickActionsIdle(
+          currentModel: previous,
+          currentModelName: previousName,
+          currentThinking: state.currentThinking,
+        ),
+      );
+      _report(e);
       rethrow;
     }
   }
 
   Future<void> setThinking(ThinkingLevel level) async {
+    _checkScope();
+    if (state is QuickActionsBusy) {
+      throw const ActionFailure('Action already in progress.');
+    }
     final previous = state.currentThinking;
-    _emitIfAlive(QuickActionsBusy(
-      action: ActionName.thinkingSet,
-      currentThinking: level,
-      currentModel: state.currentModel,
-      currentModelName: state.currentModelName,
-    ));
-    try {
-      await _repo.setThinking(level);
-      _emitIfAlive(QuickActionsIdle(
+    _emitIfAlive(
+      QuickActionsBusy(
+        action: ActionName.thinkingSet,
         currentThinking: level,
         currentModel: state.currentModel,
         currentModelName: state.currentModelName,
-      ));
-    } on ActionFailure catch (e) {
-      _emitIfAlive(QuickActionsIdle(
-        currentThinking: previous,
-        currentModel: state.currentModel,
-        currentModelName: state.currentModelName,
-      ));
-      _errorController.add(e.message);
+      ),
+    );
+    try {
+      await _repo.setThinking(level);
+      _checkScope();
+      _emitIfAlive(
+        QuickActionsIdle(
+          currentThinking: level,
+          currentModel: state.currentModel,
+          currentModelName: state.currentModelName,
+        ),
+      );
+    } catch (e) {
+      _emitIfAlive(
+        QuickActionsIdle(
+          currentThinking: previous,
+          currentModel: state.currentModel,
+          currentModelName: state.currentModelName,
+        ),
+      );
+      _report(e);
       rethrow;
     }
   }
@@ -115,21 +166,33 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
   /// picker. Throws [ActionFailure] on disconnect / timeout — the
   /// picker widget catches and renders an error placeholder.
   Future<ModelsCatalogue> loadModels({bool forceRefresh = false}) async {
+    _checkScope();
+    final revision = _modelRevision;
+    final load = ++_loadRevision;
     try {
       final catalogue = await _repo.listModels(forceRefresh: forceRefresh);
+      _checkScope();
+      if (_disposed ||
+          revision != _modelRevision ||
+          load != _loadRevision ||
+          state is QuickActionsBusy) {
+        throw const ActionFailure('Models changed. Reload models.');
+      }
       // Adopt the Pi's "current" answer; only overwrite when present so
       // a stale cache entry (current=null) doesn't clobber a value we
       // already learned via setModel.
       if (catalogue.current != null) {
-        _emitIfAlive(QuickActionsIdle(
-          currentModel: catalogue.current,
-          currentModelName: catalogue.current?.name ?? state.currentModelName,
-          currentThinking: state.currentThinking,
-        ));
+        _emitIfAlive(
+          QuickActionsIdle(
+            currentModel: catalogue.current,
+            currentModelName: catalogue.current?.name ?? state.currentModelName,
+            currentThinking: state.currentThinking,
+          ),
+        );
       }
       return catalogue;
-    } on ActionFailure catch (e) {
-      _errorController.add(e.message);
+    } catch (e) {
+      _report(e);
       rethrow;
     }
   }
@@ -143,7 +206,7 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
   /// name, not the full [WireModel]; the picker can call
   /// [loadModels] when it needs the structured record.
   void _adoptMeta(ActiveRoomMeta meta) {
-    if (_disposed) return;
+    if (_disposed || !_scope()) return;
     final cur = state;
     // Compose the next state preserving the busy-action flag so an
     // in-flight call doesn't lose its spinner mid-update.
@@ -178,36 +241,46 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
     emit(next);
   }
 
-  Future<void> _runVoid(
-    ActionName action,
-    Future<void> Function() body,
-  ) async {
-    _emitIfAlive(QuickActionsBusy(
-      action: action,
-      currentThinking: state.currentThinking,
-      currentModel: state.currentModel,
-      currentModelName: state.currentModelName,
-    ));
+  Future<void> _runVoid(ActionName action, Future<void> Function() body) async {
+    _checkScope();
+    _emitIfAlive(
+      QuickActionsBusy(
+        action: action,
+        currentThinking: state.currentThinking,
+        currentModel: state.currentModel,
+        currentModelName: state.currentModelName,
+      ),
+    );
     try {
       await body();
-      _emitIfAlive(QuickActionsIdle(
-        currentThinking: state.currentThinking,
-        currentModel: state.currentModel,
-        currentModelName: state.currentModelName,
-      ));
-    } on ActionFailure catch (e) {
-      _emitIfAlive(QuickActionsIdle(
-        currentThinking: state.currentThinking,
-        currentModel: state.currentModel,
-        currentModelName: state.currentModelName,
-      ));
-      _errorController.add(e.message);
+      _checkScope();
+      _emitIfAlive(
+        QuickActionsIdle(
+          currentThinking: state.currentThinking,
+          currentModel: state.currentModel,
+          currentModelName: state.currentModelName,
+        ),
+      );
+    } catch (e) {
+      _emitIfAlive(
+        QuickActionsIdle(
+          currentThinking: state.currentThinking,
+          currentModel: state.currentModel,
+          currentModelName: state.currentModelName,
+        ),
+      );
+      _report(e);
       rethrow;
     }
   }
 
   void _emitIfAlive(QuickActionsState next) {
     if (_disposed) return;
+    if (!_scope()) {
+      // This VM is permanently bound to its source modal, never adopted by B.
+      emit(const QuickActionsIdle());
+      return;
+    }
     emit(next);
   }
 

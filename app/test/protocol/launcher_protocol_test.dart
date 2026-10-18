@@ -111,6 +111,55 @@ void main() {
             as LauncherStatusResult;
     expect(shutdown.stopped, false);
   });
+  test('additive pin_setup enum is optional but strict when present', () {
+    LauncherStatus parse(Map<String, dynamic> extra) =>
+        (ServerMessage.fromJson({
+                  'type': 'launcher_status_result',
+                  'in_reply_to': 'id',
+                  'status': {...producer, ...extra},
+                })
+                as LauncherStatusResult)
+            .status;
+    expect(parse({}).pinSetup, null);
+    for (final value in PinSetup.values) {
+      expect(parse({'pin_setup': value.name}).pinSetup, value);
+    }
+    for (final value in [null, true, 1, '', 'AVAILABLE', 'unsupported']) {
+      expect(() => parse({'pin_setup': value}), throwsFormatException);
+    }
+    expect(
+      LauncherRequest(
+        'launcher_pin_initialize',
+        'id',
+        status: status,
+        pin: '123456',
+      ).toJson(),
+      {
+        'type': 'launcher_pin_initialize',
+        'id': 'id',
+        'launcher_id': 'launcher',
+        'epoch': 'epoch',
+        'pin': '123456',
+      },
+    );
+  });
+  test('launcher API metadata is optional and accepts updated producer', () {
+    LauncherStatus parse(Map<String, dynamic> extra) =>
+        (ServerMessage.fromJson({
+                  'type': 'launcher_status_result',
+                  'in_reply_to': 'id',
+                  'status': {...producer, ...extra},
+                })
+                as LauncherStatusResult)
+            .status;
+    expect(parse({}).launcherApi, null);
+    expect(parse({}).supportsNewLaunch, isFalse);
+    expect(parse({'launcher_api': 2}).supportsNewLaunch, isFalse);
+    expect(parse({'launcher_api': 3}).supportsNewLaunch, isTrue);
+    expect(parse({'launcher_api': 4}).supportsNewLaunch, isTrue);
+    expect(parse({'launcher_api': 2}).launcherApi, 2);
+    expect(() => parse({'launcher_api': '2'}), throwsA(isA<TypeError>()));
+  });
   test('actual producer projects carry full directory allowlist', () {
     final result =
         ServerMessage.fromJson({

@@ -1,3 +1,6 @@
+import 'package:app/domain/contracts/agent_repository.dart';
+import 'package:app/protocol/codec.dart';
+import 'package:app/protocol/uuid7.dart';
 // WebSocket-based PeerTransport.
 //
 // Flow per connection:
@@ -34,7 +37,12 @@ class WsTransportError implements Exception {
   String toString() => 'WsTransportError: $message';
 }
 
-class WsTransport implements PeerTransport, IControlLink, IScopedPeerTransport {
+class WsTransport
+    implements
+        PeerTransport,
+        IControlLink,
+        IScopedPeerTransport,
+        IRoomLauncherProbe {
   final WebSocketChannel _ws;
   final _queue = _MsgQueue();
   final _controlController = StreamController<ControlInbound>.broadcast();
@@ -102,9 +110,33 @@ class WsTransport implements PeerTransport, IControlLink, IScopedPeerTransport {
             }
             final bytes = _b64Decode(frame['ct'] as String);
             final senderRoom = frame['room'] as String?;
+            final inner = jsonDecode(utf8.decode(bytes));
+            // Probe traffic is management-only, including late replies and errors.
+            // Never relabel this outer room as the currently selected room.
+            final probeId = inner is Map<String, dynamic>
+                ? inner['in_reply_to']
+                : null;
+            if (probeId is String &&
+                probeId.startsWith(launcherProbeRequestPrefix)) {
+              final pending = transport._launcherProbes[probeId];
+              if (pending != null && senderRoom == pending.room) {
+                if (inner['type'] == 'launcher_status_result') {
+                  final result = decodeServer(utf8.decode(bytes));
+                  if (result is LauncherStatusResult) {
+                    transport._finishProbe(probeId, (
+                      peer: transport._peerPubkey,
+                      room: senderRoom!,
+                      status: result.status,
+                    ));
+                  }
+                } else if (inner['type'] == 'error') {
+                  transport._finishProbe(probeId, null);
+                }
+              }
+              return;
+            }
             // Metadata is independent of chat selection, but still belongs
             // to this authenticated paired sender and exact routing room.
-            final inner = jsonDecode(utf8.decode(bytes));
             if (inner is Map<String, dynamic> &&
                 (inner['type'] == 'room_display_snapshot' ||
                     inner['type'] == 'room_display_request')) {
@@ -135,9 +167,13 @@ class WsTransport implements PeerTransport, IControlLink, IScopedPeerTransport {
                       'session_stop_result',
                     ].contains(inner['type']) ||
                     (inner['type'] == 'error' &&
-                        transport._agentRequestIds.contains(
-                          inner['in_reply_to'],
-                        ))) &&
+                        (transport._agentRequestIds.contains(
+                              inner['in_reply_to'],
+                            ) ||
+                            (inner['in_reply_to'] is String &&
+                                (inner['in_reply_to'] as String).startsWith(
+                                  launcherSetupRequestPrefix,
+                                ))))) &&
                 senderRoom != transport._activeRoom) {
               return;
             }
@@ -187,6 +223,8 @@ class WsTransport implements PeerTransport, IControlLink, IScopedPeerTransport {
         if (!challengeCompleter.isCompleted) {
           challengeCompleter.completeError(e);
         }
+        transport.cancelLauncherProbes();
+        transport._probeClosed = true;
         transport._queue.error(e);
       },
       onDone: () {
@@ -195,6 +233,8 @@ class WsTransport implements PeerTransport, IControlLink, IScopedPeerTransport {
             const WsTransportError('WS closed during auth'),
           );
         }
+        transport.cancelLauncherProbes();
+        transport._probeClosed = true;
         transport._queue.close();
         if (!transport._controlController.isClosed) {
           transport._controlController.close();
@@ -256,8 +296,67 @@ class WsTransport implements PeerTransport, IControlLink, IScopedPeerTransport {
     if (room == _activeRoom) {
       return;
     }
+    cancelLauncherProbes();
     _activeRoom = room;
     _roomEpoch++;
+  }
+
+  final _launcherProbes = <String, _LauncherProbe>{};
+  bool _probeClosed = false;
+
+  @override
+  Future<({String peer, String room, LauncherStatus status})?> probeLauncher(
+    String room,
+  ) async {
+    if (_probeClosed || room.isEmpty || _launcherProbes.length >= 2) {
+      return null;
+    }
+    final id = '$launcherProbeRequestPrefix${uuid7()}';
+    final pending = _LauncherProbe(room);
+    _launcherProbes[id] = pending;
+    pending.timer = Timer(
+      const Duration(seconds: 2),
+      () => _finishProbe(id, null),
+    );
+    // Same authenticated codec/envelope path, but a fixed read-only message and
+    // scoped request sink instead of the ordinary selected-room receive queue.
+    _agentRequestIds.add(id);
+    if (_agentRequestIds.length > 128) {
+      _agentRequestIds.remove(_agentRequestIds.first);
+    }
+    try {
+      _ws.sink.add(
+        jsonEncode({
+          'peer': _peerPubkey,
+          'room': room,
+          'ct': base64.encode(
+            utf8.encode(
+              encodeClient(LauncherRequest('launcher_status', id)).trimRight(),
+            ),
+          ),
+        }),
+      );
+    } on StateError {
+      _finishProbe(id, null);
+    }
+    return pending.result.future;
+  }
+
+  void _finishProbe(
+    String id,
+    ({String peer, String room, LauncherStatus status})? result,
+  ) {
+    final pending = _launcherProbes.remove(id);
+    if (pending == null) return;
+    pending.timer?.cancel();
+    pending.result.complete(result);
+  }
+
+  @override
+  void cancelLauncherProbes() {
+    for (final id in _launcherProbes.keys.toList()) {
+      _finishProbe(id, null);
+    }
   }
 
   bool _isExpectedSender(Object? sender) {
@@ -278,6 +377,7 @@ class WsTransport implements PeerTransport, IControlLink, IScopedPeerTransport {
           'agent_list',
           'launcher_status',
           'launcher_unlock',
+          'launcher_pin_initialize',
           'launcher_lock',
           'launcher_shutdown',
           'project_list',
@@ -333,6 +433,8 @@ class WsTransport implements PeerTransport, IControlLink, IScopedPeerTransport {
 
   @override
   Future<void> close() async {
+    _probeClosed = true;
+    cancelLauncherProbes();
     await _sub?.cancel();
     await _ws.sink.close();
     _queue.close();
@@ -393,4 +495,12 @@ Uint8List _b64Decode(String s) {
   } on FormatException {
     return base64Url.decode(padded);
   }
+}
+
+class _LauncherProbe {
+  _LauncherProbe(this.room);
+  final String room;
+  final result =
+      Completer<({String peer, String room, LauncherStatus status})?>();
+  Timer? timer;
 }

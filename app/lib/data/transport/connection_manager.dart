@@ -232,7 +232,26 @@ class ConnectionManager extends Service {
     }
   }
 
+  final Map<(String, String), int> _roomActionRevisions = {};
+  // Unlike socket-scoped action revisions, these survive owned reconnects.
+  final Map<(String, String), int> _roomIdentityRevisions = {};
+  // Last authoritative live facts survive socket resets solely to revoke a
+  // parked handoff on subsequent authoritative loss. Never used as live UI or
+  // action authority. Entries are removed with room invalidation/cache cleanup.
+  final Set<(String, String)> _handoffLiveRooms = {};
+  final Map<String, int> _discoveryGenerations = {};
+  final Map<(String, String), int> _endedGenerations = {};
+  void _bumpRoomAction(String key, String roomId) {
+    final target = (key, roomId);
+    _roomActionRevisions[target] = (_roomActionRevisions[target] ?? 0) + 1;
+  }
+
   void _endDisplayRoom(String key, String roomId) {
+    _bumpRoomAction(key, roomId);
+    final identity = (key, roomId);
+    _handoffLiveRooms.remove(identity);
+    _roomIdentityRevisions[identity] =
+        (_roomIdentityRevisions[identity] ?? 0) + 1;
     if (key == toStandardB64(_activePeer?.remoteEpk ?? '')) {
       _displayRequests.remove(roomId);
     }
@@ -251,6 +270,9 @@ class ConnectionManager extends Service {
     _displayPollTimer = null;
     _displayRequests.clear();
     _socketGeneration++;
+    _roomActionRevisions.clear();
+    _discoveryGenerations.clear();
+    _endedGenerations.clear();
     _displayAuthorities.clear();
     _liveRoomIds.clear();
     for (final list in _roomsByPeer.values) {
@@ -554,13 +576,152 @@ class ConnectionManager extends Service {
   /// current channel WITHOUT emitting a transient `StatusNoPeer` (plano
   /// 13) and starts a fresh connection — the visible transition becomes
   /// `Online → Connecting → Online`, never landing on NoPeer.
-  Future<void> switchTo(PeerRecord peer) async {
+  Future<void> switchTo(PeerRecord peer) => _switchTo(peer);
+
+  /// Foreground navigation intent fenced across the asynchronous old socket close.
+  Future<void> switchToGuarded(
+    PeerRecord peer, {
+    required bool Function() isCurrent,
+  }) => _switchTo(peer, isCurrent: isCurrent);
+
+  Future<void> _switchTo(PeerRecord peer, {bool Function()? isCurrent}) async {
+    if (!(isCurrent?.call() ?? true)) return;
     final fromEpk = _activePeer?.remoteEpk;
     if (fromEpk == peer.remoteEpk && _status is StatusOnline) {
       return;
     }
     await _teardownActive(emitNoPeer: false);
+    if (!(isCurrent?.call() ?? true)) return;
     await _connect(peer);
+  }
+
+  /// A bounded explicit Home handoff. Only our two socket resets and final room
+  /// selection are permitted; external changes (including ABA) revoke the intent.
+  /// The returned controls lease is captured only on fresh target discovery.
+  Future<bool Function()> openRoomControls(
+    String epk,
+    String roomId,
+    int startedAt, {
+    required bool Function() isCurrent,
+    required Future<void> Function() prepare,
+  }) async {
+    var valid = true;
+    IChannel? ownedChannel;
+    final key = toStandardB64(epk);
+    final target = (key, roomId);
+    final identity = _roomIdentityRevisions[target];
+    final pairing = _storage.peerRevision;
+    var generation = _socketGeneration;
+    var epoch = _roomSelectionEpoch;
+    var active = _activePeer?.remoteEpk;
+    bool current() =>
+        valid &&
+        isCurrent() &&
+        !_statusController.isClosed &&
+        pairing == _storage.peerRevision &&
+        generation == _socketGeneration &&
+        epoch == _roomSelectionEpoch &&
+        active == _activePeer?.remoteEpk &&
+        identity == _roomIdentityRevisions[target] &&
+        roomsFor(
+          epk,
+        ).any((r) => r.roomId == roomId && r.startedAt == startedAt);
+    void check() {
+      if (!current()) throw Exception('Session changed. Open the menu again.');
+    }
+
+    try {
+      check();
+      final peers = await _storage.listPeers().timeout(
+        const Duration(seconds: 5),
+      );
+      check();
+      final peer = peers
+          .where((p) => toStandardB64(p.remoteEpk) == key)
+          .firstOrNull;
+      if (peer == null || !isRoomLive(epk, roomId)) {
+        throw Exception('Session unavailable. Open the menu again.');
+      }
+      await prepare().timeout(const Duration(seconds: 5));
+      check();
+      if (toStandardB64(active ?? '') != key || _status is! StatusOnline) {
+        // Do not carry a socket-bound lease through our own teardown. Predict
+        // exactly the owned resets; never recapture whatever state won a race.
+        generation++;
+        await _teardownActive(
+          emitNoPeer: false,
+        ).timeout(const Duration(seconds: 5));
+        check();
+        generation++;
+        if (_activeRoomId != roomId) epoch++;
+        active = peer.remoteEpk;
+        await _connect(peer.copyWith(roomId: roomId), isCurrent: current);
+        check();
+        ownedChannel = channel;
+      }
+      final ch = channel;
+      if (ch == null || _status is! StatusOnline) {
+        throw Exception('Machine unavailable. Try again.');
+      }
+      final ready = Completer<void>();
+      void inspect([Object? _]) {
+        if (ready.isCompleted) return;
+        if (!current() || !identical(ch, channel)) {
+          ready.completeError(
+            Exception('Session changed. Open the menu again.'),
+          );
+        } else if (isRoomLive(epk, roomId)) {
+          ready.complete();
+        }
+      }
+
+      final statusSub = statusStream.listen(inspect);
+      final roomsSub = roomsStream.listen(inspect);
+      // Also observes UI/pairing/disposal while discovery is parked.
+      final poll = Timer.periodic(const Duration(milliseconds: 25), inspect);
+      try {
+        refreshDiscovery();
+        inspect();
+        await ready.future.timeout(const Duration(seconds: 5));
+        check();
+        if (!identical(ch, channel) || !isRoomLive(epk, roomId)) {
+          throw Exception('Session unavailable. Open the menu again.');
+        }
+        if (_activeRoomId != roomId) epoch++;
+        switchRoom(roomId);
+        check();
+        final lease = roomActionGuard(epk, roomId, startedAt);
+        return () =>
+            current() &&
+            identical(ch, channel) &&
+            lease() &&
+            isRoomLive(epk, roomId);
+      } finally {
+        poll.cancel();
+        await statusSub.cancel();
+        await roomsSub.cancel();
+      }
+    } catch (_) {
+      valid = false;
+      // Discard only this intent's fresh connection, never a replacement that
+      // won an external selection/disposal race. Closing is not process Stop.
+      if (ownedChannel != null &&
+          generation == _socketGeneration &&
+          identical(ownedChannel, channel)) {
+        _endDisplaySocket();
+        _cancelRetry();
+        _cancelPing();
+        _connectCancel?.cancel();
+        unawaited(_channelSub?.cancel());
+        _channelSub = null;
+        unawaited(_controlSub?.cancel());
+        _controlSub = null;
+        _activePeer = null;
+        if (!_statusController.isClosed) _emit(const StatusNoPeer());
+        unawaited(ownedChannel.close().catchError((Object _) {}));
+      }
+      rethrow;
+    }
   }
 
   // Adopt a channel that was established by an external flow (e.g. the
@@ -644,7 +805,7 @@ class ConnectionManager extends Service {
 
   // ---------------------------------------------------------------------------
 
-  Future<void> _connect(PeerRecord peer) async {
+  Future<void> _connect(PeerRecord peer, {bool Function()? isCurrent}) async {
     _endDisplaySocket();
     _cancelRetry();
     _cancelPing();
@@ -686,9 +847,43 @@ class ConnectionManager extends Service {
     }
     _emit(const StatusConnecting());
 
+    void abandonIntent() {
+      if (isCurrent == null ||
+          token.isCancelled ||
+          !identical(_connectCancel, token)) {
+        return;
+      }
+      token.cancel();
+      _activePeer = null;
+      _endDisplaySocket();
+      if (!_statusController.isClosed) _emit(const StatusNoPeer());
+    }
+
     try {
-      final ch = await _factory(peer, token);
-      if (token.isCancelled) {
+      if (!(isCurrent?.call() ?? true)) {
+        abandonIntent();
+        return;
+      }
+      final pending = _factory(peer, token);
+      final ch = isCurrent == null
+          ? await pending
+          : await pending
+                .then((ch) async {
+                  if (token.isCancelled) {
+                    await ch.close();
+                    throw Exception('Connection intent expired.');
+                  }
+                  return ch;
+                })
+                .timeout(
+                  const Duration(seconds: 5),
+                  onTimeout: () {
+                    abandonIntent();
+                    throw TimeoutException('Machine unavailable. Try again.');
+                  },
+                );
+      if (token.isCancelled || !(isCurrent?.call() ?? true)) {
+        abandonIntent();
         await ch.close();
         return;
       }
@@ -703,7 +898,11 @@ class ConnectionManager extends Service {
       _watchControl(ch);
       _replaySubscriptions();
     } catch (e) {
-      if (!token.isCancelled) _scheduleRetry(peer);
+      if (isCurrent != null) {
+        abandonIntent();
+      } else if (!token.isCancelled) {
+        _scheduleRetry(peer);
+      }
     } finally {
       // Only clear the flight flag if THIS call is still the active
       // attempt — a newer _connect may have superseded us.
@@ -790,6 +989,9 @@ class ConnectionManager extends Service {
       ):
         final key = toStandardB64(peer);
         _clearHeartbeatRecoveryForRoom(key, roomId);
+        if (!(_liveRoomIds[key]?.contains(roomId) ?? false)) {
+          _bumpRoomAction(key, roomId);
+        }
         final list = _roomsByPeer[key] ?? <RoomInfo>[];
         // Only explicit mobile-local provenance survives a fresh snapshot.
         String? preservedLocalName;
@@ -829,6 +1031,7 @@ class ConnectionManager extends Service {
         );
         final liveAlready = _liveRoomIds[key]?.contains(roomId) ?? false;
         final identicalEntry = existingIdx >= 0 && list[existingIdx] == next;
+        _handoffLiveRooms.add((key, roomId));
         if (identicalEntry && liveAlready) {
           // No-op announce — relay re-broadcast. Skip to keep the UI
           // quiet.
@@ -850,6 +1053,7 @@ class ConnectionManager extends Service {
         _maybeAdoptLegacyRoom(key, roomId);
       case RoomEnded(:final peer, :final roomId):
         final key = toStandardB64(peer);
+        _endedGenerations[(key, roomId)] = _socketGeneration;
         _clearHeartbeatRecoveryForRoom(key, roomId);
         // Mark the room offline but KEEP it in the cached set so the
         // tile stays in Home (now grey). Removing from _liveRoomIds
@@ -920,6 +1124,7 @@ class ConnectionManager extends Service {
         _persistRoomsForPeer(key);
       case RoomsSnapshot(:final peer, :final rooms):
         final key = toStandardB64(peer);
+        _discoveryGenerations[key] = _socketGeneration;
         _clearHeartbeatRecoveryForRoom(key);
         // Merge snapshot into cache: add unknown rooms, refresh
         // metadata (preserving local rename + previous model when
@@ -956,6 +1161,24 @@ class ConnectionManager extends Service {
           );
         }
         final newLive = rooms.map((r) => r.roomId).toSet();
+        // Socket-local live sets were cleared by an owned reconnect. Compare
+        // against the last authoritative facts too: absence must revoke the
+        // original intent before a same-incarnation restore can renew it.
+        for (final target
+            in _handoffLiveRooms
+                .where(
+                  (target) => target.$1 == key && !newLive.contains(target.$2),
+                )
+                .toList()) {
+          _endDisplayRoom(key, target.$2);
+        }
+        _handoffLiveRooms.addAll(newLive.map((id) => (key, id)));
+        final oldLive = _liveRoomIds[key] ?? const <String>{};
+        for (final id in {...oldLive, ...newLive}) {
+          if (oldLive.contains(id) != newLive.contains(id)) {
+            _bumpRoomAction(key, id);
+          }
+        }
         for (final id in byId.keys.where((id) => !newLive.contains(id))) {
           if (key == toStandardB64(_activePeer?.remoteEpk ?? '')) {
             _displayRequests.remove(id);
@@ -1211,14 +1434,53 @@ class ConnectionManager extends Service {
     }
   }
 
-  /// Remove local metadata only while discovery is online and the room is not.
-  /// Recheck after storage awaits so a resurrected room is never removed live.
-  Future<bool> deleteInactiveCachedRoom(String epk, String roomId) async {
+  /// Captures the discovery channel and room incarnation for a pending UI action.
+  /// An unknown incarnation is a lease only on the pre-discovery state, not
+  /// permission to adopt the first announcement. Room revisions survive metadata
+  /// cleanup; socket resets clear revisions only while advancing the generation.
+  bool Function() roomActionGuard(String epk, String roomId, int? startedAt) {
+    final generation = _socketGeneration;
+    final target = (toStandardB64(epk), roomId);
+    final revision = _roomActionRevisions[target];
+    return () =>
+        _roomActionRevisions[target] == revision &&
+        generation == _socketGeneration &&
+        (startedAt == null
+            ? !(_roomsByPeer[target.$1]?.any((room) => room.roomId == roomId) ??
+                  false)
+            : _roomsByPeer[target.$1]?.any(
+                    (room) =>
+                        room.roomId == roomId && room.startedAt == startedAt,
+                  ) ==
+                  true);
+  }
+
+  /// Remove metadata only with fresh offline evidence. Recheck after storage
+  /// awaits and repair persistence if the room resurrects or the action expires.
+  Future<bool> deleteInactiveCachedRoom(
+    String epk,
+    String roomId, {
+    bool Function()? isCurrent,
+  }) async {
     final key = toStandardB64(epk);
+    final generation = _socketGeneration;
+    final actionRevision = _roomActionRevisions[(key, roomId)];
+    final startedAt = _roomsByPeer[key]
+        ?.where((room) => room.roomId == roomId)
+        .firstOrNull
+        ?.startedAt;
     bool eligible() =>
+        _roomActionRevisions[(key, roomId)] == actionRevision &&
+        (isCurrent?.call() ?? true) &&
+        generation == _socketGeneration &&
         _status is StatusOnline &&
+        (_discoveryGenerations[key] == generation ||
+            _endedGenerations[(key, roomId)] == generation) &&
         !isRoomLive(epk, roomId) &&
-        _roomsByPeer[key]?.any((room) => room.roomId == roomId) == true;
+        _roomsByPeer[key]?.any(
+              (room) => room.roomId == roomId && room.startedAt == startedAt,
+            ) ==
+            true;
     if (!eligible()) return false;
     final cached = await _storage.loadRooms(epk);
     if (!eligible()) return false;
@@ -1422,6 +1684,7 @@ class ConnectionManager extends Service {
       return false;
     }
     (_liveRoomIds[degraded.peerKey] ??= <String>{}).add(degraded.roomId);
+    _handoffLiveRooms.add((degraded.peerKey, degraded.roomId));
     _scheduleRoomsEmit();
     return true;
   }

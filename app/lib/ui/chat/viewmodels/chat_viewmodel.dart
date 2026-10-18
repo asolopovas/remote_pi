@@ -87,6 +87,14 @@ class ChatViewModel extends ViewModel<ChatState> {
     _bootstrap();
   }
 
+  bool Function()? _controlsLease;
+
+  /// Installed by the controls route synchronously, before bootstrap storage
+  /// returns. A failed lease must never trigger ordinary chat auto-connection.
+  void bindControlsLease(bool Function() isCurrent) {
+    _controlsLease = isCurrent;
+  }
+
   Future<SessionStopCapability> inspectSessionStop(
     String peer,
     String room,
@@ -186,6 +194,11 @@ class ChatViewModel extends ViewModel<ChatState> {
     }
     final peer = await _storage.loadPeer(epk);
     if (_disposed) return;
+    if (!(_controlsLease?.call() ?? true)) {
+      _bootstrapping = false;
+      emit(const ChatNoPeer());
+      return;
+    }
     if (peer == null) {
       _bootstrapping = false;
       emit(const ChatNoPeer());
@@ -198,16 +211,33 @@ class ChatViewModel extends ViewModel<ChatState> {
     // Bind transport before the singleton writer. Otherwise a same-peer room
     // switch can briefly accept old-room frames while SyncService already
     // writes to the new room.
-    _conn.switchRoom(roomId);
-    if (_conn.activePeer?.remoteEpk != sessionPeer.remoteEpk) {
-      await _conn.switchTo(sessionPeer);
-      if (_disposed) return;
+    // A controls route already owns a validated connection. It may only bind
+    // read-only state here, never reconnect or select after an external change.
+    if (_controlsLease != null) {
+      if (!(_controlsLease?.call() ?? false) ||
+          _conn.activePeer?.remoteEpk != epk ||
+          _conn.activeRoomId != roomId) {
+        _bootstrapping = false;
+        emit(const ChatNoPeer());
+        return;
+      }
+    } else {
       _conn.switchRoom(roomId);
+      if (_conn.activePeer?.remoteEpk != sessionPeer.remoteEpk) {
+        await _conn.switchTo(sessionPeer);
+        if (_disposed) return;
+        _conn.switchRoom(roomId);
+      }
     }
 
     // Bind the writer + watch the DB for this (peer, room).
     await _sync.activate(epk, roomId);
     if (_disposed) return;
+    if (!(_controlsLease?.call() ?? true)) {
+      _bootstrapping = false;
+      emit(const ChatNoPeer());
+      return;
+    }
     // Plan/32f — now that the writer owns THIS session (activate reset the
     // turn state on a switch, or kept it when re-entering the same session),
     // seed the in-memory streaming/working from it. Doing this here instead of

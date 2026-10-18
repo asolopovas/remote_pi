@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:app/domain/contracts/agent_repository.dart';
@@ -8,7 +9,19 @@ import 'package:app/ui/core/themes/themes.dart';
 import 'viewmodels/agents_viewmodel.dart';
 
 class AgentsTarget {
-  const AgentsTarget(this.peer, this.room, this.host, this.session);
+  const AgentsTarget(
+    this.peer,
+    this.room,
+    this.host,
+    this.session, {
+    this.freshStart = false,
+    this.preferredRoom,
+    this.resolveOrigin = false,
+    this.recoverChild = false,
+  });
+  final bool freshStart;
+  final String? preferredRoom;
+  final bool resolveOrigin, recoverChild;
   final String peer, room, host, session;
 }
 
@@ -23,6 +36,145 @@ enum _LauncherAction { agents, lock }
 
 class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
   final _pin = TextEditingController();
+  final _confirmPin = TextEditingController();
+  AgentsViewModel? _vm;
+  String? _authority;
+  final _pinFocus = FocusNode();
+  final _confirmFocus = FocusNode();
+  bool _revealed = false, _pinVisited = false, _confirmVisited = false;
+  bool _autofocusUsed = false;
+  bool _allowPop = false, _leaving = false;
+  Timer? _cooldownTimer;
+  int _cooldownDeadline = 0;
+
+  bool get _validPin => RegExp(r'^\d{6,12}$').hasMatch(_pin.text);
+  bool get _coolingDown =>
+      (_vm?.security?.cooldownUntil ?? 0) >
+      DateTime.now().millisecondsSinceEpoch;
+
+  void _syncCooldown(int deadline) {
+    if (_cooldownDeadline == deadline) return;
+    _cooldownDeadline = deadline;
+    _cooldownTimer?.cancel();
+    if (deadline <= DateTime.now().millisecondsSinceEpoch) return;
+    _cooldownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (!_coolingDown) timer.cancel();
+      setState(() {});
+    });
+  }
+
+  Widget _cooldownNotice() {
+    final seconds =
+        ((_cooldownDeadline - DateTime.now().millisecondsSinceEpoch) / 1000)
+            .ceil();
+    return Text(
+      'Too many attempts. Try again in ${seconds > 0 ? seconds : 0}s.',
+    );
+  }
+
+  Widget _pinField({
+    required bool confirm,
+    required bool setup,
+    required bool disabled,
+    required AgentsViewModel vm,
+  }) {
+    final autofocus = !_autofocusUsed && !disabled && !confirm;
+    if (autofocus) _autofocusUsed = true;
+    return TextField(
+      key: Key(
+        setup
+            ? (confirm ? 'launcher-confirm-pin' : 'launcher-create-pin')
+            : 'launcher-pin',
+      ),
+      controller: confirm ? _confirmPin : _pin,
+      focusNode: confirm ? _confirmFocus : _pinFocus,
+      autofocus: autofocus,
+      enabled: !disabled,
+      obscureText: !_revealed,
+      enableSuggestions: false,
+      autocorrect: false,
+      enableIMEPersonalizedLearning: false,
+      autofillHints: const [],
+      keyboardType: TextInputType.number,
+      textInputAction: setup && !confirm
+          ? TextInputAction.next
+          : TextInputAction.done,
+      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      maxLength: 12,
+      decoration: InputDecoration(
+        labelText: setup ? (confirm ? 'Confirm PIN' : 'Create PIN') : 'PIN',
+        helperText: confirm ? null : '6–12 digits',
+        counterText: '',
+        errorText: confirm
+            ? (_confirmVisited && _pin.text != _confirmPin.text
+                  ? 'PINs do not match.'
+                  : null)
+            : (_pinVisited && !_validPin ? 'Use 6–12 digits.' : null),
+        suffixIcon: IconButton(
+          tooltip: _revealed ? 'Hide PIN' : 'Show PIN',
+          onPressed: disabled
+              ? null
+              : () => setState(() => _revealed = !_revealed),
+          icon: Icon(_revealed ? Icons.visibility_off : Icons.visibility),
+        ),
+      ),
+      onChanged: (_) => setState(() {}),
+      onSubmitted: (_) {
+        if (disabled ||
+            _coolingDown ||
+            vm.state.busy ||
+            vm.state.invalid ||
+            _targetChanged) {
+          return;
+        }
+        if (setup && !confirm) {
+          _confirmFocus.requestFocus();
+        } else if (setup) {
+          _createPin(vm);
+        } else {
+          _unlock(vm);
+        }
+      },
+    );
+  }
+
+  void _clearPins() {
+    _pin.clear();
+    _confirmPin.clear();
+    _revealed = false;
+    _pinVisited = false;
+    _confirmVisited = false;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final vm = context.read<AgentsViewModel>();
+    if (!identical(vm, _vm)) {
+      _vm?.removeListener(_securityChanged);
+      _clearPins();
+      _vm = vm;
+      vm.addListener(_securityChanged);
+      _securityChanged();
+    }
+  }
+
+  void _securityChanged() {
+    final vm = _vm!;
+    final security = vm.security;
+    _syncCooldown(security?.cooldownUntil ?? 0);
+    final authority =
+        '${security?.launcherId}:${security?.epoch}:${security?.configured}:${security?.pinSetup}:${security?.unlocked}:${security?.expiresAt}:${security?.cooldownUntil}:${vm.state.invalid}';
+    if (_authority != authority || vm.state.busy || vm.state.invalid) {
+      _clearPins();
+    }
+    _authority = authority;
+  }
+
   String? _selected, _identity, _projectDefinition;
   ({String id, String identity, String definition})? _selectionCandidate;
   bool _confirming = false, _targetChanged = false;
@@ -34,12 +186,33 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _pinFocus.addListener(() {
+      if (!_pinFocus.hasFocus && mounted && _pin.text.isNotEmpty) {
+        setState(() => _pinVisited = true);
+      }
+    });
+    _confirmFocus.addListener(() {
+      if (!_confirmFocus.hasFocus && mounted && _confirmPin.text.isNotEmpty) {
+        setState(() => _confirmVisited = true);
+      }
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        context.read<AgentsViewModel>().initialize(
-          widget.target.peer,
-          widget.target.room,
-        );
+        final vm = context.read<AgentsViewModel>();
+        if (widget.target.freshStart) {
+          vm.resolveFresh(
+            widget.target.peer,
+            preferredRoom: widget.target.preferredRoom,
+          );
+        } else if (widget.target.resolveOrigin) {
+          vm.resolveHost(
+            widget.target.peer,
+            widget.target.room,
+            returnToChild: widget.target.recoverChild,
+          );
+        } else {
+          vm.initialize(widget.target.peer, widget.target.room);
+        }
       }
     });
   }
@@ -47,14 +220,25 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _pin.clear();
+    _clearPins();
+    _vm?.removeListener(_securityChanged);
+    _cooldownTimer?.cancel();
+    _pinFocus.dispose();
+    _confirmFocus.dispose();
     _pin.dispose();
+    _confirmPin.dispose();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed) _pin.clear();
+    if (state != AppLifecycleState.resumed) {
+      _clearPins();
+      _vm?.invalidateRecovery();
+      _pinFocus.unfocus();
+      _confirmFocus.unfocus();
+      setState(() {});
+    }
   }
 
   @override
@@ -62,7 +246,7 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.target.peer != widget.target.peer ||
         oldWidget.target.room != widget.target.room) {
-      _pin.clear();
+      _clearPins();
       _selected = null;
       _selectionCandidate = null;
       _targetChanged = true;
@@ -74,10 +258,82 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
   }
 
   Future<void> _unlock(AgentsViewModel vm) async {
-    if (vm.state.busy || vm.state.invalid || _targetChanged) return;
-    final pin = _pin.text;
-    _pin.clear();
-    await vm.unlock(pin);
+    if (vm.state.busy || vm.state.invalid || _targetChanged || _coolingDown) {
+      return;
+    }
+    if (!_validPin) {
+      setState(() => _pinVisited = true);
+      return;
+    }
+    var pin = _pin.text;
+    _clearPins();
+    final pending = vm.unlock(pin);
+    pin = '';
+    await pending;
+    if (mounted &&
+        widget.target.recoverChild &&
+        vm.unlocked &&
+        !vm.state.invalid) {
+      await _returnToChild(vm);
+    }
+  }
+
+  Future<void> _returnToChild(AgentsViewModel vm) async {
+    if (_leaving) return;
+    _leaving = true;
+    final status = await vm.finishRecovery();
+    if (!mounted) return;
+    if (status == null) {
+      _leaving = false;
+      return;
+    }
+    // Child verification, not parent unlock, is the only success evidence.
+    _popAfterReturn(
+      status.canStop
+          ? null
+          : 'Child access not confirmed. The selected host may not be its launching host. Check access; do not retry PIN here.',
+    );
+  }
+
+  void _popAfterReturn(String? message) {
+    setState(() => _allowPop = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.pop(message);
+    });
+  }
+
+  Future<void> _leaveLauncher() async {
+    final vm = context.read<AgentsViewModel>();
+    if (_leaving || vm.state.busy) return;
+    _leaving = true;
+    _clearPins();
+    final returned = await vm.cancelRecovery();
+    if (!mounted) return;
+    if (returned) {
+      _popAfterReturn(null);
+    } else {
+      // Never expose the old child chat while the transport still targets a parent.
+      context.go('/home');
+    }
+  }
+
+  Future<void> _createPin(AgentsViewModel vm) async {
+    if (vm.state.busy || vm.state.invalid || _targetChanged || _coolingDown) {
+      return;
+    }
+    if (!RegExp(r'^\d{6,12}$').hasMatch(_pin.text) ||
+        _pin.text != _confirmPin.text) {
+      setState(() {
+        _pinVisited = true;
+        _confirmVisited = true;
+      });
+      return;
+    }
+    var pin = _pin.text;
+    _clearPins();
+    final pending = vm.initializePin(pin);
+    pin = '';
+    await pending;
   }
 
   Future<void> _confirm({ManagedAgent? stop}) async {
@@ -102,7 +358,7 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
         title: Text(stop == null ? 'Start agent?' : 'Stop agent?'),
         content: Text(
           stop == null
-              ? '${warnedUnknown ? 'Earlier start unconfirmed. Starting another may create a second agent.\n\n' : ''}${widget.target.host} · ${project!.name}\n${project.cwd}${extraFolders.isEmpty ? '' : '\nAccess: ${extraFolders.join(', ')}'}\n\nStops when this launcher closes or reloads.'
+              ? '${warnedUnknown ? 'Earlier start unconfirmed. Starting another may create a second agent.\n\n' : ''}${widget.target.host} · ${vm.launchSession ?? vm.launchRoom ?? widget.target.session} · ${project!.name}\n${project.cwd}${extraFolders.isEmpty ? '' : '\nAccess: ${extraFolders.join(', ')}'}\n\nStops when this launcher closes or reloads.'
               : '${stop.name}\nStops this agent only.',
         ),
         actions: [
@@ -138,10 +394,30 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
       acknowledgeUnknown: warnedUnknown,
     );
     if (!mounted || agent == null) return;
+    if (_targetChanged) return;
+    final opened = await vm.openAgent(agent);
+    if (!mounted || !opened || _targetChanged) return;
     final router = GoRouter.maybeOf(context);
     if (router != null) {
-      context.read<SessionSelection>().clear();
+      context.read<SessionSelection>().select(
+        widget.target.peer,
+        agent.roomId,
+        agent.name,
+        widget.target.host,
+        true,
+      );
+      final wide = isWideLayout(context);
       router.go('/home');
+      if (!wide) {
+        router.push(
+          '/chat',
+          extra: {
+            'title': agent.name,
+            'device': widget.target.host,
+            'online': true,
+          },
+        );
+      }
     }
   }
 
@@ -172,7 +448,7 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
         );
       }
       _selected = null;
-      _pin.clear();
+      _clearPins();
     } else {
       final candidate = _selectionCandidate;
       _selectionCandidate = null;
@@ -199,18 +475,18 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
                     _definition(p) == _projectDefinition,
               )) {
         _selected = null;
-        _pin.clear();
+        _clearPins();
       }
     }
     _identity = identity;
-    if (state.invalid) _pin.clear();
+    if (state.invalid) _clearPins();
   }
 
-  Widget _retry(AgentsViewModel vm) => FilledButton(
+  Widget _checkStatus(AgentsViewModel vm) => FilledButton(
     onPressed: vm.state.busy || vm.state.invalid || _targetChanged
         ? null
         : vm.refresh,
-    child: const Text('Retry'),
+    child: const Text('Check status'),
   );
 
   @override
@@ -227,52 +503,78 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
             .where((a) => a.state != 'stopped')
             .toList() ??
         const <ManagedAgent>[];
-    return Scaffold(
-      backgroundColor: context.colors.bg,
-      appBar: AppBar(
-        title: const Text('Start agent'),
-        actions: [
-          IconButton(
-            tooltip: 'Refresh',
-            onPressed: disabled ? null : vm.refresh,
-            icon: const Icon(Icons.refresh),
+    return PopScope(
+      canPop: !widget.target.resolveOrigin || _allowPop,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && widget.target.resolveOrigin) _leaveLauncher();
+      },
+      child: Scaffold(
+        backgroundColor: context.colors.bg,
+        appBar: AppBar(
+          leading: widget.target.resolveOrigin
+              ? BackButton(onPressed: _leaveLauncher)
+              : null,
+          title: Text(
+            widget.target.recoverChild
+                ? 'Launching host access'
+                : 'Start agent',
           ),
-          if (vm.unlocked && !state.invalid)
-            PopupMenuButton<_LauncherAction>(
-              tooltip: 'Agent options',
-              enabled: !disabled,
-              onSelected: (action) {
-                switch (action) {
-                  case _LauncherAction.agents:
-                    _showAgents(vm);
-                  case _LauncherAction.lock:
-                    _pin.clear();
-                    vm.lock();
-                }
-              },
-              itemBuilder: (_) => [
-                if (agents.isNotEmpty)
-                  const PopupMenuItem(
-                    value: _LauncherAction.agents,
-                    child: Text('Started here'),
-                  ),
-                const PopupMenuItem(
-                  value: _LauncherAction.lock,
-                  child: Text('Lock access'),
-                ),
-              ],
+          actions: [
+            IconButton(
+              tooltip: 'Refresh',
+              onPressed: disabled ? null : vm.refresh,
+              icon: const Icon(Icons.refresh),
             ),
-        ],
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(AppSpacing.md),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          spacing: AppSpacing.md,
-          children: [
-            Text('Host: ${widget.target.host}', style: context.typo.sansBody),
-            ..._content(vm, disabled, agents),
+            if (vm.unlocked && !state.invalid)
+              PopupMenuButton<_LauncherAction>(
+                tooltip: 'Agent options',
+                enabled: !disabled,
+                onSelected: (action) {
+                  switch (action) {
+                    case _LauncherAction.agents:
+                      _showAgents(vm);
+                    case _LauncherAction.lock:
+                      _clearPins();
+                      vm.lock();
+                  }
+                },
+                itemBuilder: (_) => [
+                  if (agents.isNotEmpty)
+                    const PopupMenuItem(
+                      value: _LauncherAction.agents,
+                      child: Text('Started here'),
+                    ),
+                  const PopupMenuItem(
+                    value: _LauncherAction.lock,
+                    child: Text('Lock access'),
+                  ),
+                ],
+              ),
           ],
+        ),
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            spacing: AppSpacing.md,
+            children: [
+              Text('Host: ${widget.target.host}', style: context.typo.sansBody),
+              Text(
+                'Session: ${vm.launchSession ?? vm.launchRoom ?? widget.target.session}',
+                style: context.typo.sansBody,
+              ),
+              if (vm.security != null)
+                Text(
+                  vm.security!.launcherApi == null
+                      ? 'Launcher API unknown · host update may be needed.'
+                      : 'Launcher API ${vm.security!.launcherApi}',
+                  style: context.typo.monoSmall,
+                ),
+              if (widget.target.recoverChild && vm.security != null)
+                const Text('Access: this launcher only · 5 minutes'),
+              ..._content(vm, disabled, agents),
+            ],
+          ),
         ),
       ),
     );
@@ -284,17 +586,108 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
     List<ManagedAgent> agents,
   ) {
     final state = vm.state, security = vm.security;
-    if (state.busy) return [const LinearProgressIndicator()];
+    if (vm.choosingFreshSession) {
+      return [
+        Text(state.message ?? 'Choose launching session'),
+        const Text('Choose launching session'),
+        for (final session in vm.freshSessions)
+          ListTile(
+            title: Text(session.label),
+            subtitle: Text(session.room),
+            onTap: disabled ? null : () => vm.chooseFreshSession(session.room),
+          ),
+      ];
+    }
+    if (vm.choosingHost) {
+      return [
+        const Text(
+          'Choose launching session. Origin unknown on this host version.',
+        ),
+        for (final choice in vm.hostChoices)
+          ListTile(
+            title: Text(choice.label),
+            subtitle: Text(choice.room),
+            onTap: () => vm.chooseHost(widget.target.peer, choice.room),
+          ),
+        if (vm.hostChoices.isEmpty)
+          const Text('No live paired sessions. Check status from Home.'),
+      ];
+    }
+    if (vm.recoveryError != null) {
+      return [
+        Text(vm.recoveryError!),
+        TextButton(
+          onPressed: _leaveLauncher,
+          child: const Text('Back to sessions'),
+        ),
+      ];
+    }
+    if (state.busy || vm.resolvingHost) {
+      return [
+        const LinearProgressIndicator(),
+        Semantics(
+          liveRegion: true,
+          child: Text(state.message ?? 'Checking status…'),
+        ),
+      ];
+    }
     if (state.invalid || _targetChanged) {
       return [Text(state.message ?? 'Host changed. Reopen the launcher.')];
     }
     if (security == null) {
-      return [Text(state.message ?? 'Host unavailable.'), _retry(vm)];
+      return [Text(state.message ?? 'Host unavailable.'), _checkStatus(vm)];
+    }
+    if (widget.target.recoverChild && vm.unlocked) {
+      return [
+        const Text(
+          'Access is scoped to this launching host, not the whole device.',
+        ),
+        FilledButton(
+          onPressed: disabled ? null : () => _returnToChild(vm),
+          child: const Text('Return & check access'),
+        ),
+      ];
+    }
+    if (widget.target.recoverChild && !security.configured) {
+      return [
+        const Text(
+          'Host access unavailable. Check the launching host setup locally.',
+        ),
+        _checkStatus(vm),
+      ];
+    }
+    if (!security.configured && security.pinSetup == PinSetup.available) {
+      final cooldown =
+          security.cooldownUntil > DateTime.now().millisecondsSinceEpoch;
+      final valid = RegExp(r'^\d{6,12}$').hasMatch(_pin.text);
+      final matches = _pin.text == _confirmPin.text;
+      return [
+        if (state.message != null) Text(state.message!),
+        if (cooldown) _cooldownNotice(),
+        for (final confirm in [false, true])
+          _pinField(
+            confirm: confirm,
+            setup: true,
+            disabled: disabled || cooldown,
+            vm: vm,
+          ),
+        FilledButton(
+          key: const Key('create-launcher-pin'),
+          onPressed: disabled || cooldown || !valid || !matches
+              ? null
+              : () => _createPin(vm),
+          child: const Text('Create PIN & unlock'),
+        ),
+      ];
     }
     if (!security.configured) {
       return [
         Text('Host setup required', style: context.typo.sansBody),
-        const Text('Create a PIN on the PC, then retry.'),
+        Text(
+          security.pinSetup == PinSetup.unavailable
+              ? 'PIN storage unavailable. Inspect and repair it locally on the PC.'
+              : 'Update the host for phone PIN setup, or create a PIN on the PC, then check status.',
+        ),
         FilledButton.icon(
           key: const Key('copy-launcher-setup'),
           onPressed: () => Clipboard.setData(
@@ -303,7 +696,7 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
           icon: const Icon(Icons.copy, size: 18),
           label: const Text('Copy setup command'),
         ),
-        TextButton(onPressed: vm.refresh, child: const Text('Check again')),
+        TextButton(onPressed: vm.refresh, child: const Text('Check status')),
       ];
     }
     if (!vm.unlocked) {
@@ -311,28 +704,15 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
           security.cooldownUntil > DateTime.now().millisecondsSinceEpoch;
       return [
         if (state.message != null) Text(state.message!),
-        if (cooldown && state.message == null)
-          const Text('Too many attempts. Try again shortly.'),
-        TextField(
-          key: const Key('launcher-pin'),
-          controller: _pin,
-          enabled: !disabled,
-          obscureText: true,
-          enableSuggestions: false,
-          autocorrect: false,
-          autofillHints: const [],
-          keyboardType: TextInputType.number,
-          textInputAction: TextInputAction.done,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-          maxLength: 12,
-          decoration: const InputDecoration(labelText: 'PIN', counterText: ''),
-          onChanged: (_) => setState(() {}),
-          onSubmitted: (_) {
-            if (!cooldown) _unlock(vm);
-          },
+        if (cooldown) _cooldownNotice(),
+        _pinField(
+          confirm: false,
+          setup: false,
+          disabled: disabled || cooldown,
+          vm: vm,
         ),
         FilledButton(
-          onPressed: disabled || cooldown || _pin.text.isEmpty
+          onPressed: disabled || cooldown || !_validPin
               ? null
               : () => _unlock(vm),
           style: FilledButton.styleFrom(
@@ -342,15 +722,18 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
         ),
       ];
     }
+    if (!security.supportsNewLaunch) {
+      return [const Text(newLaunchCompatibilityMessage), _checkStatus(vm)];
+    }
     final availability = state.availability;
     if (availability?.available != true) {
       return [
         Text(state.message ?? availability?.reason ?? 'Launching unavailable.'),
-        _retry(vm),
+        _checkStatus(vm),
       ];
     }
     if (vm.projects.isEmpty) {
-      return [const Text('No approved projects on this PC.'), _retry(vm)];
+      return [const Text('No approved projects on this PC.'), _checkStatus(vm)];
     }
     final full =
         agents
@@ -359,6 +742,7 @@ class _AgentsPageState extends State<AgentsPage> with WidgetsBindingObserver {
         availability!.maxAgents;
     return [
       if (state.message != null) Text(state.message!),
+      if (state.message != null || state.needsReconciliation) _checkStatus(vm),
       RadioGroup<String>(
         groupValue: _selected,
         onChanged: (value) {

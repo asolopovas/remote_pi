@@ -174,6 +174,9 @@ class _StopControls extends SessionControlRepository {
   int inspections = 0, stops = 0;
   Completer<SessionStopCapability>? pending;
   bool unknown = false;
+  bool allowed = true;
+  SessionAccess? access;
+  LaunchingHost? origin;
   @override
   Future<SessionStopCapability> inspect(String peer, String room) async {
     inspections++;
@@ -181,8 +184,10 @@ class _StopControls extends SessionControlRepository {
         SessionStopCapability(
           peer: peer,
           room: room,
-          canStop: true,
-          token: 'opaque',
+          canStop: allowed,
+          token: allowed ? 'opaque' : null,
+          access: access,
+          launchingHost: origin,
         );
   }
 
@@ -335,6 +340,94 @@ class _DialogLifecycleHarness {
 }
 
 void main() {
+  for (final state in ['unlocked', 'locked', 'expired', 'unavailable']) {
+    testWidgets(
+      'Session info own launching-host access $state is scoped, fresh and never automatic Stop',
+      (tester) async {
+        final timed = state == 'unlocked' || state == 'expired';
+        final controls = _StopControls()
+          ..allowed = state == 'unlocked'
+          ..origin = const LaunchingHost('actual-root', 'actual-launcher')
+          ..access = SessionAccess(
+            state,
+            timed
+                ? DateTime.now().millisecondsSinceEpoch +
+                      (state == 'unlocked' ? 60000 : -1)
+                : null,
+          );
+        final h = await _DialogLifecycleHarness.create(
+          tester,
+          sessionControls: controls,
+        );
+        await h.mount(tester);
+        await tester.tap(find.byTooltip('Session info'));
+        await tester.pumpAndSettle();
+        expect(find.text('actual-root · actual-launcher'), findsOneWidget);
+        expect(
+          find.text(
+            state == 'locked' || state == 'expired'
+                ? 'Unlock launching host'
+                : 'Check access',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining(
+            state == 'expired'
+                ? 'access expired'
+                : state == 'unavailable'
+                ? 'host unavailable'
+                : 'host $state',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('stop-session-agent')),
+          state == 'unlocked' ? findsOneWidget : findsNothing,
+        );
+        expect(controls.stops, 0);
+        await tester.pump(const Duration(seconds: 31));
+        await tester.pumpAndSettle();
+        expect(find.text('Access unknown · Check access'), findsOneWidget);
+        expect(find.byKey(const Key('stop-session-agent')), findsNothing);
+        expect(controls.stops, 0);
+        await tester.tap(find.byTooltip('Close info'));
+        await tester.pumpAndSettle();
+        await h.dispose(tester);
+      },
+    );
+  }
+  testWidgets(
+    'same child room replaced cannot retain old access snapshot or Stop',
+    (tester) async {
+      final controls = _StopControls()
+        ..access = SessionAccess(
+          'unlocked',
+          DateTime.now().millisecondsSinceEpoch + 60000,
+        );
+      final h = await _DialogLifecycleHarness.create(
+        tester,
+        sessionControls: controls,
+      );
+      await h.mount(tester);
+      await tester.tap(find.byTooltip('Session info'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('host unlocked until'), findsOneWidget);
+      final scope = h.vm as _ScopeChat;
+      scope.room = RoomInfo(
+        roomId: scope.room!.roomId,
+        startedAt: scope.room!.startedAt + 1,
+      );
+      scope.changed();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('host unlocked until'), findsNothing);
+      expect(find.byKey(const Key('stop-session-agent')), findsNothing);
+      expect(controls.stops, 0);
+      await tester.tap(find.byTooltip('Close info'));
+      await tester.pumpAndSettle();
+      await h.dispose(tester);
+    },
+  );
   for (final outcome in ['cancel', 'confirm', 'switch', 'unknown']) {
     testWidgets('Stop agent is explicit, exact and non-replayed: $outcome', (
       tester,
@@ -379,9 +472,12 @@ void main() {
           findsOneWidget,
         );
         expect(find.byKey(const Key('stop-session-agent')), findsNothing);
-        await tester.tap(find.widgetWithText(TextButton, 'Refresh'));
+        await tester.tap(find.widgetWithText(TextButton, 'Check status'));
         await tester.pumpAndSettle();
-        expect(controls.stops, 1); // Read-only reconciliation never retries Stop.
+        expect(
+          controls.stops,
+          1,
+        ); // Read-only reconciliation never retries Stop.
         expect(find.byKey(const Key('stop-session-agent')), findsOneWidget);
       }
       if (outcome != 'confirm') {

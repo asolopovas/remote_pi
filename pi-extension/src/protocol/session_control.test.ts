@@ -28,3 +28,15 @@ test("session control frozen opaque-envelope fixtures and strict fields", () => 
   expect(() => decodeServer(JSON.stringify({ ...results[1], token: "must-not-leak" }))).toThrow();
   expect(() => decodeServer(JSON.stringify({ ...results[0], token: undefined }))).toThrow();
 });
+
+
+test("optional access/origin strict snapshots retain legacy compatibility", () => {
+  const base = { type: "session_control_status_result", in_reply_to: "q", room_id: "child", can_stop: false };
+  for (const state of ["unlocked", "locked", "expired", "unavailable"]) {
+    const result = { ...base, access: { state, expires_at: ["unlocked", "expired"].includes(state) ? 123 : null }, launching_host: { room_id: "actual-root", launcher_id: "actual-launcher" } };
+    expect(decodeServer(JSON.stringify(result))).toEqual(result);
+  }
+  for (const access of [null, {}, { state: "other", expires_at: null }, { state: "locked", expires_at: 1 }, { state: "unlocked", expires_at: null }, { state: "expired", expires_at: -1 }, { state: "expired", expires_at: 1.5 }, { state: "locked", expires_at: null, owner: "foreign" }]) expect(() => decodeServer(JSON.stringify({ ...base, access }))).toThrow();
+  for (const launching_host of [null, {}, { room_id: "", launcher_id: "l" }, { room_id: "r", launcher_id: "l", cwd: "/guess" }]) expect(() => decodeServer(JSON.stringify({ ...base, launching_host }))).toThrow();
+  expect(() => decodeServer(JSON.stringify({ ...base, can_stop: true, token: "t", access: { state: "expired", expires_at: 123 } }))).toThrow();
+});

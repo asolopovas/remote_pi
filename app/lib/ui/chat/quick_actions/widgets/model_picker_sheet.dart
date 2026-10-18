@@ -42,6 +42,9 @@ class _ModelPickerBody extends StatefulWidget {
 class _ModelPickerBodyState extends State<_ModelPickerBody> {
   late Future<ModelsCatalogue> _future;
   String? _providerFilter;
+  String? _mutationError;
+  bool _picking = false;
+  bool _reconcileRequired = false;
 
   @override
   void initState() {
@@ -55,20 +58,40 @@ class _ModelPickerBodyState extends State<_ModelPickerBody> {
   }
 
   Future<void> _refresh() async {
+    if (_picking) return;
     setState(() {
+      _mutationError = null;
       _future = _load(forceRefresh: true);
     });
-    await _future.catchError((Object _) => const ModelsCatalogue(models: []));
+    try {
+      await _future;
+      if (mounted) setState(() => _reconcileRequired = false);
+    } catch (_) {
+      // FutureBuilder owns the inline read error; never replay a mutation.
+    }
   }
 
   Future<void> _onPick(WireModel model) async {
+    if (_picking || _reconcileRequired) return;
     final vm = context.read<QuickActionsViewModel>();
+    setState(() {
+      _picking = true;
+      _mutationError = null;
+    });
     try {
       await vm.setModel(model);
       if (!mounted) return;
       Navigator.of(context).pop();
-    } catch (_) {
-      // Error is surfaced as a snackbar via the parent sheet's listener.
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _mutationError = error is ActionFailure
+            ? error.message
+            : 'Model change failed. Reload models.';
+        _reconcileRequired = true;
+      });
+    } finally {
+      if (mounted) setState(() => _picking = false);
     }
   }
 
@@ -91,6 +114,8 @@ class _ModelPickerBodyState extends State<_ModelPickerBody> {
               const SizedBox(height: 8),
               _Header(onRefresh: _refresh),
               Divider(color: colors.border, height: 1, thickness: 1),
+              if (_mutationError != null)
+                _ErrorState(message: _mutationError!, onRetry: _refresh),
               Flexible(
                 child: FutureBuilder<ModelsCatalogue>(
                   future: _future,
@@ -110,12 +135,15 @@ class _ModelPickerBodyState extends State<_ModelPickerBody> {
                     if (cat.models.isEmpty) {
                       return const _EmptyState();
                     }
-                    return _ProviderTabs(
-                      catalogue: cat,
-                      selectedProvider: _providerFilter,
-                      onProviderTap: (p) =>
-                          setState(() => _providerFilter = p),
-                      onModelPick: _onPick,
+                    return IgnorePointer(
+                      ignoring: _picking || _reconcileRequired,
+                      child: _ProviderTabs(
+                        catalogue: cat,
+                        selectedProvider: _providerFilter,
+                        onProviderTap: (p) =>
+                            setState(() => _providerFilter = p),
+                        onModelPick: _onPick,
+                      ),
                     );
                   },
                 ),
@@ -201,13 +229,12 @@ class _ProviderTabs extends StatelessWidget {
     final colors = context.colors;
     final providers = <String>{
       for (final m in catalogue.models) m.provider,
-    }.toList()
-      ..sort();
+    }.toList()..sort();
     final filtered = selectedProvider == null
         ? catalogue.models
         : catalogue.models
-            .where((m) => m.provider == selectedProvider)
-            .toList();
+              .where((m) => m.provider == selectedProvider)
+              .toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -243,7 +270,8 @@ class _ProviderTabs extends StatelessWidget {
                 Divider(color: colors.border, height: 1, thickness: 1),
             itemBuilder: (_, i) {
               final m = filtered[i];
-              final isCurrent = catalogue.current?.id == m.id &&
+              final isCurrent =
+                  catalogue.current?.id == m.id &&
                   catalogue.current?.provider == m.provider;
               return _ModelTile(
                 model: m,
@@ -276,9 +304,7 @@ class _Chip extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
-          border: Border.all(
-            color: selected ? colors.accent : colors.border,
-          ),
+          border: Border.all(color: selected ? colors.accent : colors.border),
           color: selected ? colors.accent.withValues(alpha: 0.12) : colors.bg,
           borderRadius: BorderRadius.circular(4),
         ),
@@ -436,6 +462,7 @@ class _ErrorState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scopeValid = context.read<QuickActionsViewModel>().hasValidScope;
     final colors = context.colors;
     return Padding(
       padding: const EdgeInsets.all(20),
@@ -443,7 +470,7 @@ class _ErrorState extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            message,
+            scopeValid ? message : QuickActionsViewModel.sessionChangedMessage,
             textAlign: TextAlign.center,
             style: TextStyle(
               fontFamily: kMonoFamily,
@@ -451,16 +478,25 @@ class _ErrorState extends StatelessWidget {
               color: colors.error,
             ),
           ),
+          if (scopeValid &&
+              (message.toLowerCase().contains('lock') ||
+                  message.toLowerCase().contains('expir'))) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'Session info → Check access → Unlock launching host',
+              textAlign: TextAlign.center,
+            ),
+          ],
           const SizedBox(height: 14),
           OutlinedButton(
-            onPressed: onRetry,
+            onPressed: scopeValid ? onRetry : () => Navigator.of(context).pop(),
             style: OutlinedButton.styleFrom(
               foregroundColor: colors.accent,
               side: BorderSide(color: colors.border),
             ),
-            child: const Text(
-              'Retry',
-              style: TextStyle(fontFamily: kMonoFamily, fontSize: 12),
+            child: Text(
+              scopeValid ? 'Retry' : 'Close',
+              style: const TextStyle(fontFamily: kMonoFamily, fontSize: 12),
             ),
           ),
         ],

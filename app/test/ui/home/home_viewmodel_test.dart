@@ -36,9 +36,11 @@ class _FakeStorage extends PairingStorage {
   // test never touches flutter_secure_storage (no binding in unit tests).
   final Map<String, List<PersistedRoom>> _rooms = {};
   Completer<void>? roomLoadGate, roomSaveGate;
+  bool failRoomSave = false;
   @override
   Future<void> saveRooms(String epk, List<PersistedRoom> rooms) async {
     await roomSaveGate?.future;
+    if (failRoomSave) throw Exception('synthetic storage failure');
     _rooms[epk] = rooms;
   }
 
@@ -367,6 +369,140 @@ void main() {
         vm.dispose();
       },
     );
+  });
+
+  group('single local removal', () {
+    test(
+      'connected relay without fresh discovery cannot establish offline',
+      () async {
+        final storage = _FakeStorage([_peerA]);
+        await storage.saveRooms('epk_A', [
+          const PersistedRoom(roomId: 'cached', startedAt: 1),
+        ]);
+        final ch = _ControllableChannel();
+        final conn = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: storage,
+          emitDebounce: Duration.zero,
+        );
+        final vm = HomeViewModel(
+          storage,
+          Preferences(_FakeSecureStorage()),
+          conn,
+        );
+        await conn.boot();
+        await Future<void>.delayed(Duration.zero);
+        expect(vm.isRelayConnected, isTrue);
+        expect(await vm.deleteRoom('epk_A', 'cached'), isFalse);
+        expect((await storage.loadRooms('epk_A')).single.roomId, 'cached');
+        ch.pushControl(const RoomsSnapshot(peer: 'epk_A', rooms: []));
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(await vm.deleteRoom('epk_A', 'cached'), isTrue);
+        vm.dispose();
+        await conn.disconnect();
+        conn.dispose();
+      },
+    );
+
+    for (final seam in [
+      'success',
+      'load-live',
+      'save-live',
+      'unknown',
+      'dispose',
+      'selection',
+      'incarnation',
+      'replay',
+      'storage-error',
+    ]) {
+      test('last cached entry: $seam', () async {
+        final ch = _ControllableChannel();
+        final storage = _FakeStorage([_peerA]);
+        final conn = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: storage,
+          emitDebounce: Duration.zero,
+        );
+        final vm = HomeViewModel(
+          storage,
+          Preferences(_FakeSecureStorage()),
+          conn,
+        );
+        await conn.connectTo(_peerA);
+        ch.pushControl(
+          const RoomAnnounced(peer: 'epk_A', roomId: 'r1', startedAt: 1),
+        );
+        ch.pushControl(
+          const RoomEnded(peer: 'epk_A', roomId: 'r1', sinceTs: 2),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        final roomCurrent = vm.roomActionGuard(
+          (vm.state as HomeList)
+              .items(normalizeEpk: HomeViewModel.normalizeEpkForLookup)
+              .single,
+        );
+        var selected = true;
+        final gate = Completer<void>();
+        if (seam == 'save-live') {
+          storage.roomSaveGate = gate;
+        } else {
+          storage.roomLoadGate = gate;
+        }
+        if (seam == 'storage-error') storage.failRoomSave = true;
+        final removing = vm.deleteRoom(
+          'epk_A',
+          'r1',
+          isCurrent: () => selected && roomCurrent(),
+        );
+        final errorExpectation = seam == 'storage-error'
+            ? expectLater(removing, throwsException)
+            : null;
+        await Future<void>.delayed(Duration.zero);
+        if (seam.endsWith('-live') ||
+            seam == 'incarnation' ||
+            seam == 'replay') {
+          ch.pushControl(
+            RoomAnnounced(
+              peer: 'epk_A',
+              roomId: 'r1',
+              startedAt: seam == 'replay' ? 1 : 3,
+            ),
+          );
+          if (seam == 'incarnation' || seam == 'replay') {
+            ch.pushControl(
+              const RoomEnded(peer: 'epk_A', roomId: 'r1', sinceTs: 4),
+            );
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        if (seam == 'unknown') await conn.disconnect();
+        if (seam == 'dispose') vm.dispose();
+        if (seam == 'selection') selected = false;
+        gate.complete();
+        if (errorExpectation != null) {
+          await errorExpectation;
+        } else {
+          expect(await removing, seam == 'success');
+        }
+        storage.roomLoadGate = storage.roomSaveGate = null;
+        storage.failRoomSave = false;
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect((await storage.loadRooms('epk_A')).isEmpty, seam == 'success');
+        expect(storage.peers.single.remoteEpk, _peerA.remoteEpk);
+        expect(storage.peers.single.pairedAt, _peerA.pairedAt);
+        if (seam != 'dispose') vm.dispose();
+        await conn.disconnect();
+        conn.dispose();
+        // A fresh manager must not synthesize a tile from the paired peer.
+        if (seam == 'success') {
+          final restored = _conn(storage: storage);
+          await restored.boot();
+          expect(restored.roomsSnapshot.values.expand((v) => v), isEmpty);
+          await restored.disconnect();
+          restored.dispose();
+        }
+      });
+    }
   });
 
   group('HomeViewModel — presence filter (plan-38 Fase 3)', () {

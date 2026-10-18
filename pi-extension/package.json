@@ -53,6 +53,7 @@
     "dist",
     "skills",
     "service-templates",
+    "scripts/prepare-managed-runtime.mjs",
     "docs",
     "README.md",
     "LICENSE"

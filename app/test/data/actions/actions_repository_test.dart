@@ -106,8 +106,8 @@ void main() {
           error: 'compact unavailable',
         ),
       );
-      expect(
-        () => future,
+      await expectLater(
+        future,
         throwsA(
           isA<ActionFailure>().having(
             (e) => e.message,
@@ -305,8 +305,7 @@ void main() {
       final s = await _setup();
       final future = s.repo.compact();
       await Future<void>.delayed(const Duration(milliseconds: 1));
-      await s.cm.disconnect();
-      expect(
+      final checked = expectLater(
         () => future,
         throwsA(
           isA<ActionFailure>().having(
@@ -316,14 +315,16 @@ void main() {
           ),
         ),
       );
+      await s.cm.disconnect();
+      await checked;
       s.cm.dispose();
     });
 
     test('pending action times out when no reply arrives', () async {
       final s = await _setup(timeout: const Duration(milliseconds: 30));
       final future = s.repo.compact();
-      expect(
-        () => future,
+      await expectLater(
+        future,
         throwsA(
           isA<ActionFailure>().having((e) => e.message, 'message', 'timeout'),
         ),
