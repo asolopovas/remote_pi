@@ -1,13 +1,12 @@
+import { SourceLink } from "@/components/source-link";
 import Link from "next/link";
-
-const GITHUB_URL = "https://github.com/jacobaraujo7/remote_pi";
 
 export function SiteFooter() {
   return (
     <footer className="footer">
       <div className="wrap footer-inner">
         <div className="copy">
-          © {new Date().getFullYear()} <b>Flutterando</b>. Remote Pi is open
+          Original project: © {new Date().getFullYear()} <b>Flutterando</b>. Remote Pi is open
           source under the MIT license.
         </div>
         <nav className="footer-links">
@@ -23,9 +22,9 @@ export function SiteFooter() {
           >
             Protocol
           </a>
-          <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer">
+          <SourceLink target="_blank" rel="noopener noreferrer">
             GitHub
-          </a>
+          </SourceLink>
         </nav>
       </div>
     </footer>

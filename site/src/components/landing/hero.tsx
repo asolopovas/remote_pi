@@ -1,5 +1,7 @@
 "use client";
 
+import { SourceLink } from "@/components/source-link";
+
 import { useEffect, useMemo, useState, Fragment } from "react";
 import {
   IconDownload,
@@ -9,8 +11,6 @@ import {
   IconPaperclip,
   IconStop,
 } from "@/components/landing/icons";
-
-const GITHUB_URL = "https://github.com/jacobaraujo7/remote_pi";
 
 /* ---------- living mesh background ---------- */
 function HeroMesh() {
@@ -258,14 +258,13 @@ export function Hero() {
               <a className="btn btn-primary" href="#install">
                 <IconDownload /> Install
               </a>
-              <a
+              <SourceLink
                 className="btn btn-ghost"
-                href={GITHUB_URL}
                 target="_blank"
                 rel="noopener noreferrer"
               >
                 <IconGithub /> GitHub
-              </a>
+              </SourceLink>
             </div>
             <div className="hero-meta">
               <span>build from source</span>

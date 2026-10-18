@@ -45,13 +45,13 @@ test("every canonical target exists, anchors resolve and links stay in configure
 });
 
 test("legacy docs and tutorial routes remain thin canonical guide entry points", () => {
-  const paths = ["docs/page.tsx", "remote-pi/docs/page.tsx"];
+  const paths = ["docs/page.tsx", "remote-pi/docs/page.tsx", "download/page.tsx", "remote-pi/download/page.tsx"];
   for (const prefix of ["remote-pi/tutorials", "tutorials"]) {
     for (const file of files(join(site, "src/app", prefix))) {
       if (file.endsWith("/page.tsx") && dirname(file) !== join(site, "src/app", prefix)) paths.push(file.slice(join(site, "src/app").length + 1));
     }
   }
-  assert.equal(paths.length, 10);
+  assert.equal(paths.length, 12);
   for (const path of paths) {
     const text = source(`app/${path}`);
     assert.match(text, /<GuidePage/);

@@ -1,3 +1,4 @@
+import { SourceLink } from "@/components/source-link";
 import Link from "next/link";
 import { Fragment } from "react";
 import {
@@ -6,8 +7,6 @@ import {
   IconMesh,
   IconArrow,
   IconAndroid,
-  IconPlay,
-  IconApple,
   IconDownload,
   IconMic,
   IconImage,
@@ -18,7 +17,6 @@ import {
 } from "@/components/landing/icons";
 import type { ReactNode } from "react";
 
-const GITHUB_URL = "https://github.com/jacobaraujo7/remote_pi";
 const PROTOCOL_URL = "/remote-pi/docs#protocol";
 
 /* ---------------- Pillars ---------------- */
@@ -125,34 +123,18 @@ type Store = {
 
 const STORES: Store[] = [
   {
-    glyph: <IconApple />,
-    top: "Download on the",
-    name: "App Store",
-    sub: "iOS · iPhone & iPad",
-    href: "https://apps.apple.com/app/remote-pi-coding-agent/id6773499691",
-    external: true,
-  },
-  {
-    glyph: <IconPlay />,
-    top: "Get it on",
-    name: "Google Play",
-    sub: "Android",
-    href: "https://play.google.com/store/apps/details?id=work.jacobmoura.remotepi",
-    external: true,
-  },
-  {
     glyph: <IconAndroid />,
-    top: "Direct download",
-    name: "Android APK",
-    sub: "Signed · with sha256",
+    top: "Build from source",
+    name: "Mobile client",
+    sub: "Android · iOS",
     href: "/remote-pi/download",
   },
   {
     glyph: <IconDownload />,
-    top: "Desktop app",
+    top: "Build from source",
     name: "Cockpit",
     sub: "macOS · Windows · Linux",
-    href: "/",
+    href: "/download",
   },
 ];
 
@@ -164,9 +146,9 @@ export function GetApp() {
           <span className="eyebrow">Get the app</span>
           <h2>Pair your phone, drive your agents.</h2>
           <p>
-            The authenticator and the remote control. Get it on the App Store or
-            Google Play, grab the Android APK direct, or download the desktop
-            Cockpit.
+            The authenticator and the remote control. Build your mobile client
+            or desktop Cockpit from this repository. Prebuilt downloads and
+            upstream store listings are disabled.
           </p>
         </div>
         <div className="app-grid">
@@ -249,14 +231,13 @@ export function GithubCTA() {
           it&apos;s all on GitHub.
         </p>
         <div>
-          <a
+          <SourceLink
             className="btn btn-primary"
-            href={GITHUB_URL}
             target="_blank"
             rel="noopener noreferrer"
           >
             <IconGithub /> View on GitHub
-          </a>
+          </SourceLink>
         </div>
         <div className="cta-stars">
           <span>

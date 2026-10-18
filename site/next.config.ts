@@ -21,15 +21,6 @@ const nextConfig: NextConfig = {
   output: "standalone",
   async redirects() {
     return [
-      // Instalador do cockpit-server: fonte unica no repo
-      // (cockpit/install-server.sh); a URL curta do site so redireciona pro
-      // raw do GitHub.
-      {
-        source: "/cockpit-server.sh",
-        destination:
-          "https://raw.githubusercontent.com/jacobaraujo7/remote_pi/main/cockpit/install-server.sh",
-        permanent: false,
-      },
       ...MOVED.map(({ from, to }) => ({
         source: from,
         destination: to,

@@ -1,5 +1,7 @@
 "use client";
 
+import { SourceLink } from "@/components/source-link";
+
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -13,18 +15,16 @@ type NavLink = { href: string; label: string };
 const COCKPIT_LINKS: NavLink[] = [
   { href: "/docs", label: "Docs" },
   { href: "/tutorials", label: "Tutorials" },
-  { href: "/download", label: "Download" },
+  { href: "/download", label: "Source build" },
   { href: "/remote-pi", label: "Remote Pi" },
 ];
 
 const REMOTE_PI_LINKS: NavLink[] = [
   { href: "/remote-pi/docs", label: "Docs" },
   { href: "/remote-pi/tutorials", label: "Tutorials" },
-  { href: "/remote-pi/download", label: "Download" },
+  { href: "/remote-pi/download", label: "Source build" },
   { href: "/remote-pi/why", label: "Why Pi" },
 ];
-
-const GITHUB_URL = "https://github.com/jacobaraujo7/remote_pi";
 
 function HamburgerIcon({ open }: { open: boolean }) {
   return (
@@ -84,7 +84,7 @@ export function SiteHeader() {
   const brand = onRemotePi ? "Remote Pi" : "Cockpit";
   const cta = onRemotePi
     ? { href: "/remote-pi#install", label: "Install" }
-    : { href: "/download", label: "Download" };
+    : { href: "/download", label: "Source build" };
 
   return (
     <header className="nav">
@@ -114,14 +114,13 @@ export function SiteHeader() {
               {l.label}
             </Link>
           ))}
-          <a
+          <SourceLink
             className="lnk"
-            href={GITHUB_URL}
             target="_blank"
             rel="noopener noreferrer"
           >
             GitHub
-          </a>
+          </SourceLink>
           <Link className="nav-cta" href={cta.href}>
             <IconDownload /> {cta.label}
           </Link>
@@ -158,15 +157,14 @@ export function SiteHeader() {
                 {l.label}
               </Link>
             ))}
-            <a
+            <SourceLink
               className="m-lnk"
-              href={GITHUB_URL}
               target="_blank"
               rel="noopener noreferrer"
               onClick={() => setMenuOpen(false)}
             >
               GitHub
-            </a>
+            </SourceLink>
             <Link
               className="nav-cta m-cta"
               href={cta.href}

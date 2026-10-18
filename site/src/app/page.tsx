@@ -1,3 +1,5 @@
+import { siteUrl } from "@/lib/site-url.mjs";
+import { SourceLink } from "@/components/source-link";
 import { RepositoryGuides } from "@/components/repository-guides";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -10,12 +12,14 @@ const pageTitle = "Cockpit: a terminal that grew an IDE around your agents";
 const pageDescription =
   "Run Claude Code, Codex, Pi or anything else in real terminals, local or on any machine over SSH, with the viewer, diagnostics, git, worktrees and databases they need to work.";
 
+const ownedSiteUrl = siteUrl(process.env.NEXT_PUBLIC_SITE_URL);
+
 export const metadata: Metadata = {
   title: { absolute: pageTitle },
   description: pageDescription,
   openGraph: {
     type: "website",
-    url: "https://remote-pi.jacobmoura.work",
+    url: ownedSiteUrl,
     title: pageTitle,
     description: pageDescription,
     siteName: "Remote Pi Cockpit",
@@ -27,7 +31,6 @@ export const metadata: Metadata = {
   },
 };
 
-const GITHUB_URL = "https://github.com/jacobaraujo7/remote_pi";
 
 /* visual-first section: eyebrow + short headline + max one sentence + big shot */
 function Shot({
@@ -83,7 +86,7 @@ export default function CockpitPage() {
               }}
             >
               <Link className="btn btn-primary" href="/download">
-                <IconDownload /> Download
+                <IconDownload /> Build from source
               </Link>
               <a className="btn btn-ghost" href="#remote">
                 What 2.0 brings <IconArrow />
@@ -181,7 +184,7 @@ export default function CockpitPage() {
               <p style={{ marginTop: 18, color: "var(--ink-soft)" }}>
                 Source setup and matching the server with the app are covered
                 by the guides linked from the{" "}
-                <Link href="/download#vps" className="text-accent underline">
+                <Link href="/download#remote" className="text-accent underline">
                   download page
                 </Link>{" "}
                 and in the{" "}
@@ -207,13 +210,12 @@ export default function CockpitPage() {
                 Ctrl+C, the arrows and F1 to F12, plus copy and paste.
               </p>
               <p>
-                It ships as a direct Android APK, built and signed by the same
-                release pipeline as the desktop builds. Grab it on the{" "}
-                <Link href="/download#android" className="text-accent underline">
-                  download page
+                Build the mobile Cockpit client from this repository using the{" "}
+                <Link href="/download#cockpit" className="text-accent underline">
+                  source guides
                 </Link>
-                . Prepare the host first, from a desktop Cockpit or with the
-                installer above.
+                . Prepare a matching host using the remote host guide above.
+                Prebuilt downloads are disabled.
               </p>
             </div>
           </section>
@@ -498,19 +500,18 @@ panes:
               }}
             >
               <Link className="btn btn-primary" href="/download">
-                <IconDownload /> Download
+                <IconDownload /> Build from source
               </Link>
               <Link className="btn btn-ghost" href="/docs">
                 Reference <IconArrow />
               </Link>
-              <a
+              <SourceLink
                 className="btn btn-ghost"
-                href={GITHUB_URL}
                 target="_blank"
                 rel="noopener noreferrer"
               >
                 <IconGithub /> GitHub
-              </a>
+              </SourceLink>
             </div>
             <p
               style={{

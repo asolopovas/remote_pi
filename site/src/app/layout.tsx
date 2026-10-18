@@ -1,3 +1,4 @@
+import { siteUrl } from "@/lib/site-url.mjs";
 import type { Metadata } from "next";
 import { Space_Grotesk, Hanken_Grotesk, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
@@ -30,8 +31,10 @@ const siteTagline =
 const siteDescription =
   "Run Claude Code, Codex, Pi or anything else in real terminals, local or on any machine over SSH, with the viewer, diagnostics, git, worktrees and databases they need to work.";
 
+const ownedSiteUrl = siteUrl(process.env.NEXT_PUBLIC_SITE_URL);
+
 export const metadata: Metadata = {
-  metadataBase: URL.parse("https://remote-pi.jacobmoura.work"),
+  metadataBase: ownedSiteUrl ? new URL(ownedSiteUrl) : null,
   title: {
     default: siteTagline,
     template: "%s · Cockpit",
@@ -54,7 +57,7 @@ export const metadata: Metadata = {
   ],
   openGraph: {
     type: "website",
-    url: "https://remote-pi.jacobmoura.work",
+    url: ownedSiteUrl,
     title: siteTagline,
     description: siteDescription,
     siteName: "Remote Pi Cockpit",
