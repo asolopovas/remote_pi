@@ -1,6 +1,6 @@
 # Relay
 
-[Project index](../README.md#project-map)
+[Project index](../README.md#project-map) · [Cross-project validation](../README.md#development-workflow)
 
 Rust/axum WebSocket routing, presence and Owner-signed mesh membership storage. Maintainer and author of contributions: **Andrius Solopovas**.
 

@@ -1,6 +1,6 @@
 # Mobile client
 
-[Project index](../README.md#project-map)
+[Project index](../README.md#project-map) · [Cross-project validation](../README.md#development-workflow)
 
 Flutter client for Android and iOS. Maintainer and author of contributions: **Andrius Solopovas**.
 
@@ -17,6 +17,10 @@ flutter build apk --release --target-platform android-arm64
 # macOS with the iOS SDK:
 flutter build ios --no-codesign
 ```
+
+For a gated fresh release build and replace-only ADB update, use the canonical [Android client deployment workflow](../README.md#android-client-deployment). It preserves app data/signing compatibility and does not deploy host services.
+
+Ordinary `flutter test` runs unit/widget tests only. The separate Linux native [launch acceptance](test_acceptance/local_secure_launch_test.dart) requires the [root gates](../README.md#development-workflow), which build and explicitly run it with the real relay/extension and managed Pi runtime.
 
 Android requires API 34+; iOS targets 18+. Account, backup and screen-lock prerequisites are owned by the [identity plugin's platform requirements](packages/remote_pi_identity/README.md#platform-requirements).
 

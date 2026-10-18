@@ -1,6 +1,6 @@
 # Pi extension
 
-[Project index](../README.md#project-map)
+[Project index](../README.md#project-map) · [Cross-project validation](../README.md#development-workflow)
 
 Host extension, local agent broker, relay client and optional daemon supervisor. Maintainer and author of contributions: **Andrius Solopovas**.
 
