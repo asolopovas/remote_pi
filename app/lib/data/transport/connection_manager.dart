@@ -1305,11 +1305,11 @@ class ConnectionManager extends Service {
   /// fan-out as presence. Drives the blue Home dot on non-active
   /// sessions.
   ///
-  /// Gated on `StatusOnline` (same as [isRoomLive]): a dropped WS means
-  /// we have no fresh signal, so we report not-working and let the tile
-  /// fall back to the amber "reconnecting" / grey state.
+  /// Requires a live room, not just a live relay socket. Ended rooms remain
+  /// cached for history, but their last working flag is no longer authoritative.
+  /// A dropped WS also reports not-working via [isRoomLive].
   bool isRoomWorking(String epk, String roomId) {
-    if (_status is! StatusOnline) return false;
+    if (!isRoomLive(epk, roomId)) return false;
     final list = _roomsByPeer[toStandardB64(epk)];
     if (list == null) return false;
     for (final r in list) {

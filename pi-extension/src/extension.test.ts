@@ -3378,6 +3378,82 @@ describe("session sync", () => {
     _setSessionStartedAtForTest(null);
   });
 
+  test.each(["startup", "reload", "resume", "fork"])("%s restores persisted active-branch history before phone sync", async reason => {
+    await _pairForTest("peer-history-restore");
+    const ts = 1_700_000_000_000;
+    const user = { role: "user", content: "earlier question", timestamp: ts + 1 };
+    const answer = { role: "assistant", content: [{ type: "text", text: "earlier answer" }], timestamp: ts + 2 };
+    const getBranch = vi.fn(() => [
+      { type: "message", message: user },
+      { type: "message", message: answer },
+      { type: "compaction", summary: "earlier summary", tokensBefore: 123, timestamp: new Date(ts + 3).toISOString() },
+      { type: "message", message: { role: "custom", customType: "remote-pi:relay-state", content: "not chat history" } },
+    ]);
+    const getEntries = vi.fn(() => { throw new Error("must not scan abandoned branches"); });
+    const start = captureEventHandler("session_start") as (event: AnyEvent, ctx: unknown) => unknown;
+    _setMessageBufferForTest([{ role: "user", content: "stale other session", timestamp: 1 }]);
+    start({ type: "session_start", reason }, {
+      ...makeMockCtx(),
+      sessionManager: { getBranch, getEntries },
+    });
+    _setSessionStartedAtForTest(ts);
+
+    const before = relayRef.current!.send.mock.calls.length;
+    routeClientMessage({ type: "session_sync", id: "restored-history" }, { abort: () => undefined });
+    const history = relayRef.current!.send.mock.calls.slice(before)
+      .map(c => decodeSentCt(c[0] as string).inner)
+      .find(m => m.type === "session_history")!;
+    expect(history.events).toEqual([
+      { type: "user_input", id: `sync_${ts + 1}`, text: "earlier question", ts: ts + 1 },
+      { type: "agent_message", in_reply_to: `sync_${ts + 1}`, text: "earlier answer", ts: ts + 2 },
+      { type: "compaction", summary: "earlier summary", tokens_before: 123, ts: ts + 3 },
+    ]);
+    expect(getBranch).toHaveBeenCalledOnce();
+    expect(getEntries).not.toHaveBeenCalled();
+  });
+
+  test("rehydration replaces history without duplicating subsequent live messages", () => {
+    const old = { role: "user", content: "persisted", timestamp: 10 };
+    const live = { role: "assistant", content: [{ type: "text", text: "live" }], timestamp: 11 };
+    let branch = [{ type: "message", message: old }];
+    const ctx = { ...makeMockCtx(), sessionManager: { getBranch: () => branch } };
+    const start = captureEventHandler("session_start") as (event: AnyEvent, ctx: unknown) => unknown;
+    start({ type: "session_start", reason: "reload" }, ctx);
+    captureEventHandler("message_end")({ type: "message_end", message: live });
+    expect(_getMessageBufferForTest()).toEqual([old, live]);
+    branch = [{ type: "message", message: old }, { type: "message", message: live }];
+    start({ type: "session_start", reason: "reload" }, ctx);
+    expect(_getMessageBufferForTest()).toEqual([old, live]);
+  });
+
+  test("history read failure cannot replace the phone cache with empty history", async () => {
+    await _pairForTest("peer-history-read-failure");
+    const start = captureEventHandler("session_start") as (event: AnyEvent, ctx: unknown) => unknown;
+    start({ type: "session_start", reason: "reload" }, {
+      ...makeMockCtx(), sessionManager: { getBranch: () => { throw new Error("unavailable"); } },
+    });
+    try {
+      const before = relayRef.current!.send.mock.calls.length;
+      routeClientMessage({ type: "session_sync", id: "failed-history" }, { abort: () => undefined });
+      const sent = relayRef.current!.send.mock.calls.slice(before).map(c => decodeSentCt(c[0] as string).inner);
+      expect(sent.some(m => m.type === "session_history")).toBe(false);
+      expect(sent).toContainEqual(expect.objectContaining({ type: "error", in_reply_to: "failed-history", code: "internal_error" }));
+    } finally {
+      start({ type: "session_start", reason: "reload" }, {
+        ...makeMockCtx(), sessionManager: { getBranch: () => [] },
+      });
+    }
+  });
+
+  test("new empty session cannot replay the previous session's buffer", () => {
+    _setMessageBufferForTest([{ role: "user", content: "previous session", timestamp: 1 }]);
+    const start = captureEventHandler("session_start") as (event: AnyEvent, ctx: unknown) => unknown;
+    start({ type: "session_start", reason: "new" }, {
+      ...makeMockCtx(), sessionManager: { getBranch: () => [] },
+    });
+    expect(_getMessageBufferForTest()).toEqual([]);
+  });
+
   test("session_sync with no active session → empty history + eos:true + truncated:false", async () => {
     await _pairForTest("peer-ss-1");
     _setMessageBufferForTest([]);

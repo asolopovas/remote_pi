@@ -884,8 +884,9 @@ function _refreshFooter(ctx?: { ui?: { setStatus?: unknown; setTitle?: unknown }
 // replay). Cleared on _goIdle.
 let _sessionStartedAt: number | null = null;
 
-// Snapshot of agent messages, captured on every agent_end event. Used to
-// answer session_sync. Cleared on _goIdle.
+// Active-branch history restored on session_start, then extended by
+// message_end. A fresh extension instance must not replay only post-reload
+// messages: the phone substitutes its cached conversation with session_sync.
 type BufferMsg = {
   role: "user" | "assistant" | "toolResult" | string;
   content?: unknown;
@@ -899,6 +900,39 @@ type BufferMsg = {
   tokensBefore?: number;
 };
 let _messageBuffer: BufferMsg[] = [];
+let _historyRestoreFailed = false;
+
+function _restoreMessageBuffer(ctx: ExtensionContext): void {
+  // Replace, never append: a reused runtime may still hold another session's
+  // history. getBranch excludes abandoned alternatives without scanning files.
+  _messageBuffer = [];
+  _historyRestoreFailed = false;
+  try {
+    const restored: BufferMsg[] = [];
+    for (const entry of ctx.sessionManager?.getBranch?.() ?? []) {
+      if (entry.type === "message") {
+        const message = entry.message;
+        if (message.role === "user" || message.role === "assistant" || message.role === "toolResult") {
+          restored.push(message);
+        }
+      } else if (entry.type === "compaction") {
+        const timestamp = Date.parse(entry.timestamp);
+        restored.push({
+          role: "compaction",
+          content: entry.summary,
+          timestamp: Number.isFinite(timestamp) ? timestamp : 0,
+          tokensBefore: entry.tokensBefore,
+        });
+      }
+    }
+    _messageBuffer = restored;
+  } catch {
+    // A sync error preserves the phone's cache instead of replacing it with
+    // an empty/partial history. Never leak the previous session as fallback.
+    _historyRestoreFailed = true;
+  }
+}
+
 type PendingSteer = { id: string; text: string };
 let _pendingSteers: PendingSteer[] = [];
 let _lastConsumedSteerText: string | null = null;
@@ -2466,6 +2500,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // New session. Fires on startup/new/fork/reload/resume; the ctx is always
   // bound to the current session.
   pi.on("session_start", (_event, ctx) => {
+    _restoreMessageBuffer(ctx);
     _modelSessionGeneration += 1;
     // Some hosts reuse this factory after replacing a session.
     process.off("disconnect", onLauncherGone);
@@ -4971,6 +5006,15 @@ function _handleSessionSync(
   msg: Extract<ClientMessage, { type: "session_sync" }>,
 ): void {
   _sendQueuedState(sender);
+  if (_historyRestoreFailed) {
+    sender.send({
+      type: "error",
+      in_reply_to: msg.id,
+      code: "internal_error",
+      message: "Could not restore chat history. Reload the Pi session and retry.",
+    });
+    return;
+  }
   if (_sessionStartedAt === null) {
     sender.send({
       type: "session_history",
@@ -5032,6 +5076,7 @@ function _handleSessionSync(
  */
 function _resetSessionForNew(inReplyTo: string): void {
   _messageBuffer = [];
+  _historyRestoreFailed = false;
   _pendingSteers = [];
   _lastConsumedSteerText = null;
   _resetQueuedItems({ broadcast: true });
