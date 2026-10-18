@@ -1,5 +1,6 @@
 [package]
 authors = ["Jacob Moura", "Andrius Solopovas"]
+repository = "https://github.com/asolopovas/remote-pi"
 name = "cockpit-cli"
 version = "0.7.0"
 edition = "2021"

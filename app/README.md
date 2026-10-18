@@ -40,6 +40,6 @@ See the [development instructions](CLAUDE.md) for layer boundaries and dependenc
 - [Vendored speech API](vendor/speech_to_text/README.md) and [local on-device patch contract](vendor/speech_to_text/PATCHES.md).
 - Cross-project [session controls](../pi-extension/docs/session-control.md) and [display snapshots](../pi-extension/docs/room-display-endpoint.md); coordinate both endpoints when changing these.
 - [Inert renderer fixtures](test/ui/chat/fixtures/75/README.md); these are presentation data, not executable commands.
-- [Website and download links](../site/README.md#integrations) and [release manifest hosting](../rp-s3/README.md#integrations). [Cockpit](../cockpit/README.md) is a separate client/SSH architecture, not this app's backend.
+- [Website/source-guide links](../site/README.md#integrations) and [release manifest hosting](../rp-s3/README.md#integrations). [Cockpit](../cockpit/README.md) is a separate client/SSH architecture, not this app's backend.
 
 Licenses: [MIT](../LICENSE), Fira Mono [OFL](assets/fonts/fira_mono/LICENSE), and [vendored speech plugin](vendor/speech_to_text/LICENSE). The `highlight` dependency is MIT © 2019 Rongjian Zhang; Flutter collects dependency licenses. Keep required assets and native resources, but never commit `build/`, SDK paths, credentials or signing material.

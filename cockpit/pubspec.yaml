@@ -1,6 +1,7 @@
 name: cockpit
 description: "Terminal workspace and SSH-connected remote client."
 # Maintainer and author of contributions: Andrius Solopovas.
+repository: https://github.com/asolopovas/remote-pi
 publish_to: "none"
 
 version: 2.1.14+112

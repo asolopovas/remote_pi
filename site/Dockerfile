@@ -22,6 +22,11 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
+# Public build-time navigation/metadata only; never pass secrets as build args.
+ARG NEXT_PUBLIC_REPOSITORY_URL=""
+ARG NEXT_PUBLIC_SITE_URL=""
+ENV NEXT_PUBLIC_REPOSITORY_URL=${NEXT_PUBLIC_REPOSITORY_URL}
+ENV NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL}
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build
 

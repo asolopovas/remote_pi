@@ -15,14 +15,14 @@ Each guide owns its project's prerequisites, build/run commands, configuration a
 | Relay | [relay/](relay/README.md) | WebSocket routing, presence and signed membership storage |
 | Mobile client | [app/](app/README.md) | Android/iOS pairing, chat and remote controls |
 | Cockpit | [cockpit/](cockpit/README.md) | Terminal workspace, CLI and [shared packages/headless server](cockpit/README.md#package-map) |
-| Website | [site/](site/README.md) | Product pages, tutorials, download links and installer delivery |
+| Website | [site/](site/README.md) | Product pages and canonical source-guide links; binary delivery disabled |
 | Download server | [rp-s3/](rp-s3/README.md) | Release files and update-manifest hosting |
 
 ## How the projects connect
 
 - **Phone control:** the [mobile client](app/README.md#connect-and-use) and [host extension](pi-extension/README.md#build-and-install-this-source) connect through the same [relay](relay/README.md#self-host-with-docker). Start with those guides, then pair the client. Local-only agent messaging does not require the relay.
 - **Terminal workspaces:** [Cockpit](cockpit/README.md#remote-host) connects to its headless server over SSH. This is separate from the mobile/extension relay protocol; running Pi inside a Cockpit terminal is optional.
-- **Distribution:** [local release packaging](cockpit/packaging/README.md) and [mobile build instructions](app/README.md#build-and-run) produce artifacts. The [website](site/README.md#integrations) links to release downloads and [download-server manifests](rp-s3/README.md#integrations); neither service is required for a local source build.
+- **Distribution:** [local release packaging](cockpit/packaging/README.md) and [mobile build instructions](app/README.md#build-and-run) produce artifacts. The [website](site/README.md#integrations) currently links to source guides only; [download-server manifests](rp-s3/README.md#integrations) are optional future distribution, not an active feed. Neither service is required for a local source build.
 - **Shared presentation:** [branding/](branding/README.md) holds source artwork used by the clients, website and package metadata.
 
 ## Documentation ownership

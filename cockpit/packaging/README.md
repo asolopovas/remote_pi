@@ -75,7 +75,7 @@ Build each architecture locally. Check the manifest, `--version`, smoke startup 
 
 ## Independent updates and publication
 
-Native automatic updating is disabled. No default feed/key is accepted; enabling a paired owned feed and verification key requires a separately validated client implementation. Producing a signed appcast does not enable that updater. Manual update notifications are a separate path whose destinations also need review.
+Native automatic updating is disabled. No default feed/key is accepted; enabling a paired owned feed and verification key requires a separately validated client implementation. Producing a signed appcast does not enable that updater. Manual update notifications are also disabled by default: the root supplies no feed. The explicit HTTPS test seam rejects invalid URLs and redirects; enabling owned distribution still requires separate validation.
 
 For a manual release:
 

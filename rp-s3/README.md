@@ -6,7 +6,7 @@ Small Rust/axum HTTP server for release artifacts and manifests. Maintainer and 
 
 ## Integrations
 
-Local/manual [release procedures](../cockpit/packaging/README.md#independent-updates-and-publication) publish binary assets to GitHub Releases and upload manifests to this service; [Cockpit packaging](../cockpit/packaging/README.md) owns the release sequence and signing rules. The [website manifest reader](../site/src/lib/cockpit-release.ts) and [Cockpit updater](../cockpit/README.md#reference-and-maintenance) consume those manifests. The [mobile client](../app/README.md) has a separate release/update path. This is not the [agent relay](../relay/README.md) or [host extension](../pi-extension/README.md).
+Local/manual [release procedures](../cockpit/packaging/README.md#independent-updates-and-publication) publish binary assets to GitHub Releases and upload manifests to this service; [Cockpit packaging](../cockpit/packaging/README.md) owns the release sequence and signing rules. The [website loaders](../site/README.md#integrations) are intentionally disabled and do not consume manifests; [Cockpit automatic and default manual updates](../cockpit/packaging/README.md#independent-updates-and-publication) are also disabled. Any owned consumer integration requires explicit configuration and validation. The [mobile client](../app/README.md) has a separate local build path. This is not the [agent relay](../relay/README.md) or [host extension](../pi-extension/README.md).
 
 ## Run
 

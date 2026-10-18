@@ -37,7 +37,7 @@
     "extensions": [
       "./dist"
     ],
-    "image": "https://raw.githubusercontent.com/jacobaraujo7/remote_pi/main/branding/banner.png"
+    "image": "https://raw.githubusercontent.com/asolopovas/remote-pi/main/branding/banner.png"
   },
   "author": "Andrius Solopovas",
   "contributors": [
@@ -46,12 +46,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jacobaraujo7/remote_pi.git",
+    "url": "git+https://github.com/asolopovas/remote-pi.git",
     "directory": "pi-extension"
   },
-  "homepage": "https://remote-pi.jacobmoura.work",
+  "homepage": "https://github.com/asolopovas/remote-pi#readme",
   "bugs": {
-    "url": "https://github.com/jacobaraujo7/remote_pi/issues"
+    "url": "https://github.com/asolopovas/remote-pi/issues"
   },
   "files": [
     "dist",

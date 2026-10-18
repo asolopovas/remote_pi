@@ -1,6 +1,7 @@
 name: cockpit_server
 description: Headless Cockpit engine server using JSONL over a local socket.
 # Maintainer and author of contributions: Andrius Solopovas.
+repository: https://github.com/asolopovas/remote-pi
 version: 0.1.0
 publish_to: none
 

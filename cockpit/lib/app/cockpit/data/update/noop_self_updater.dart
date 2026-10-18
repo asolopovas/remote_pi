@@ -1,8 +1,9 @@
-import 'package:cockpit/app/cockpit/domain/contracts/self_updater.dart';
+import '../../domain/contracts/self_updater.dart';
 
 /// Sem self-update nativo (plataforma sem suporte ou sem configuração): [isSupported] é `false` e tudo é no-op. O
 /// `UpdateViewModel` detecta isso e cai no caminho de notify + download manual
-/// (`UpdateChecker` lendo `latest.json` + abrir a URL do artefato).
+/// somente quando um feed próprio foi configurado no UpdateChecker.
+/// Sem essa configuração, o padrão também não faz checks manuais de rede.
 class NoopSelfUpdater implements SelfUpdater {
   const NoopSelfUpdater();
 
