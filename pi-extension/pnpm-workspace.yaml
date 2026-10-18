@@ -8,6 +8,7 @@ allowBuilds:
 # Keep transitive packages above known vulnerable ranges until upstreams
 # release dependency updates that naturally resolve these versions.
 overrides:
+  '@earendil-works/pi-coding-agent@0.79.10>undici': 8.10.2
   esbuild: ^0.28.1
   hono: ^4.12.25
   protobufjs: ^7.6.3
